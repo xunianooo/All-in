@@ -9,12 +9,12 @@ base {
 
 android {
     namespace 'com.gaeul.allin'
-    compileSdk 34
+    compileSdk 37
 
     defaultConfig {
         applicationId 'com.gaeul.allin'
         minSdk 24
-        targetSdk 33
+        targetSdk 34
         versionCode 3
         versionName '1.1.1'
     }
@@ -82,14 +82,14 @@ def offlineTestMains = [
         'com.gaeul.allin.ResponsesGatewayOfflineTest',
 ]
 
-def mainClassesDir = layout.buildDirectory.dir('intermediates/javac/release/compileReleaseJavaWithJavac/classes')
+def mainClassesDir = provider { tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().destinationDirectory.get() }
 def testClassesDir = layout.buildDirectory.dir('offlinetest-classes')
 
 tasks.register('compileOfflineTests', JavaCompile) {
     dependsOn 'compileReleaseJavaWithJavac'
     source = fileTree(dir: 'src/test/java')
     // 补丁版 org.json 在主代码产物里，必须排在 android.jar 之前
-    classpath = files({ [mainClassesDir.get(), configurations.offlineTest, android.bootClasspath] })
+    classpath = files({ [mainClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
     destinationDirectory = testClassesDir
     sourceCompatibility = '1.8'
     targetCompatibility = '1.8'
@@ -101,7 +101,7 @@ def offlineTestTasks = offlineTestMains.collect { name ->
         group = 'verification'
         description = "运行离线测试 ${name}"
         dependsOn 'compileOfflineTests'
-        classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, android.bootClasspath] })
+        classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
         mainClass = name
     }
 }

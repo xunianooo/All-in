@@ -24,6 +24,8 @@ codex、antigravity、copilot、minimax 等）源自
 
 ## 构建
 
+Gradle 构建需要 JDK 17 和稳定版 Android SDK Platform 37.0；目标 API 为 34，最低 API 为 24。详见 [SDK 与前台服务说明](docs/sdk.md)。
+
 ```bash
 # Debug 包（无需签名配置）
 ./gradlew assembleDebug
