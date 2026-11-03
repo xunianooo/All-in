@@ -20,7 +20,7 @@
         android:supportsRtl="true">
 
         <activity
-            android:name="com.magpie.pocket.MainActivity"
+            android:name="com.gaeul.allin.MainActivity"
             android:label="All In"
             android:icon="@mipmap/ic_launcher"
             android:exported="true">
@@ -31,16 +31,16 @@
         </activity>
 
         <activity
-            android:name="com.magpie.pocket.LoginActivity"
+            android:name="com.gaeul.allin.LoginActivity"
             android:exported="false" />
 
         <service
-            android:name="com.magpie.pocket.GatewayService"
+            android:name="com.gaeul.allin.GatewayService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <receiver
-            android:name="com.magpie.pocket.BootReceiver"
+            android:name="com.gaeul.allin.BootReceiver"
             android:exported="false"
             android:enabled="true">
             <intent-filter>
@@ -52,7 +52,7 @@
         </receiver>
 
         <receiver
-            android:name="com.magpie.pocket.KeepAliveReceiver"
+            android:name="com.gaeul.allin.KeepAliveReceiver"
             android:exported="false"
             android:enabled="true" />
     </application>

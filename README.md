@@ -4,6 +4,15 @@
 对外提供 OpenAI（`/v1/chat/completions`）与 Anthropic（`/v1/messages`）兼容接口，
 聚合各家供应商账号池，配套 WebView 管理面板。
 
+## 应用信息
+
+- 名称：All In
+- 包名：`com.gaeul.allin`
+- 当前版本：1.1.1（versionCode 3）
+
+此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
+旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
+
 ## 致谢
 
 本项目的多数供应商适配（zcode、workbuddy、raccoon、catpaw、qoder、cline、

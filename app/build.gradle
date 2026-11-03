@@ -8,15 +8,15 @@ base {
 }
 
 android {
-    namespace 'com.magpie.pocket'
+    namespace 'com.gaeul.allin'
     compileSdk 34
 
     defaultConfig {
-        applicationId 'com.magpie.pocket'
+        applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 33
-        versionCode 1
-        versionName '1.0.0'
+        versionCode 3
+        versionName '1.1.1'
     }
 
     signingConfigs {
@@ -66,17 +66,17 @@ dependencies {
 configurations { offlineTest }
 dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
 
-// 与 test/offline/run-all.sh 的 9 个套件一一对应（全部声明 package com.magpie.pocket）
+// 与 test/offline/run-all.sh 的 9 个套件一一对应（全部声明 package com.gaeul.allin）
 def offlineTestMains = [
-        'com.magpie.pocket.AnthropicBridgeRequestTest',
-        'com.magpie.pocket.AnthropicBridgeStreamOfflineTest',
-        'com.magpie.pocket.ContextGuardOfflineTest',
-        'com.magpie.pocket.ContextGuardProtectionTest',
-        'com.magpie.pocket.ZCodeAnthropicOfflineTest',
-        'com.magpie.pocket.GatewayProtocolOfflineTest',
-        'com.magpie.pocket.DeepSeekWebTest',
-        'com.magpie.pocket.DeepSeekWebChatTest',
-        'com.magpie.pocket.DeepSeekToolBridgeTest',
+        'com.gaeul.allin.AnthropicBridgeRequestTest',
+        'com.gaeul.allin.AnthropicBridgeStreamOfflineTest',
+        'com.gaeul.allin.ContextGuardOfflineTest',
+        'com.gaeul.allin.ContextGuardProtectionTest',
+        'com.gaeul.allin.ZCodeAnthropicOfflineTest',
+        'com.gaeul.allin.GatewayProtocolOfflineTest',
+        'com.gaeul.allin.DeepSeekWebTest',
+        'com.gaeul.allin.DeepSeekWebChatTest',
+        'com.gaeul.allin.DeepSeekToolBridgeTest',
 ]
 
 def mainClassesDir = layout.buildDirectory.dir('intermediates/javac/release/compileReleaseJavaWithJavac/classes')
