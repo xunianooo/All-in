@@ -758,11 +758,12 @@ public class GatewayServer extends NanoHTTPD {
         NATIVE_REQUEST.remove();
         NATIVE_BASELINE.remove();
         NATIVE_DIRECT_ALLOWED.remove();
+        RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove();
         try {
             Response response = serveRequest(session);
             if ("/v1/responses".equals(session.getUri()) && session.getMethod() == Method.POST && response != null
                     && response.getStatus().getRequestStatus() >= 200
-                    && response.getStatus().getRequestStatus() < 300) {
+                    && response.getStatus().getRequestStatus() < 300 && !Boolean.TRUE.equals(RESP_NATIVE_RESULT.get())) {
                 String mime = response.getMimeType();
                 if (mime != null && mime.contains("text/event-stream")) {
                     response.setData(ResponsesBridge.chatStreamToResponses(response.getData(), CLIENT_MODEL.get()));
@@ -781,7 +782,7 @@ public class GatewayServer extends NanoHTTPD {
             }
             return response;
         }
-        finally { NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); }
+        finally { NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); }
     }
 
     private Response serveRequest(IHTTPSession session) {
@@ -3421,7 +3422,12 @@ public class GatewayServer extends NanoHTTPD {
                 JSONObject payload = new JSONObject(maskedPayloadStr);
                 String requestedModel = payload.optString("model", "deepseek-chat");
                 if ("/v1/responses".equals(uri)) {
-                    try { payload = ResponsesBridge.toChat(payload); CLIENT_MODEL.set(requestedModel); }
+                    try {
+                        JSONObject originalResponses = new JSONObject(payload.toString());
+                        payload = ResponsesBridge.projection(payload);
+                        RESP_REQUEST.set(originalResponses); RESP_BASELINE.set(new JSONObject(payload.toString()));
+                        CLIENT_MODEL.set(requestedModel);
+                    }
                     catch (Exception conversionError) { return errorResponse(400, "Responses request: " + conversionError.getMessage()); }
                 }
                 String validationError = validateRawMessages(payload.opt("messages"));
@@ -3526,7 +3532,7 @@ public class GatewayServer extends NanoHTTPD {
 
                 // ===== OpenAI 形态的 zcode 请求优先走 gift：赠送额度只认 session，Key 花不到。
                 // 模型不在赠送额度支持范围内时返回 null，继续走原来的 Coding Plan 路径。
-                if ("zcode".equals(providerIdOf(requestedModel))) {
+                if (RESP_REQUEST.get()==null && "zcode".equals(providerIdOf(requestedModel))) {
                     Response gift = tryZCodeGiftOpenAI(payload, requestedModel, clientWantsStream,
                             maskSession, guardResult);
                     if (gift != null) return gift;
@@ -4189,6 +4195,10 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     /** 当前请求的客户端要 Anthropic 格式回复（/v1/messages 且请求体是 Anthropic 形状） */
+    private static final ThreadLocal<JSONObject> RESP_REQUEST = new ThreadLocal<JSONObject>();
+    private static final ThreadLocal<JSONObject> RESP_NATIVE_CANDIDATE = new ThreadLocal<JSONObject>();
+    private static final ThreadLocal<JSONObject> RESP_BASELINE = new ThreadLocal<JSONObject>();
+    private static final ThreadLocal<Boolean> RESP_NATIVE_RESULT = new ThreadLocal<Boolean>();
     private static final ThreadLocal<JSONObject> NATIVE_REQUEST = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<JSONObject> NATIVE_BASELINE = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<Boolean> NATIVE_DIRECT_ALLOWED = new ThreadLocal<Boolean>();
@@ -5401,6 +5411,51 @@ public class GatewayServer extends NanoHTTPD {
             JSONObject payload = new JSONObject(payloadIn.toString());
             payload.put("model", target.upstreamModel);
 
+            JSONObject responseOriginal=RESP_REQUEST.get();
+            if (responseOriginal!=null) {
+                if ("codex".equals(target.providerId) && responseOriginal.optBoolean("store",false)) { out.status=400; out.body="Codex does not support store=true"; out.response=errorResponse(400,out.body); return out; }
+                boolean nativeTarget="codex".equals(target.providerId) || "responses".equalsIgnoreCase(target.protocol);
+                JSONObject candidate=nativeTarget ? nativeResponsesRequest(responseOriginal,RESP_BASELINE.get(),payload,target.upstreamModel,clientWantsStream,guardCfg,configJson.optJSONObject("middleware")) : null;
+                if(candidate!=null && "codex".equals(target.providerId)) {
+                    JSONObject codexCandidate=new JSONObject(candidate.toString()); codexCandidate.put("stream",true).put("store",false);
+                    if(!codexCandidate.has("instructions")) codexCandidate.put("instructions","");
+                    JSONObject checkBody=new JSONObject(codexCandidate.toString());
+                    if(payload.optInt("max_tokens",0)>0) checkBody.put("max_tokens",payload.getInt("max_tokens"));
+                    ContextGuard.Result check=ContextGuard.fit(checkBody,guardCfg);
+                    if(check.error!=null || check.budgetExceeded || check.changed || !jsonEquivalent(checkBody,check.payload)) candidate=null;
+                    else candidate=codexCandidate;
+                }
+                if (candidate != null && "responses".equalsIgnoreCase(target.protocol) && !"codex".equals(target.providerId)) {
+                    Attempt nativeAttempt=forwardNativeResponses(target,candidate,clientWantsStream,maskSession,guardResult,guardCfg);
+                    if(nativeAttempt.ok && clientWantsStream) handedOff=true;
+                    return adopt(out,nativeAttempt);
+                }
+                if (candidate != null && "codex".equals(target.providerId)) RESP_NATIVE_CANDIDATE.set(candidate);
+                else RESP_NATIVE_CANDIDATE.remove();
+                if (candidate == null) {
+                    String unsupported=ResponsesBridge.nativeOnlyReason(responseOriginal);
+                    if (unsupported!=null) { out.status=400; out.body="Responses cannot be converted for selected route: "+unsupported; out.response=errorResponse(400,out.body); return out; }
+                    if ("responses".equalsIgnoreCase(target.protocol) && !"codex".equals(target.providerId)) {
+                        if(Middleware.wordGuardEnabled(configJson.optJSONObject("middleware")) || Middleware.thinkTagsEnabled(configJson.optJSONObject("middleware"))) {
+                            out.status=400; out.body="Responses route cannot safely apply configured response middleware"; out.response=errorResponse(400,out.body); return out;
+                        }
+                        JSONObject converted=ResponsesBridge.chatToResponses(payload,target.upstreamModel);
+                        converted.put("stream",clientWantsStream);
+                        if(responseOriginal.has("store")) converted.put("store",responseOriginal.get("store"));
+                        if(responseOriginal.has("truncation")) converted.put("truncation",responseOriginal.get("truncation"));
+                        if(responseOriginal.has("include")) converted.put("include",responseOriginal.get("include"));
+                        JSONObject checkedInput=new JSONObject(converted.toString());
+                        if(converted.optInt("max_output_tokens",0)>0) checkedInput.put("max_tokens",converted.getInt("max_output_tokens"));
+                        ContextGuard.Result checked=ContextGuard.fit(checkedInput,guardCfg);
+                        if(checked.error!=null || checked.budgetExceeded || checked.changed || !jsonEquivalent(checkedInput,checked.payload)) {
+                            out.status=400; out.body="Converted Responses payload exceeds guard"; out.response=errorResponse(400,out.body); return out;
+                        }
+                        Attempt nativeAttempt=forwardNativeResponses(target,converted,clientWantsStream,maskSession,guardResult,guardCfg);
+                        if(nativeAttempt.ok && clientWantsStream) handedOff=true;
+                        return adopt(out,nativeAttempt);
+                    }
+                }
+            }
             if ("deepseek-web".equals(target.protocol)) {
                 // A configured output cap cannot be enforced by the website, even if
                 // middleware happened to remove the corresponding request field.
@@ -5438,7 +5493,9 @@ public class GatewayServer extends NanoHTTPD {
             }
 
             if ("codex".equals(target.providerId)) {
-                return adopt(out, forwardCodex(target, payload, clientWantsStream, requestedModel, maskSession, guardResult, 0));
+                Attempt codex=forwardCodex(target, payload, clientWantsStream, requestedModel, maskSession, guardResult, 0);
+                if(codex.ok && clientWantsStream) handedOff=true;
+                return adopt(out,codex);
             }
             // ===== Antigravity：Google Code Assist 信封协议，非 OpenAI 兼容 =====
             if ("antigravity".equals(target.providerId) || "antigravity".equals(target.protocol)) {
@@ -8043,6 +8100,163 @@ public class GatewayServer extends NanoHTTPD {
         return errorResponse(404, "未知的 Codex 原生端点: " + uri);
     }
 
+    static JSONObject nativeResponsesRequest(JSONObject original, JSONObject baseline, JSONObject current,
+                                             String model, boolean stream, ContextGuard.Config guard,
+                                             JSONObject middleware) throws Exception {
+        if (original == null || baseline == null || current == null) return null;
+        // Native-only material cannot be inspected or transformed by these Chat middleware hooks.
+        if (Middleware.wordGuardEnabled(middleware) || Middleware.thinkTagsEnabled(middleware)) return null;
+        JSONObject before=new JSONObject(baseline.toString()), after=new JSONObject(current.toString());
+        for(String key:new String[]{"model","stream","max_tokens","max_completion_tokens"}) { before.remove(key); after.remove(key); }
+        if(!jsonEquivalent(before,after)) return null;
+        // A middleware may lower a limit, but must not remove or raise the client's limit.
+        int originalLimit=original.optInt("max_output_tokens",0);
+        int currentLimit=current.optInt("max_tokens",0), currentCompletion=current.optInt("max_completion_tokens",0);
+        if(currentCompletion>0 && (currentLimit<=0 || currentCompletion<currentLimit)) currentLimit=currentCompletion;
+        if(originalLimit>0 && (currentLimit<=0 || currentLimit>originalLimit)) return null;
+        JSONObject candidate=new JSONObject(original.toString());
+        candidate.put("model",model); candidate.put("stream",stream);
+        int limit=current.optInt("max_tokens",0), completion=current.optInt("max_completion_tokens",0);
+        if(completion>0 && (limit<=0 || completion<limit)) limit=completion;
+        if(limit>0) candidate.put("max_output_tokens",limit); else candidate.remove("max_output_tokens");
+        // Guard operates on max_tokens; retain native max_output_tokens in the measured body.
+        JSONObject guardInput=new JSONObject(candidate.toString());
+        if(limit>0) guardInput.put("max_tokens",limit);
+        ContextGuard.Result checked=ContextGuard.fit(guardInput,guard);
+        if(checked.error!=null || checked.budgetExceeded || checked.changed || !jsonEquivalent(guardInput,checked.payload)) return null;
+        return candidate;
+    }
+
+    private static Object unmaskJson(Object value, PrivacyMasker.Session mask) throws Exception {
+        if(value instanceof String) return PrivacyMasker.unmaskText((String)value,mask);
+        if(value instanceof JSONObject) {
+            JSONObject object=(JSONObject)value; java.util.Iterator<String> keys=object.keys();
+            while(keys.hasNext()) { String key=keys.next(); object.put(key,unmaskJson(object.opt(key),mask)); }
+        } else if(value instanceof JSONArray) {
+            JSONArray array=(JSONArray)value; for(int i=0;i<array.length();i++) array.put(i,unmaskJson(array.opt(i),mask));
+        }
+        return value;
+    }
+
+    /** Native SSE retains each event and all vendor fields, while validating terminal state. */
+    private Response nativeResponsesStream(final InputStream source, final PrivacyMasker.Session mask,
+                                           ContextGuard.Result guard, final HttpURLConnection conn) {
+        final UsageLedger.Row row=U_ROW.get(); final Long start=U_START.get(); final String clientModel=CLIENT_MODEL.get();
+        InputStream processed=new InputStream() {
+            final BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
+            final java.util.Map<String,StreamUnmask> deltas=new java.util.HashMap<String,StreamUnmask>();
+            byte[] bytes=new byte[0]; int offset=0; boolean ended=false,terminal=false; JSONObject lastResponse;
+            String failure(String message) throws Exception {
+                JSONObject r=lastResponse==null?new JSONObject().put("object","response").put("output",new JSONArray()):new JSONObject(lastResponse.toString());
+                r.put("status","failed").put("error",new JSONObject().put("code","upstream_stream_error").put("message",message));
+                unmaskJson(r,mask);
+                return "event: response.failed\ndata: "+new JSONObject().put("type","response.failed").put("response",r).toString()+"\n\n";
+            }
+            boolean fill() throws IOException {
+                while(offset>=bytes.length) {
+                    if(ended)return false;
+                    String result="";
+                    try {
+                        String line; StringBuilder data=new StringBuilder(); String eventName="";
+                        while((line=reader.readLine())!=null && !line.isEmpty()) {
+                            if(line.startsWith("data:")) { if(data.length()>0)data.append('\n'); data.append(line.substring(5).trim()); }
+                            else if(line.startsWith("event:")) eventName=line.substring(6).trim();
+                        }
+                        if(line==null && data.length()>0) throw new IOException("truncated SSE event");
+                        if(data.length()==0) {
+                            if(line==null) { ended=true; if(!terminal) result=failure("Responses stream ended before terminal event"); }
+                        } else if("[DONE]".equals(data.toString())) {
+                            ended=true; if(!terminal) result=failure("Responses stream ended before terminal event");
+                        } else {
+                            JSONObject event=new JSONObject(data.toString()); String type=event.optString("type",eventName);
+                            if(type.isEmpty())throw new IOException("missing event type");
+                            JSONObject response=event.optJSONObject("response");
+                            if(response!=null && clientModel!=null && response.has("model")) response.put("model",clientModel);
+                            if(response!=null) { lastResponse=response; JSONObject usage=response.optJSONObject("usage"); if(row!=null && usage!=null) absorbUsage(row,ResponsesBridge.chatUsage(usage)); }
+                            if("response.completed".equals(type) || "response.incomplete".equals(type) || "response.failed".equals(type) || "error".equals(type)) {
+                                if("response.completed".equals(type) || "response.incomplete".equals(type)) for(StreamUnmask u:deltas.values()) if(u.hasPending()) throw new IOException("unfinished output delta");
+                                if(("response.completed".equals(type) || "response.incomplete".equals(type)) && (response==null || !type.substring(9).equals(response.optString("status")))) throw new IOException("invalid terminal response status");
+                                terminal=true; ended=true;
+                                if(row!=null) { row.status=("response.failed".equals(type)||"error".equals(type))?502:200; row.ms=System.currentTimeMillis()-(start==null?System.currentTimeMillis():start.longValue()); try { UsageLedger.record(row); } catch(Throwable ignored) {} }
+                            }
+                            if(event.opt("delta") instanceof String) {
+                                String key=type+":"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
+                                StreamUnmask unmask=deltas.get(key); if(unmask==null) { unmask=new StreamUnmask(mask); deltas.put(key,unmask); }
+                                String delta=unmask.feed(event.getString("delta")); event.put("delta",delta);
+                            }
+                            unmaskJson(event,mask);
+                            if(type.endsWith(".done")) {
+                                String prefix=type.substring(0,type.length()-5)+".delta:"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
+                                StreamUnmask u=deltas.remove(prefix);
+                                if(u!=null && u.hasPending()) {
+                                    String tail=u.flush(); JSONObject extra=new JSONObject(event.toString()); extra.put("type",type.substring(0,type.length()-5)+".delta").put("delta",tail);
+                                    result="event: "+extra.optString("type")+"\ndata: "+extra.toString()+"\n\n";
+                                }
+                            }
+                            result+="event: "+type+"\ndata: "+event.toString()+"\n\n";
+                        }
+                    } catch(Exception ex) {
+                        ended=true; try { result=failure("Invalid or interrupted Responses stream"); } catch(Exception ignored) { throw new IOException(ex); }
+                        }
+                    if(ended && !terminal && row!=null) { row.status=502; try { UsageLedger.record(row); } catch(Throwable ignored) {} }
+                    if(!result.isEmpty()) { bytes=result.getBytes(java.nio.charset.StandardCharsets.UTF_8); offset=0; return true; }
+                } return true;
+            }
+            public int read() throws IOException {return fill()?bytes[offset++]&255:-1;}
+            public int read(byte[] b,int off,int len) throws IOException {if(len==0)return 0;if(!fill())return -1;int n=Math.min(len,bytes.length-offset);System.arraycopy(bytes,offset,b,off,n);offset+=n;return n;}
+            public void close() throws IOException {try {reader.close();} finally {if(conn!=null)conn.disconnect();}}
+        };
+        Response resp=newChunkedResponse(Status.OK,"text/event-stream; charset=UTF-8",processed);
+        addCorsHeaders(resp); applyGuardHeaders(resp,guard); return resp;
+    }
+
+    private Response codexNativeResponse(InputStream source, boolean stream, PrivacyMasker.Session mask,
+                                         ContextGuard.Result guard, HttpURLConnection conn) throws Exception {
+        if(stream) return nativeResponsesStream(source,mask,guard,conn);
+        BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
+        JSONObject result=null; String line;
+        while((line=reader.readLine())!=null) {
+            if(!line.startsWith("data:"))continue; String data=line.substring(5).trim();
+            if(data.isEmpty() || "[DONE]".equals(data))continue;
+            JSONObject event=new JSONObject(data); String type=event.optString("type");
+            if("response.failed".equals(type)||"error".equals(type))throw new IOException("Codex response failed");
+            if("response.completed".equals(type)||"response.incomplete".equals(type)) {
+                result=event.optJSONObject("response");
+                if(result==null || !type.substring(9).equals(result.optString("status")))throw new IOException("invalid Codex terminal response");
+                break;
+            }
+        }
+        reader.close(); if(conn!=null)conn.disconnect();
+        if(result==null)throw new IOException("Codex stream ended before completion");
+        UsageLedger.Row row=U_ROW.get(); if(row!=null && result.optJSONObject("usage")!=null) absorbUsage(row,ResponsesBridge.chatUsage(result.getJSONObject("usage")));
+        unmaskJson(result,mask);
+        if(CLIENT_MODEL.get()!=null && result.has("model")) result.put("model",CLIENT_MODEL.get());
+        Response resp=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",result.toString()); addCorsHeaders(resp); applyGuardHeaders(resp,guard); return resp;
+    }
+
+    private Attempt forwardNativeResponses(RouteTarget target, JSONObject request, boolean stream,
+                                           PrivacyMasker.Session mask, ContextGuard.Result guard,
+                                           ContextGuard.Config guardCfg) {
+        Attempt out=new Attempt(); HttpURLConnection conn=null;
+        try {
+            conn=(HttpURLConnection)new URL(target.baseUrl.replaceAll("/+$","")+"/responses").openConnection();
+            conn.setRequestMethod("POST"); conn.setDoOutput(true); conn.setConnectTimeout(guardCfg.connectTimeoutSeconds*1000); conn.setReadTimeout(guardCfg.requestTimeoutSeconds*1000);
+            conn.setRequestProperty("Authorization","Bearer "+target.apiKey); conn.setRequestProperty("Content-Type","application/json");
+            OutputStream output=conn.getOutputStream(); output.write(request.toString().getBytes("UTF-8")); output.close();
+            int code=conn.getResponseCode(); out.status=code;
+            if(code<200 || code>=300) { InputStream error=conn.getErrorStream(); out.body=error==null?"Responses upstream error":PrivacyMasker.unmaskText(drainText(error),mask); out.response=newFixedLengthResponse(Status.lookup(code)!=null?Status.lookup(code):Status.INTERNAL_ERROR,"application/json; charset=UTF-8",out.body); addCorsHeaders(out.response); conn.disconnect(); return out; }
+            InputStream in=conn.getInputStream();
+            if(stream) out.response=nativeResponsesStream(in,mask,guard,conn);
+            else {
+                JSONObject response=new JSONObject(drainText(in)); conn.disconnect();
+                if(!"completed".equals(response.optString("status")) && !"incomplete".equals(response.optString("status"))) throw new IOException("invalid Responses status");
+                UsageLedger.Row row=U_ROW.get(); if(row!=null && response.optJSONObject("usage")!=null) absorbUsage(row,ResponsesBridge.chatUsage(response.getJSONObject("usage")));
+                unmaskJson(response,mask); if(CLIENT_MODEL.get()!=null && response.has("model")) response.put("model",CLIENT_MODEL.get()); out.response=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",response.toString()); addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
+            }
+            out.ok=true; RESP_NATIVE_RESULT.set(Boolean.TRUE); return out;
+        } catch(Exception e) { if(conn!=null)conn.disconnect(); out.status=502; out.body="Responses upstream failed"; out.response=errorResponse(502,out.body); return out; }
+    }
+
     private Attempt forwardCodex(RouteTarget target, JSONObject payload, boolean clientWantsStream,
                                        String requestedModel, PrivacyMasker.Session maskSession,
                                        ContextGuard.Result guardResult) {
@@ -8090,7 +8304,11 @@ public class GatewayServer extends NanoHTTPD {
                 upstreamModel = upstreamModel.substring(upstreamModel.lastIndexOf('/') + 1);
             }
 
-            JSONObject respReq = CodexAuth.chatToResponses(payload, upstreamModel);
+            JSONObject respReq = RESP_NATIVE_CANDIDATE.get();
+            boolean nativeResponses = respReq != null;
+            if (nativeResponses) respReq = new JSONObject(respReq.toString()).put("model",upstreamModel);
+            else respReq = CodexAuth.chatToResponses(payload, upstreamModel);
+            if (RESP_REQUEST.get()!=null && RESP_REQUEST.get().optBoolean("store",false)) { out.ok=false; out.status=400; out.body="Codex does not support store=true"; out.response=errorResponse(400,out.body); return out; }
             respReq.put("stream", true);
             respReq.put("store", false);
             if (!respReq.has("instructions")) respReq.put("instructions", "");
@@ -8169,6 +8387,10 @@ public class GatewayServer extends NanoHTTPD {
             out.ok = true;
             out.status = 200;
 
+            if (nativeResponses) {
+                Response nativeResp=codexNativeResponse(is,clientWantsStream,maskSession,guardResult,conn);
+                RESP_NATIVE_RESULT.set(Boolean.TRUE); out.response=nativeResp; return out;
+            }
             if (clientWantsStream) {
                 InputStream openAiStream = convertResponsesToOpenAiStream(is, requestedModel);
                 out.response = wantsAnthropicOut()

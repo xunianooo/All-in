@@ -36,6 +36,7 @@ public final class GatewayMissingProviderOfflineTest {
                 .put("models", new JSONArray().put("configured-model"))
                 .put("keys", new JSONArray());
         set(gateway, "configJson", new JSONObject()
+                .put("setup",new JSONObject().put("done",true))
                 .put("server", new JSONObject().put("authKey", "secret"))
                 .put("providers", new JSONArray().put(provider))
                 .put("privacy", new JSONObject().put("enabled", false)));

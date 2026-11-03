@@ -13,6 +13,58 @@ final class ResponsesBridge {
             "model", "input", "instructions", "stream", "max_output_tokens", "temperature", "top_p",
             "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "store", "metadata", "include", "prompt_cache_key", "service_tier", "truncation"));
 
+    /** A conservative projection: native-only fields are never sent through Chat. */
+    static JSONObject projection(JSONObject request) throws Exception {
+        JSONObject copy = new JSONObject(request.toString());
+        if(copy.has("include") && !copy.isNull("include") && copy.optJSONArray("include")==null) throw new IllegalArgumentException("include must be an array");
+        JSONArray includes=copy.optJSONArray("include");
+        for(int i=0;includes!=null && i<includes.length();i++) if(!(includes.opt(i) instanceof String)) throw new IllegalArgumentException("include entries must be strings");
+        copy.remove("include");
+        if(copy.optBoolean("store",false)) copy.remove("store");
+        JSONObject reasoning=copy.optJSONObject("reasoning");
+        if(reasoning!=null && reasoning.has("summary")) {
+            Object summary=reasoning.opt("summary");
+            if(summary!=JSONObject.NULL && !(summary instanceof String)) throw new IllegalArgumentException("reasoning.summary must be a string");
+            reasoning.remove("summary");
+        }
+        JSONArray input=copy.optJSONArray("input");
+        if(input!=null) {
+            JSONArray projected=new JSONArray();
+            for(int i=0;i<input.length();i++) {
+                Object raw=input.get(i);
+                if(raw instanceof JSONObject) {
+                    JSONObject item=(JSONObject)raw;
+                    if("reasoning".equals(item.optString("type"))) {
+                        checkKeys(item,new String[]{"type","id","summary","content","encrypted_content","status"});
+                        if(item.has("encrypted_content") && !item.isNull("encrypted_content") && !(item.opt("encrypted_content") instanceof String)) throw new IllegalArgumentException("encrypted_content must be a string");
+                        continue;
+                    }
+                    JSONArray content=item.optJSONArray("content");
+                    if(content!=null) {
+                        JSONArray parts=new JSONArray();
+                        for(int j=0;j<content.length();j++) {
+                            Object part=content.get(j);
+                            if(part instanceof JSONObject && "refusal".equals(((JSONObject)part).optString("type"))) {
+                                JSONObject refusal=(JSONObject)part; checkKeys(refusal,new String[]{"type","refusal"});
+                                if(!(refusal.opt("refusal") instanceof String)) throw new IllegalArgumentException("refusal must be a string");
+                                continue;
+                            }
+                            parts.put(part);
+                        }
+                        item.put("content",parts);
+                    }
+                }
+                projected.put(raw);
+            }
+            copy.put("input",projected);
+        }
+        return toChat(copy);
+    }
+
+    static String nativeOnlyReason(JSONObject request) {
+        try { toChat(request); return null; } catch (Exception e) { return e.getMessage(); }
+    }
+
     static JSONObject toChat(JSONObject request) throws Exception {
         for (Iterator<String> keys = request.keys(); keys.hasNext();) {
             String key = keys.next();
@@ -71,8 +123,7 @@ final class ResponsesBridge {
                     if (!(rawSummary instanceof JSONArray)) throw new IllegalArgumentException("reasoning summary must be an array");
                     JSONArray summary=(JSONArray)rawSummary; StringBuilder thought=new StringBuilder();
                     for(int j=0;j<summary.length();j++) { JSONObject part=summary.optJSONObject(j); if(part==null || !(part.opt("text") instanceof String) || !("summary_text".equals(part.optString("type")) || "reasoning_text".equals(part.optString("type")))) throw new IllegalArgumentException("Unsupported reasoning part"); checkKeys(part,new String[]{"type","text"}); thought.append(part.getString("text")); }
-                    if(thought.length()>0) messages.put(new JSONObject().put("role","assistant").put("content","[Reasoning summary]\n"+thought.toString()));
-                    continue;
+                    throw new IllegalArgumentException("reasoning input cannot be represented by Chat");
                 }
                 checkKeys(item, "message".equals(type) ? new String[]{"type", "role", "content", "id", "status"} : "function_call".equals(type) ? new String[]{"type", "id", "call_id", "name", "arguments", "status"} : new String[]{"type", "id", "call_id", "output", "status"});
                 if ("message".equals(type)) {
@@ -128,6 +179,7 @@ final class ResponsesBridge {
             JSONObject p = parts.optJSONObject(i);
             if (p == null) throw new IllegalArgumentException("content part must be an object");
             String type = p.optString("type");
+            if ("refusal".equals(type)) throw new IllegalArgumentException("refusal input cannot be represented by Chat");
             checkKeys(p, "input_image".equals(type) ? new String[]{"type", "image_url", "detail"} : new String[]{"type", "text", "annotations"});
             if (p.has("annotations") && p.optJSONArray("annotations") != null && p.optJSONArray("annotations").length() > 0) throw new IllegalArgumentException("text annotations are not supported");
             if ("input_text".equals(type) || "output_text".equals(type)) {
@@ -157,6 +209,8 @@ final class ResponsesBridge {
     static JSONObject chatToResponses(JSONObject chat, String model) throws Exception {
         JSONObject out = new JSONObject().put("model", model);
         copy(chat, out, "stream", "stream"); copy(chat, out, "max_tokens", "max_output_tokens");
+        int completion=chat.optInt("max_completion_tokens",0), max=chat.optInt("max_tokens",0);
+        if(completion>0 && (max<=0 || completion<max)) out.put("max_output_tokens",completion);
         copy(chat, out, "temperature", "temperature"); copy(chat, out, "top_p", "top_p");
         copy(chat, out, "parallel_tool_calls", "parallel_tool_calls");
         copy(chat, out, "metadata", "metadata"); copy(chat, out, "prompt_cache_key", "prompt_cache_key"); copy(chat, out, "service_tier", "service_tier");
@@ -227,6 +281,7 @@ final class ResponsesBridge {
             for(int i=0;i<parts.length();i++) { JSONObject p=parts.getJSONObject(i); if (!"text".equals(p.optString("type"))) throw new IllegalArgumentException("Unsupported response content"); b.append(p.optString("text")); }
             if (b.length()>0) output.put(messageItem(b.toString()));
         }
+        else if (content != null && content != JSONObject.NULL) throw new IllegalArgumentException("Unsupported response content");
         JSONArray calls=msg.optJSONArray("tool_calls");
         for(int i=0;calls!=null && i<calls.length();i++) { JSONObject c=calls.getJSONObject(i), fn=c.getJSONObject("function"); output.put(functionItem(c.optString("id"),fn.optString("name"),fn.optString("arguments"))); }
         if (msg.has("refusal") && !msg.isNull("refusal")) {
@@ -294,7 +349,7 @@ final class ResponsesBridge {
                 event("response.refusal.delta",new JSONObject().put("item_id",item.getString("id")).put("output_index",refusalIndex).put("content_index",0).put("delta",value));
             }
             void chunk(JSONObject chunk) throws Exception {
-                if(chunk.has("error")) throw new java.io.IOException("upstream error: "+chunk.opt("error"));
+                if(chunk.has("error")) throw new java.io.IOException("upstream stream error");
                 if(chunk.optJSONObject("usage")!=null) usage=responsesUsage(chunk.getJSONObject("usage"));
                 JSONArray choices=chunk.optJSONArray("choices"); if(choices==null || choices.length()==0)return;
                 if(choices.length()!=1) throw new java.io.IOException("multiple choices unsupported");
@@ -378,7 +433,7 @@ final class ResponsesBridge {
                             if("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) { delta.put("content",event.optString("delta")); result=chunk(delta,null,null); }
                             else if("response.refusal.delta".equals(type)) { delta.put("refusal",event.optString("delta")); result=chunk(delta,null,null); }
                             else if("response.reasoning_summary_text.delta".equals(type) || "response.reasoning_text.delta".equals(type)) { delta.put("reasoning_content",event.optString("delta")); result=chunk(delta,null,null); }
-                            else if("response.output_item.added".equals(type)) { JSONObject item=event.optJSONObject("item"); if(item!=null && "function_call".equals(item.optString("type"))) { int outputIndex=event.optInt("output_index"), idx=calls.size(); calls.put(outputIndex,idx); JSONObject fn=new JSONObject().put("name",item.optString("name")).put("arguments",item.optString("arguments","")); JSONObject call=new JSONObject().put("index",idx).put("id",item.optString("call_id")).put("type","function").put("function",fn); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); } }
+                            else if("response.output_item.added".equals(type)) { JSONObject item=event.optJSONObject("item"); if(item!=null && "function_call".equals(item.optString("type"))) { int outputIndex=event.optInt("output_index"), idx=calls.size(); calls.put(outputIndex,idx); JSONObject fn=new JSONObject().put("name",item.optString("name")).put("arguments",item.optString("arguments","")); JSONObject call=new JSONObject().put("index",idx).put("id",item.optString("call_id")).put("type","function").put("function",fn); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); } else if(item!=null && !"message".equals(item.optString("type")) && !"reasoning".equals(item.optString("type"))) throw new java.io.IOException("Unsupported output item"); }
                             else if("response.function_call_arguments.delta".equals(type)) { Integer idx=calls.get(event.optInt("output_index")); if(idx==null)throw new java.io.IOException("function arguments before item"); JSONObject call=new JSONObject().put("index",idx).put("function",new JSONObject().put("arguments",event.optString("delta"))); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); }
                             else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); JSONObject u=r==null?null:r.optJSONObject("usage"); JSONObject details=r==null?null:r.optJSONObject("incomplete_details"); String reason="response.incomplete".equals(type)?(details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"):calls.isEmpty()?"stop":"tool_calls"; result=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
                             else if("response.failed".equals(type)||"error".equals(type)) { result="data: "+new JSONObject().put("error",event.opt("error") == null ? event : event.opt("error")).toString()+"\n\n"; ended=true; }
