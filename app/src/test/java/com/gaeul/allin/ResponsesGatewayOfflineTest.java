@@ -22,22 +22,24 @@ public final class ResponsesGatewayOfflineTest {
         set(g,"configJson",new JSONObject().put("setup",new JSONObject().put("done",true)).put("server",new JSONObject().put("authKey","secret")).put("providers",new JSONArray().put(p)).put("privacy",new JSONObject().put("enabled",false)).put("guard",new JSONObject().put("enabled",true).put("maxOutputTokens",12)));
         return g;
     }
-    static NanoHTTPD.IHTTPSession session(String body,String key) throws Exception {
+    static NanoHTTPD.IHTTPSession session(String body,String key) throws Exception { return session(body,key,"/v1/responses"); }
+    static NanoHTTPD.IHTTPSession session(String body,String key,final String uri) throws Exception {
         final byte[] bytes=body.getBytes(StandardCharsets.UTF_8); final InputStream in=new ByteArrayInputStream(bytes); final Map<String,String> headers=new HashMap<String,String>();
         headers.put("content-length",String.valueOf(bytes.length));headers.put("content-type","application/json");if(key!=null)headers.put("authorization","Bearer "+key);
         return (NanoHTTPD.IHTTPSession)java.lang.reflect.Proxy.newProxyInstance(ResponsesGatewayOfflineTest.class.getClassLoader(),new Class[]{NanoHTTPD.IHTTPSession.class},(p,m,a)->{
-            switch(m.getName()) {case "getUri":return "/v1/responses";case "getMethod":return NanoHTTPD.Method.POST;case "getHeaders":return headers;case "getInputStream":return in;case "getRemoteIpAddress":return "192.0.2.1";case "getParameters":return Collections.emptyMap();case "getParms":return Collections.emptyMap();default:return null;}
+            switch(m.getName()) {case "getUri":return uri;case "getMethod":return NanoHTTPD.Method.POST;case "getHeaders":return headers;case "getInputStream":return in;case "getRemoteIpAddress":return "192.0.2.1";case "getParameters":return Collections.emptyMap();case "getParms":return Collections.emptyMap();default:return null;}
         });
     }
     static final class Mock implements AutoCloseable {
         ServerSocket server=new ServerSocket(0); Thread worker; volatile JSONObject received; volatile Throwable error; volatile String requestLine;
-        Mock(String body,boolean stream) throws Exception {
+        Mock(String body,boolean stream) throws Exception { this(body,stream,200); }
+        Mock(String body,boolean stream,int status) throws Exception {
             worker=new Thread(()->{try(Socket s=server.accept()) {
                 InputStream in=s.getInputStream(); ByteArrayOutputStream headers=new ByteArrayOutputStream(); int state=0,c;
                 while((c=in.read())!=-1) {headers.write(c);state=(state==0&&c=='\r')?1:(state==1&&c=='\n')?2:(state==2&&c=='\r')?3:(state==3&&c=='\n')?4:0;if(state==4)break;}
                 String h=new String(headers.toByteArray(),StandardCharsets.US_ASCII); requestLine=h.split("\\r\\n")[0]; int len=0;for(String line:h.split("\\r\\n"))if(line.toLowerCase().startsWith("content-length:"))len=Integer.parseInt(line.substring(line.indexOf(':')+1).trim());
                 byte[] b=new byte[len];int n=0;while(n<len){int x=in.read(b,n,len-n);if(x<0)throw new IOException("truncated request");n+=x;} received=new JSONObject(new String(b,StandardCharsets.UTF_8));
-                byte[] response=body.getBytes(StandardCharsets.UTF_8);OutputStream out=s.getOutputStream();out.write(("HTTP/1.1 200 OK\r\nContent-Type: "+(stream?"text/event-stream":"application/json")+"\r\nContent-Length: "+response.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(response);out.flush();
+                byte[] response=body.getBytes(StandardCharsets.UTF_8);OutputStream out=s.getOutputStream();out.write(("HTTP/1.1 "+status+" "+(status==200?"OK":"Bad Request")+"\r\nContent-Type: "+(stream?"text/event-stream":"application/json")+"\r\nContent-Length: "+response.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(response);out.flush();
             }catch(Throwable e){error=e;}});worker.start();
         }
         public void close() throws Exception {worker.join(5000);server.close();if(error!=null)throw new AssertionError(error);check(!worker.isAlive(),"mock timed out");}
@@ -93,6 +95,81 @@ public final class ResponsesGatewayOfflineTest {
         String split="event: response.output_text.delta\ndata: "+new JSONObject().put("type","response.output_text.delta").put("item_id","a").put("output_index",0).put("content_index",0).put("delta",first)+"\n\nevent: response.output_text.delta\ndata: "+new JSONObject().put("type","response.output_text.delta").put("item_id","a").put("output_index",0).put("content_index",0).put("delta",second)+"\n\nevent: response.output_text.done\ndata: "+new JSONObject().put("type","response.output_text.done").put("item_id","a").put("output_index",0).put("content_index",0).put("text",placeholder)+"\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n";
         try(Mock mock=new Mock(split,true)) { GatewayServer g=gateway(mock.server.getLocalPort(),"responses");config(g).put("privacy",new JSONObject().put("enabled",true));NanoHTTPD.Response r=g.serve(session(simple.replace("hello",plain).replace("\"input\":","\"stream\":true,\"input\":"),"secret"));String body=read(r.getData());check(body.contains(plain) && !body.contains(placeholder) && body.contains("response.completed"),"split placeholder SSE "+body); }
     }
+    static final class CopilotMock implements AutoCloseable {
+        ServerSocket server=new ServerSocket(0); Thread worker; volatile Throwable error; volatile JSONObject request; volatile String first, second, secondHeaders;
+        CopilotMock(String response) throws Exception {
+            worker=new Thread(()->{try {
+                for(int i=0;i<2;i++) try(Socket socket=server.accept()) {
+                    InputStream in=socket.getInputStream();ByteArrayOutputStream raw=new ByteArrayOutputStream();int state=0,c;
+                    while((c=in.read())!=-1) {raw.write(c);state=(state==0&&c=='\r')?1:(state==1&&c=='\n')?2:(state==2&&c=='\r')?3:(state==3&&c=='\n')?4:0;if(state==4)break;}
+                    String headers=new String(raw.toByteArray(),StandardCharsets.US_ASCII);String path=headers.split("\\r\\n")[0]; int len=0;
+                    for(String line:headers.split("\\r\\n")) if(line.toLowerCase().startsWith("content-length:"))len=Integer.parseInt(line.substring(line.indexOf(':')+1).trim());
+                    byte[] bytes=new byte[len]; int n=0;while(n<len) {int count=in.read(bytes,n,len-n);if(count<0)throw new IOException("truncated");n+=count;}
+                    String body;if(i==0) {first=path; body="{\"error\":{\"code\":\"unsupported_api_for_model\"}}";} else {second=path;secondHeaders=headers;request=new JSONObject(new String(bytes,StandardCharsets.UTF_8));body=response;}
+                    byte[] result=body.getBytes(StandardCharsets.UTF_8);OutputStream out=socket.getOutputStream();out.write(("HTTP/1.1 "+(i==0?"400 Bad Request":"200 OK")+"\r\nContent-Type: application/json\r\nContent-Length: "+result.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(result);out.flush();
+                }
+            }catch(Throwable e){error=e;}});worker.start();
+        }
+        public void close() throws Exception {worker.join(5000);server.close();if(error!=null)throw new AssertionError(error);check(!worker.isAlive(),"Copilot mock timed out");}
+    }
+    static void crossProtocolCases() throws Exception {
+        String reply="{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"think\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":3,\"total_tokens\":7}}";
+        String chat="{\"model\":\"mock/m\",\"messages\":[{\"role\":\"system\",\"content\":\"rules\"},{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":100}";
+        String anth="{\"model\":\"mock/m\",\"system\":\"rules\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":100}";
+        String stream="event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"\"}}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{}\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":3,\"total_tokens\":7}}}\n\n";
+        for(boolean anthropic:new boolean[]{false,true}) for(boolean streaming:new boolean[]{false,true}) {
+            try(Mock mock=new Mock(streaming?stream:reply,streaming)) {
+                GatewayServer g=gateway(mock.server.getLocalPort(),"responses");
+                String request=anthropic?anth:chat; if(streaming)request=request.replace("\"max_tokens\":100","\"stream\":true,\"max_tokens\":100");
+                NanoHTTPD.Response r=g.serve(session(request,"secret",anthropic?"/v1/messages":"/v1/chat/completions")); String body=read(r.getData());
+                check(r.getStatus().getRequestStatus()==200,"cross status "+body);
+                check(mock.requestLine.startsWith("POST /v1/responses ") && mock.received.optInt("max_output_tokens")==12 && mock.received.optString("instructions").contains("rules") && mock.received.getJSONArray("input").length()>0,"cross request "+mock.received);
+                if(streaming) check(body.contains(anthropic?"message_start":"chat.completion.chunk") && body.contains(anthropic?"message_stop":"[DONE]") && body.contains("hello") && body.contains(anthropic?"tool_use":"tool_calls"),"cross stream "+body);
+                else { JSONObject parsed=new JSONObject(body); check(body.contains("hello") && body.contains("think") && body.contains(anthropic?"tool_use":"tool_calls") && body.contains(anthropic?"output_tokens":"completion_tokens"),"cross JSON "+body); check(anthropic?"message".equals(parsed.optString("type")):"chat.completion".equals(parsed.optString("object")),"cross type"); }
+            }
+        }
+        try(Mock mock=new Mock(reply,false)) {
+            GatewayServer g=gateway(mock.server.getLocalPort(),"openai");config(g).getJSONArray("providers").getJSONObject(0).put("id","github-copilot");
+            String nativeRequest="{\"model\":\"github-copilot/m\",\"input\":\"hi\",\"reasoning\":{\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"]}";
+            NanoHTTPD.Response r=g.serve(session(nativeRequest,"secret"));String body=read(r.getData());
+            check(r.getStatus().getRequestStatus()==200 && mock.requestLine.startsWith("POST /v1/responses ") && mock.received.getJSONObject("reasoning").getString("summary").equals("auto") && body.contains("response"),"Copilot native route "+body);
+        }
+        try(CopilotMock mock=new CopilotMock(reply)) {
+            GatewayServer g=gateway(mock.server.getLocalPort(),"openai");
+            config(g).getJSONArray("providers").getJSONObject(0).put("id","github-copilot");
+            NanoHTTPD.Response r=g.serve(session(chat.replace("mock/m","github-copilot/m"),"secret","/v1/chat/completions"));String body=read(r.getData());
+            check(r.getStatus().getRequestStatus()==200 && body.contains("hello") && mock.first.startsWith("POST /v1/chat/completions ") && mock.second.startsWith("POST /v1/responses ") && mock.request.optInt("max_output_tokens")==12 && mock.secondHeaders.toLowerCase().contains("authorization: bearer test-key"),"Copilot fallback "+body);
+        }
+        GatewayServer unsupported=gateway(1,"responses");
+        NanoHTTPD.Response unsupportedResponse=unsupported.serve(session(chat.replace("\"max_tokens\":100","\"stop\":[\"END\"],\"max_tokens\":100"),"secret","/v1/chat/completions"));
+        check(unsupportedResponse.getStatus().getRequestStatus()==400 && read(unsupportedResponse.getData()).contains("stop"),"unsupported Chat field rejected");
+        NanoHTTPD.Response unsupportedAnth=unsupported.serve(session(anth.replace("\"max_tokens\":100","\"stop_sequences\":[\"END\"],\"max_tokens\":100"),"secret","/v1/messages"));
+        check(unsupportedAnth.getStatus().getRequestStatus()==400 && read(unsupportedAnth.getData()).contains("stop_sequences"),"unsupported Anthropic field rejected");
+        String refusalReply="{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"No thanks\"}]}]}";
+        try(Mock mock=new Mock(refusalReply,false)) {
+            NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"responses").serve(session(anth,"secret","/v1/messages"));String body=read(r.getData());check(body.contains("No thanks") && body.contains("refusal"),"Anthropic refusal "+body);
+        }
+        String refusalEvents="data: {\"type\":\"response.refusal.delta\",\"delta\":\"No thanks\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n";
+        try(Mock mock=new Mock(refusalEvents,true)) {
+            NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"responses").serve(session(anth.replace("\"max_tokens\":100","\"stream\":true,\"max_tokens\":100"),"secret","/v1/messages"));String body=read(r.getData());check(body.contains("No thanks") && body.contains("refusal") && body.contains("message_stop"),"Anthropic stream refusal "+body);
+        }
+        try(Mock mock=new Mock("bad test-key",false,400)) {
+            NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"responses").serve(session(chat,"secret","/v1/chat/completions")); String body=read(r.getData());
+            check(r.getStatus().getRequestStatus()==400 && new JSONObject(body).getJSONObject("error").getString("type").equals("gateway_error") && !body.contains("test-key"),"safe translated error "+body);
+        }
+        try(Mock mock=new Mock("bad test-key",false,400)) {
+            NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"responses").serve(session("{\"model\":\"mock/m\",\"input\":\"hi\"}","secret"));String body=read(r.getData());
+            check(r.getStatus().getRequestStatus()==400 && new JSONObject(body).getJSONObject("error").getString("type").equals("gateway_error") && !body.contains("test-key"),"safe native error "+body);
+        }
+        try(Mock mock=new Mock("event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":7,\"response\":{\"status\":\"in_progress\"}}\n\n",true)) {
+            NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"responses").serve(session("{\"model\":\"mock/m\",\"input\":\"hi\",\"stream\":true}","secret"));String body=read(r.getData());
+            check(body.contains("response.failed") && body.contains("\"sequence_number\":8"),"failed sequence "+body);
+        }
+        try(Mock mock=new Mock("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",true)) {
+            NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"responses").serve(session(chat.replace("\"max_tokens\":100","\"stream\":true,\"max_tokens\":100"),"secret","/v1/chat/completions"));String body=read(r.getData());
+            check(body.contains("error") && !body.contains("[DONE]"),"translated truncated stream "+body);
+        }
+    }
     public static void main(String[] args) throws Exception {
         UsageLedger.init(java.nio.file.Files.createTempDirectory("allin-responses-ledger").toFile());
         String request="{\"model\":\"mock/m\",\"input\":\"hello\",\"max_output_tokens\":100}";
@@ -110,10 +187,10 @@ public final class ResponsesGatewayOfflineTest {
         try(Mock mock=new Mock(anthStream,true)) { NanoHTTPD.Response r=gateway(mock.server.getLocalPort(),"anthropic").serve(session("{\"model\":\"mock/m\",\"input\":\"x\",\"stream\":true}","secret"));String result=read(r.getData());check(result.contains("response.output_text.delta")&&result.contains("hey")&&result.contains("response.completed")&&result.contains("output_tokens\":3"),"Anthropic stream "+result); }
         JSONObject codexReply=ResponsesBridge.responsesResponseToChat(new JSONObject("{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"text\":\"think\"}]},{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"f\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":3}}"),"m");check(codexReply.toString().contains("reasoning_content")&&codexReply.toString().contains("tool_calls")&&codexReply.getJSONObject("usage").getInt("prompt_tokens")==4,"Codex JSON");
         String failed=read(ResponsesBridge.chatStreamToResponses(new ByteArrayInputStream("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".getBytes(StandardCharsets.UTF_8)),"m"));check(failed.contains("response.failed")&&!failed.contains("response.completed"),"truncated stream");
-        String codex="data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call3\",\"name\":\"f\",\"arguments\":\"\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":3,\"total_tokens\":7}}}\n\n";
+        String codex="data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call3\",\"name\":\"f\",\"arguments\":\"\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":3,\"total_tokens\":7}}}\n\n";
         String converted=read(ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(codex.getBytes(StandardCharsets.UTF_8)),"m"));check(converted.contains("tool_calls")&&converted.contains("call3")&&converted.contains("total_tokens\":7")&&converted.contains("[DONE]"),"Codex stream "+converted);
         JSONObject back=ResponsesBridge.chatToResponses(ResponsesBridge.toChat(new JSONObject("{\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,eA==\"}]},{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"f\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"c\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{}}]}")),"m");check(back.toString().contains("input_image")&&back.toString().contains("function_call_output")&&back.getJSONArray("tools").getJSONObject(0).optString("name").equals("f"),"Codex request "+back);
-        nativeCases();
+        nativeCases(); crossProtocolCases();
         System.out.println("ResponsesGatewayOfflineTest OK");
     }
 }

@@ -396,6 +396,10 @@ final class AnthropicBridge {
                         t.put("text", text);
                         content.put(t);
                     }
+                    if (msg.opt("refusal") instanceof String && !msg.optString("refusal").isEmpty()) {
+                        JSONObject refusalText = new JSONObject(); refusalText.put("type", "text"); refusalText.put("text", msg.getString("refusal")); content.put(refusalText);
+                        if ("stop".equals(finish)) finish = "content_filter";
+                    }
                     JSONArray calls = msg.optJSONArray("tool_calls");
                     for (int i = 0; calls != null && i < calls.length(); i++) {
                         JSONObject call = calls.optJSONObject(i);
@@ -590,7 +594,7 @@ final class AnthropicBridge {
                     if (choice != null) {
                         JSONObject delta = choice.optJSONObject("delta");
                         String fr = choice.optString("finish_reason", "");
-                        if (fr != null && !fr.isEmpty() && !"null".equals(fr)) finish = fr;
+                        if (fr != null && !fr.isEmpty() && !"null".equals(fr) && !("content_filter".equals(finish) && "stop".equals(fr))) finish = fr;
 
                         if (delta != null) {
                             // 注意：Android 自带的 org.json 对 JSONObject.NULL 调 optString 会返回字符串
@@ -609,6 +613,9 @@ final class AnthropicBridge {
                             if (!text.isEmpty()) {
                                 hasContent = true;
                                 outs.addAll(textDelta(text));
+                            }
+                            if (delta.opt("refusal") instanceof String && !delta.optString("refusal").isEmpty()) {
+                                hasContent = true; finish = "content_filter"; outs.addAll(textDelta(delta.optString("refusal")));
                             }
                             JSONArray calls = delta.optJSONArray("tool_calls");
                             for (int i = 0; calls != null && i < calls.length(); i++) {

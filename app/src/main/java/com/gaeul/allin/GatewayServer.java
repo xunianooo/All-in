@@ -4653,12 +4653,19 @@ public class GatewayServer extends NanoHTTPD {
             private final OpenAiUnmask unmask = new OpenAiUnmask(maskSession);
             private boolean emittedTerminalError = false;
 
+            private void recordUsage() {
+                if (uRow == null || uCommitted[0]) return;
+                uCommitted[0]=true; uRow.ms=System.currentTimeMillis()-uStart; uRow.status=sawError?502:200;
+                if(uFirst[0]>0) { uRow.ttft=uFirst[0]-uStart; if(uLast[0]>=uFirst[0]) { uRow.decMs=uLast[0]-uFirst[0]; uRow.decOut=uRow.out; } }
+                try { UsageLedger.record(uRow); } catch(Throwable ignored) {}
+            }
+
             @Override
             public int read() throws IOException {
                 if (currentChunkIs != null && currentChunkIs.available() > 0) {
                     return currentChunkIs.read();
                 }
-                if (emittedTerminalError) return -1;
+                if (emittedTerminalError) { recordUsage(); return -1; }
                 String line;
                 try { line = reader.readLine(); }
                 catch (IOException e) {
@@ -4674,24 +4681,7 @@ public class GatewayServer extends NanoHTTPD {
                         currentChunkIs = new ByteArrayInputStream(openAiStreamError("Upstream stream ended before a finish reason").getBytes("UTF-8"));
                         return currentChunkIs.read();
                     }
-                    if (uRow != null && !uCommitted[0]) {
-                        uCommitted[0] = true;
-                        uRow.ms = System.currentTimeMillis() - uStart;
-                        uRow.status = sawError ? 502 : 200;
-                        if (uFirst[0] > 0) {
-                            uRow.ttft = uFirst[0] - uStart;
-                            if (uLast[0] >= uFirst[0]) {
-                                uRow.decMs = uLast[0] - uFirst[0];
-                                uRow.decOut = uRow.out;
-                            }
-                        }
-                        try {
-                            UsageLedger.record(uRow);
-                        } catch (Throwable ignored) {
-                        }
-                        U_DONE.set(Boolean.TRUE);
-                        U_ROW.remove();
-                    }
+                    recordUsage();
                     // 上游结束：把 think-tags 状态机里挂着的尾巴吐出来，避免吞字
                     if (!flushedTail) {
                         flushedTail = true;
@@ -4714,11 +4704,11 @@ public class GatewayServer extends NanoHTTPD {
                             currentChunkIs = new ByteArrayInputStream(openAiStreamError("Upstream stream ended before a finish reason").getBytes("UTF-8"));
                             return currentChunkIs.read();
                         }
-                        sawDone = true;
+                        sawDone = true; recordUsage();
                     } else if (!eventData.isEmpty()) {
                         try {
                             JSONObject event = new JSONObject(eventData);
-                            if (event.has("error")) sawError = true;
+                            if (event.has("error")) { sawError = true; recordUsage(); }
                             JSONArray choices = event.optJSONArray("choices");
                             for (int i = 0; choices != null && i < choices.length(); i++) {
                                 JSONObject choice = choices.optJSONObject(i);
@@ -5414,7 +5404,8 @@ public class GatewayServer extends NanoHTTPD {
             JSONObject responseOriginal=RESP_REQUEST.get();
             if (responseOriginal!=null) {
                 if ("codex".equals(target.providerId) && responseOriginal.optBoolean("store",false)) { out.status=400; out.body="Codex does not support store=true"; out.response=errorResponse(400,out.body); return out; }
-                boolean nativeTarget="codex".equals(target.providerId) || "responses".equalsIgnoreCase(target.protocol);
+                boolean copilotResponses="github-copilot".equals(target.providerId);
+                boolean nativeTarget="codex".equals(target.providerId) || "responses".equalsIgnoreCase(target.protocol) || copilotResponses;
                 JSONObject candidate=nativeTarget ? nativeResponsesRequest(responseOriginal,RESP_BASELINE.get(),payload,target.upstreamModel,clientWantsStream,guardCfg,configJson.optJSONObject("middleware")) : null;
                 if(candidate!=null && "codex".equals(target.providerId)) {
                     JSONObject codexCandidate=new JSONObject(candidate.toString()); codexCandidate.put("stream",true).put("store",false);
@@ -5425,7 +5416,7 @@ public class GatewayServer extends NanoHTTPD {
                     if(check.error!=null || check.budgetExceeded || check.changed || !jsonEquivalent(checkBody,check.payload)) candidate=null;
                     else candidate=codexCandidate;
                 }
-                if (candidate != null && "responses".equalsIgnoreCase(target.protocol) && !"codex".equals(target.providerId)) {
+                if (candidate != null && ("responses".equalsIgnoreCase(target.protocol) || copilotResponses) && !"codex".equals(target.providerId)) {
                     Attempt nativeAttempt=forwardNativeResponses(target,candidate,clientWantsStream,maskSession,guardResult,guardCfg);
                     if(nativeAttempt.ok && clientWantsStream) handedOff=true;
                     return adopt(out,nativeAttempt);
@@ -5455,6 +5446,19 @@ public class GatewayServer extends NanoHTTPD {
                         return adopt(out,nativeAttempt);
                     }
                 }
+            }
+            if (responseOriginal==null && "responses".equalsIgnoreCase(target.protocol) && !"codex".equals(target.providerId)) {
+                try {
+                    if(wantsAnthropicOut()) validateAnthropicResponsesInput(NATIVE_REQUEST.get());
+                    JSONObject converted=ResponsesBridge.chatToResponses(payload,target.upstreamModel);
+                    converted.put("stream",clientWantsStream);
+                    if(!responsesGuardAccepted(converted,guardCfg)) {
+                        out.status=400; out.body="Converted Responses payload exceeds guard"; out.response=errorResponse(400,out.body); return out;
+                    }
+                    Attempt translated=forwardTranslatedResponses(target,converted,clientWantsStream,requestedModel,maskSession,guardResult,guardCfg);
+                    if(translated.ok && clientWantsStream) handedOff=true;
+                    return adopt(out,translated);
+                } catch(IllegalArgumentException e) { out.status=400;out.body="Cannot convert Chat to Responses: "+e.getMessage();out.response=errorResponse(400,out.body);return out; }
             }
             if ("deepseek-web".equals(target.protocol)) {
                 // A configured output cap cannot be enforced by the website, even if
@@ -5648,6 +5652,25 @@ public class GatewayServer extends NanoHTTPD {
                             errBody = ew.toString();
                         }
                     } catch (Throwable ignored) {}
+                }
+                if ("github-copilot".equals(target.providerId) && errBody.contains("unsupported_api_for_model")) {
+                    if(RESP_REQUEST.get()!=null && ResponsesBridge.nativeOnlyReason(RESP_REQUEST.get())!=null) { out.status=400; out.body="Responses-only fields cannot be recovered after Chat conversion"; out.response=errorResponse(400,out.body); return out; }
+                    try {
+                        if(wantsAnthropicOut()) validateAnthropicResponsesInput(NATIVE_REQUEST.get());
+                        JSONObject original=RESP_REQUEST.get();
+                        JSONObject direct=original==null?null:nativeResponsesRequest(original,RESP_BASELINE.get(),payload,target.upstreamModel,clientWantsStream,guardCfg,configJson.optJSONObject("middleware"));
+                        if(direct!=null) {
+                            Attempt retried=forwardNativeResponses(target,direct,clientWantsStream,maskSession,guardResult,guardCfg);
+                            if(retried.ok && clientWantsStream) handedOff=true;
+                            return adopt(out,retried);
+                        }
+                        JSONObject converted=ResponsesBridge.chatToResponses(payload,target.upstreamModel);
+                        converted.put("stream",clientWantsStream);
+                        if(!responsesGuardAccepted(converted,guardCfg)) { out.status=400;out.body="Converted Responses payload exceeds guard";out.response=errorResponse(400,out.body);return out; }
+                        Attempt retried=forwardTranslatedResponses(target,converted,clientWantsStream,requestedModel,maskSession,guardResult,guardCfg);
+                        if(retried.ok && clientWantsStream) handedOff=true;
+                        return adopt(out,retried);
+                    } catch(IllegalArgumentException unsupported) { out.status=400;out.body="Cannot convert Chat to Responses: "+unsupported.getMessage();out.response=errorResponse(400,out.body);return out; }
                 }
                 out.ok = false;
                 out.body = errBody;
@@ -8145,12 +8168,14 @@ public class GatewayServer extends NanoHTTPD {
         InputStream processed=new InputStream() {
             final BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
             final java.util.Map<String,StreamUnmask> deltas=new java.util.HashMap<String,StreamUnmask>();
-            byte[] bytes=new byte[0]; int offset=0; boolean ended=false,terminal=false; JSONObject lastResponse;
+            byte[] bytes=new byte[0]; int offset=0; boolean ended=false,terminal=false; long lastSequence=-1; JSONObject lastResponse;
             String failure(String message) throws Exception {
                 JSONObject r=lastResponse==null?new JSONObject().put("object","response").put("output",new JSONArray()):new JSONObject(lastResponse.toString());
                 r.put("status","failed").put("error",new JSONObject().put("code","upstream_stream_error").put("message",message));
                 unmaskJson(r,mask);
-                return "event: response.failed\ndata: "+new JSONObject().put("type","response.failed").put("response",r).toString()+"\n\n";
+                JSONObject failed=new JSONObject().put("type","response.failed").put("response",r);
+                if(lastSequence>=0) failed.put("sequence_number",lastSequence+1);
+                return "event: response.failed\ndata: "+failed.toString()+"\n\n";
             }
             boolean fill() throws IOException {
                 while(offset>=bytes.length) {
@@ -8170,10 +8195,12 @@ public class GatewayServer extends NanoHTTPD {
                         } else {
                             JSONObject event=new JSONObject(data.toString()); String type=event.optString("type",eventName);
                             if(type.isEmpty())throw new IOException("missing event type");
+                            if(event.opt("sequence_number") instanceof Number) lastSequence=event.optLong("sequence_number");
                             JSONObject response=event.optJSONObject("response");
                             if(response!=null && clientModel!=null && response.has("model")) response.put("model",clientModel);
                             if(response!=null) { lastResponse=response; JSONObject usage=response.optJSONObject("usage"); if(row!=null && usage!=null) absorbUsage(row,ResponsesBridge.chatUsage(usage)); }
-                            if("response.completed".equals(type) || "response.incomplete".equals(type) || "response.failed".equals(type) || "error".equals(type)) {
+                            if("error".equals(type)) throw new IOException("upstream Responses error");
+                            if("response.completed".equals(type) || "response.incomplete".equals(type) || "response.failed".equals(type)) {
                                 if("response.completed".equals(type) || "response.incomplete".equals(type)) for(StreamUnmask u:deltas.values()) if(u.hasPending()) throw new IOException("unfinished output delta");
                                 if(("response.completed".equals(type) || "response.incomplete".equals(type)) && (response==null || !type.substring(9).equals(response.optString("status")))) throw new IOException("invalid terminal response status");
                                 terminal=true; ended=true;
@@ -8189,8 +8216,7 @@ public class GatewayServer extends NanoHTTPD {
                                 String prefix=type.substring(0,type.length()-5)+".delta:"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
                                 StreamUnmask u=deltas.remove(prefix);
                                 if(u!=null && u.hasPending()) {
-                                    String tail=u.flush(); JSONObject extra=new JSONObject(event.toString()); extra.put("type",type.substring(0,type.length()-5)+".delta").put("delta",tail);
-                                    result="event: "+extra.optString("type")+"\ndata: "+extra.toString()+"\n\n";
+                                    throw new IOException("unfinished masked output fragment");
                                 }
                             }
                             result+="event: "+type+"\ndata: "+event.toString()+"\n\n";
@@ -8234,6 +8260,82 @@ public class GatewayServer extends NanoHTTPD {
         Response resp=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",result.toString()); addCorsHeaders(resp); applyGuardHeaders(resp,guard); return resp;
     }
 
+    private static void validateAnthropicResponsesInput(JSONObject original) {
+        if(original==null) return;
+        JSONArray stops=original.optJSONArray("stop_sequences");
+        if(stops!=null && stops.length()>0) throw new IllegalArgumentException("Anthropic stop_sequences cannot be represented by Responses");
+        JSONArray messages=original.optJSONArray("messages");
+        for(int i=0;messages!=null && i<messages.length();i++) {
+            JSONObject message=messages.optJSONObject(i); JSONArray blocks=message==null?null:message.optJSONArray("content");
+            for(int j=0;blocks!=null && j<blocks.length();j++) {
+                JSONObject block=blocks.optJSONObject(j); if(block==null) continue;
+                String type=block.optString("type");
+                if(!java.util.Arrays.asList("text","image","tool_use","tool_result").contains(type)) throw new IllegalArgumentException("Anthropic content block cannot be represented by Responses: "+type);
+                if("tool_result".equals(type)) {
+                    if(block.optBoolean("is_error",false)) throw new IllegalArgumentException("Anthropic tool_result is_error cannot be represented by Responses");
+                    JSONArray content=block.optJSONArray("content");
+                    for(int k=0;content!=null && k<content.length();k++) { JSONObject part=content.optJSONObject(k); if(part==null || !"text".equals(part.optString("type"))) throw new IllegalArgumentException("Anthropic tool_result content cannot be represented by Responses"); }
+                }
+            }
+        }
+    }
+
+    private static boolean responsesGuardAccepted(JSONObject body, ContextGuard.Config cfg) throws Exception {
+        JSONObject input=new JSONObject(body.toString());
+        if(body.optInt("max_output_tokens",0)>0) input.put("max_tokens",body.getInt("max_output_tokens"));
+        ContextGuard.Result result=ContextGuard.fit(input,cfg);
+        return result.error==null && !result.budgetExceeded && !result.changed && jsonEquivalent(input,result.payload);
+    }
+
+    private static void addResponsesProviderHeaders(HttpURLConnection conn, RouteTarget target, JSONObject body) {
+        if (!"github-copilot".equals(target.providerId)) return;
+        for (Map.Entry<String,String> header:CopilotAuth.clientHeaders().entrySet()) conn.setRequestProperty(header.getKey(),header.getValue());
+        conn.setRequestProperty("X-Initiator",CopilotAuth.isAgentCall(body)?"agent":"user");
+        if(CopilotAuth.isVisionRequest(body)) conn.setRequestProperty("Copilot-Vision-Request","true");
+    }
+
+    private Attempt forwardTranslatedResponses(RouteTarget target, JSONObject request, boolean stream,
+                                                String requestedModel, PrivacyMasker.Session mask,
+                                                ContextGuard.Result guard, ContextGuard.Config cfg) {
+        Attempt out=new Attempt(); HttpURLConnection conn=null;
+        try {
+            conn=(HttpURLConnection)new URL(target.baseUrl.replaceAll("/+$","")+"/responses").openConnection();
+            conn.setRequestMethod("POST"); conn.setDoOutput(true); conn.setConnectTimeout(cfg.connectTimeoutSeconds*1000); conn.setReadTimeout(cfg.requestTimeoutSeconds*1000);
+            conn.setRequestProperty("Authorization","Bearer "+target.apiKey); conn.setRequestProperty("Content-Type","application/json");
+            conn.setRequestProperty("Accept",stream?"text/event-stream":"application/json"); addResponsesProviderHeaders(conn,target,request);
+            OutputStream os=conn.getOutputStream(); os.write(request.toString().getBytes("UTF-8")); os.close();
+            int code=conn.getResponseCode(); out.status=code;
+            if(code<200 || code>=300) { out.body="Responses upstream returned HTTP "+code; out.response=errorResponse(code,out.body); conn.disconnect(); return out; }
+            InputStream source=conn.getInputStream();
+            if(stream) {
+                InputStream converted=ResponsesBridge.responsesStreamToChat(source,requestedModel);
+                // Reuse the common Chat response pipeline for middleware, privacy and accounting.
+                Response chat=streamForwardResponse(converted,mask,guard,conn,target.providerId);
+                if(wantsAnthropicOut()) {
+                    InputStream anthropic=openAiToAnthropicStream(chat.getData(),requestedModel,null,null);
+                    out.response=newChunkedResponse(Status.OK,"text/event-stream",anthropic); addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
+                } else out.response=chat;
+            } else {
+                JSONObject nativeReply=new JSONObject(drainText(source)); conn.disconnect();
+                JSONObject reply=ResponsesBridge.responsesResponseToChat(nativeReply,requestedModel);
+                UsageLedger.Row row=U_ROW.get(); if(row!=null) absorbUsage(row,reply.optJSONObject("usage"));
+                unmaskJson(reply,mask);
+                JSONObject mw=configJson.optJSONObject("middleware");
+                JSONObject message=reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
+                if(mw!=null) {
+                    String text=message.optString("content",""), reasoning=message.optString("reasoning_content","");
+                    String[] transformed=Middleware.applyThinkTags(text,reasoning,mw);
+                    if(!transformed[0].equals(text)) message.put("content",transformed[0]);
+                    if(!transformed[1].equals(reasoning)) { if(transformed[1].isEmpty()) message.remove("reasoning_content"); else message.put("reasoning_content",transformed[1]); }
+                    if(Middleware.wordGuardEnabled(mw) && message.opt("content") instanceof String) message.put("content",Middleware.maskWords(message.getString("content"),mw));
+                }
+                if(wantsAnthropicOut()) reply=AnthropicBridge.responseToAnthropic(reply,requestedModel);
+                out.response=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",reply.toString()); addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
+            }
+            out.ok=true; out.status=200; return out;
+        } catch(Exception e) { if(conn!=null)conn.disconnect(); out.status=502; out.body="Responses upstream failed"; out.response=errorResponse(502,out.body); return out; }
+    }
+
     private Attempt forwardNativeResponses(RouteTarget target, JSONObject request, boolean stream,
                                            PrivacyMasker.Session mask, ContextGuard.Result guard,
                                            ContextGuard.Config guardCfg) {
@@ -8242,9 +8344,10 @@ public class GatewayServer extends NanoHTTPD {
             conn=(HttpURLConnection)new URL(target.baseUrl.replaceAll("/+$","")+"/responses").openConnection();
             conn.setRequestMethod("POST"); conn.setDoOutput(true); conn.setConnectTimeout(guardCfg.connectTimeoutSeconds*1000); conn.setReadTimeout(guardCfg.requestTimeoutSeconds*1000);
             conn.setRequestProperty("Authorization","Bearer "+target.apiKey); conn.setRequestProperty("Content-Type","application/json");
+            addResponsesProviderHeaders(conn,target,request);
             OutputStream output=conn.getOutputStream(); output.write(request.toString().getBytes("UTF-8")); output.close();
             int code=conn.getResponseCode(); out.status=code;
-            if(code<200 || code>=300) { InputStream error=conn.getErrorStream(); out.body=error==null?"Responses upstream error":PrivacyMasker.unmaskText(drainText(error),mask); out.response=newFixedLengthResponse(Status.lookup(code)!=null?Status.lookup(code):Status.INTERNAL_ERROR,"application/json; charset=UTF-8",out.body); addCorsHeaders(out.response); conn.disconnect(); return out; }
+            if(code<200 || code>=300) { out.body="Responses upstream returned HTTP "+code; out.response=errorResponse(code,out.body); conn.disconnect(); return out; }
             InputStream in=conn.getInputStream();
             if(stream) out.response=nativeResponsesStream(in,mask,guard,conn);
             else {
