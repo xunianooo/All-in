@@ -7,11 +7,11 @@
 ## 致谢
 
 本项目的多数供应商适配（zcode、workbuddy、raccoon、catpaw、qoder、cline、
-codex、antigravity、copilot、minimax 等）源自 Magpie 及其插件生态的设计与实现，
+codex、antigravity、copilot、minimax 等）源自
+[yetone/magpie](https://github.com/yetone/magpie) 及其插件生态的设计与实现，
 部分协议细节直接移植自 Magpie 本体与社区插件。
-没有 Magpie 就没有这个项目，在此向 Magpie 的作者和插件社区表示感谢。
-
-<!-- TODO: 补上 Magpie 仓库链接与作者署名 -->
+没有 Magpie 就没有这个项目，在此向 [@yetone](https://github.com/yetone)
+和插件社区表示感谢。
 
 ## 构建
 
