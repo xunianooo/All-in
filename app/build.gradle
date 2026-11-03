@@ -111,3 +111,12 @@ tasks.register('offlineTests') {
     description = '依次运行原有 main() 风格离线测试（不改测试代码）'
     dependsOn offlineTestTasks
 }
+
+// 独立注册，避免与其他离线套件入口相互冲突。
+tasks.register('offlineTest_RoutingSetup', JavaExec) {
+    group = 'verification'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, android.bootClasspath] })
+    mainClass = 'com.gaeul.allin.RoutingSetupOfflineTest'
+}
+tasks.named('offlineTests') { dependsOn 'offlineTest_RoutingSetup' }

@@ -1445,6 +1445,11 @@
           <input type="checkbox" id="groups-enabled" onchange="setGroupsEnabled(this.checked)" style="width:18px;height:18px;">
           <label for="groups-enabled" style="font-size:0.78rem; color:var(--text); cursor:pointer;">启用路由组（默认关闭，建议按需再开）</label>
         </div>
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; padding:10px 12px; border:1px solid var(--card-border); border-radius:10px;">
+          <input type="checkbox" id="bare-fallback" onchange="setBareFallback(this.checked)" style="width:18px;height:18px;">
+          <label for="bare-fallback" style="font-size:0.78rem; color:var(--text); cursor:pointer;">允许裸模型兜底（默认关闭）</label>
+        </div>
+        <p style="font-size:0.75rem; color:var(--text-muted); line-height:1.6;">仅影响不带 provider/ 前缀的模型：找不到已列出的模型时，开启后尝试第一家配置了密钥的供应商。关闭时返回错误；provider/model 和 group/组id 的路由不受影响。</p>
         <p id="groups-disabled-hint" style="display:none; font-size:0.75rem; color:#fbbf24; margin:0 0 12px; line-height:1.6;">
           路由组当前关闭：客户端请直接填 <code>provider/model</code> 自由选择模型；
           <code>group/*</code> 的请求会被拒绝（403）。需要用时把上面的开关打开。
@@ -3121,6 +3126,8 @@
         exposedSel = new Set(Array.isArray(d.items) ? d.items : []);
         const cb = document.getElementById('exposed-enabled');
         if (cb) cb.checked = !!d.enabled;
+        const bare = document.getElementById('bare-fallback');
+        if (bare) bare.checked = !!d.bareModelFallback;
         renderExposed();
         if (state) state.innerText = '共 ' + exposedSel.size + ' 个已勾选 · 数据来自当前配置';
       } catch (e) {
@@ -3952,6 +3959,8 @@
         const d = await res.json();
         const cb = document.getElementById('groups-enabled');
         if (cb) cb.checked = !!d.enabled;
+        const bare = document.getElementById('bare-fallback');
+        if (bare) bare.checked = !!d.bareModelFallback;
         const hint = document.getElementById('groups-disabled-hint');
         if (hint) hint.style.display = d.enabled ? 'none' : 'block';
         const box = document.getElementById('groups-container');
@@ -3959,6 +3968,18 @@
       } catch (e) {
         /* 网关没起来时静默 */
       }
+    }
+
+    async function setBareFallback(on) {
+      try {
+        const res = await fetch(API_BASE + '/api/routing', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bareModelFallback: !!on })
+        });
+        const d = await res.json();
+        showToast(d.ok ? ('裸模型兜底已' + (d.bareModelFallback ? '启用' : '关闭')) : ('设置失败: ' + errText(d.error)));
+      } catch (e) { showToast('设置失败: ' + e.message); }
+      await loadRoutingState();
     }
 
     async function setGroupsEnabled(on) {

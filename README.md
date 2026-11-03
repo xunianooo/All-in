@@ -28,7 +28,7 @@ codex、antigravity、copilot、minimax 等）源自
 # Debug 包（无需签名配置）
 ./gradlew assembleDebug
 
-# 离线单元测试（9 个套件，纯 JVM，不需要模拟器）
+# 离线单元测试（纯 JVM，不需要模拟器）
 ./gradlew offlineTests
 
 # 正式签名包：密钥不进仓库，走环境变量
@@ -50,6 +50,10 @@ MAGPIE_KEY_ALIAS=gaeul \
 - 接口地址：`http://<手机IP>:3425`（本机/模拟器内为 `http://127.0.0.1:3425`）
 - 鉴权：`x-api-key` 或 `Authorization: Bearer`（127.0.0.1 来源免口令，供面板与同机 agent 使用）
 - 模型名格式：`provider/model`（完整列表见 `GET /v1/models`）
+
+路由页的「允许裸模型兜底」默认关闭，旧配置缺少该项也视为关闭。裸模型名如果未匹配已列出的模型，开启后才尝试第一家配置了密钥的供应商；`provider/model` 和 `group/组id` 不受此开关影响。
+
+首次设置向导完成前，网关只接受本机回环地址请求；局域网访问需在手机本机完成向导后再按网关口令鉴权。已有 `setup.done` 完成标志的用户保持原来的局域网鉴权行为。
 
 ## CI
 

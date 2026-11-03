@@ -556,6 +556,26 @@ public class GatewayServer extends NanoHTTPD {
         }
     }
 
+    private boolean bareModelFallbackEnabled() {
+        JSONObject routing = configJson == null ? null : configJson.optJSONObject("routing");
+        return routing != null && routing.optBoolean("bareModelFallback", false);
+    }
+
+    private boolean setupDone() {
+        JSONObject setup = configJson == null ? null : configJson.optJSONObject("setup");
+        return setup != null && setup.optBoolean("done", false);
+    }
+
+    private static boolean isLocalRequest(IHTTPSession session) {
+        try {
+            String ip = session.getRemoteIpAddress();
+            if (ip == null) return false;
+            ip = ip.trim();
+            if (ip.startsWith("::ffff:")) ip = ip.substring(7);
+            return "127.0.0.1".equals(ip) || "::1".equals(ip) || "0:0:0:0:0:0:0:1".equals(ip);
+        } catch (Throwable ignored) { return false; }
+    }
+
     /** 该路径是否属于需要鉴权的接口面 */
     private static boolean needsAuth(String uri) {
         if (uri == null) return false;
@@ -643,18 +663,7 @@ public class GatewayServer extends NanoHTTPD {
         // 原来还有两个旁路，实测都能被外部利用，已删除：
         //   1) remoteIp 以 10./172.19./198.18. 开头 —— 等于放行整个私网；
         //   2) Origin 为 null / 含 127.0.0.1 —— Origin 是客户端自己写的请求头。
-        try {
-            String remoteIp = session.getRemoteIpAddress();
-            if (remoteIp != null) {
-                String ip = remoteIp.trim();
-                if (ip.startsWith("::ffff:")) ip = ip.substring(7);
-                if ("127.0.0.1".equals(ip) || "::1".equals(ip) || "0:0:0:0:0:0:0:1".equals(ip)) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return false;
+        return isLocalRequest(session);
     }
 
     /** 恒定时间比较口令（长度不同也走完比较） */
@@ -797,6 +806,9 @@ public class GatewayServer extends NanoHTTPD {
         } catch (Throwable ignored) {
             U_SESSION.remove();
         }
+
+        // 向导完成前只允许本机访问，包括静态页面和预检请求。
+        if (!setupDone() && !isLocalRequest(session)) return errorResponse(403, "请先在手机本机完成首次设置");
 
         // 关键：CORS 预检 OPTIONS 请求无条件优先放行，绝不能被鉴权拦截或读 body 阻塞！
         if ("OPTIONS".equalsIgnoreCase(method)) {
@@ -1422,12 +1434,14 @@ public class GatewayServer extends NanoHTTPD {
                     JSONObject routing = configJson.optJSONObject("routing");
                     if (routing == null) routing = new JSONObject();
                     if (req.has("enabled")) routing.put("groupsEnabled", req.optBoolean("enabled", false));
+                    if (req.has("bareModelFallback")) routing.put("bareModelFallback", req.optBoolean("bareModelFallback", false));
                     configJson.put("routing", routing);
                     saveConfig(configJson);
                 }
                 JSONObject out = new JSONObject();
                 out.put("ok", true);
                 out.put("enabled", groupsEnabled());
+                out.put("bareModelFallback", bareModelFallbackEnabled());
                 JSONArray gs = configJson.optJSONArray("groups");
                 out.put("groups", gs == null ? 0 : gs.length());
                 return jsonResponse(out);
@@ -3530,6 +3544,8 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     // 区分「供应商根本不存在（写错模型名）」和「供应商在但没有可用凭据」
                     String pid = providerIdOf(requestedModel);
+                    if (pid == null) return errorResponse(400, "裸模型未匹配可用供应商: " + requestedModel
+                            + "；请使用 provider/model，或在路由页按需启用裸模型兜底");
                     if (pid != null && getProviderById(pid) == null) {
                         return errorResponse(404, "未知供应商: " + pid
                                 + "（模型要写成 provider/model，供应商列表见 /api/providers）");
@@ -6943,7 +6959,7 @@ public class GatewayServer extends NanoHTTPD {
         // 兜底只给「不带 provider/ 前缀」的老式裸模型名（例如 "gpt-4o"）用。
         // 带前缀却找不到供应商，说明客户端把模型名写错了，必须报错；
         // 原来会随便塞给第一家「有 keys 的供应商」，结果用别人的 key 打不相干的域名，还拿不到错误。
-        if (chosenProvider == null && targetModel.indexOf('/') < 0) {
+        if (chosenProvider == null && targetModel.indexOf('/') < 0 && bareModelFallbackEnabled()) {
             for (int i = 0; i < providers.length(); i++) {
                 JSONObject p = providers.optJSONObject(i);
                 if (p != null) {
