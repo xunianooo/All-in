@@ -20,7 +20,7 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: magpie-pocket-debug-apk
+          name: all-in-debug-apk
           path: app/build/outputs/apk/debug/*.apk
       # 正式签名包需要 secrets：MAGPIE_KEYSTORE(base64)、MAGPIE_KEYSTORE_PASS
       # 验证稳定后取消注释：

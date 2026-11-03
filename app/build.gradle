@@ -2,6 +2,11 @@ plugins {
     id 'com.android.application'
 }
 
+// 产物命名跟产品名走：AllIn-release.apk / AllIn-debug.apk
+base {
+    archivesName = 'AllIn'
+}
+
 android {
     namespace 'com.magpie.pocket'
     compileSdk 34
