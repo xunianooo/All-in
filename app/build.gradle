@@ -1,0 +1,103 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.magpie.pocket'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.magpie.pocket'
+        minSdk 24
+        targetSdk 33
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            // 密钥不进仓库：优先环境变量，其次构建机本地路径
+            // 用法（电脑端）：
+            //   MAGPIE_KEYSTORE=/path/to/magpie.keystore
+            //   MAGPIE_KEYSTORE_PASS=口令
+            // （手机端对应 /workspace/tools/magpie.keystore 与 .keystore-pass）
+            storeFile file(System.getenv('MAGPIE_KEYSTORE')
+                    ?: '/workspace/tools/magpie.keystore')
+            storePassword System.getenv('MAGPIE_KEYSTORE_PASS') ?: ''
+            keyAlias System.getenv('MAGPIE_KEY_ALIAS') ?: 'magpie'
+            keyPassword System.getenv('MAGPIE_KEY_PASS')
+                    ?: System.getenv('MAGPIE_KEYSTORE_PASS') ?: ''
+        }
+    }
+
+    buildTypes {
+        release {
+            // 代码大量使用反射，禁用 R8 裁剪/混淆
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        // 迁移期先不把 lint 当门禁
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+}
+
+// ===== 原有 main() 风格离线测试：不改测试代码，用 JavaExec 驱动 =====
+// 测试文件原样放在 src/test/java，断言失败抛 AssertionError 即任务失败
+configurations { offlineTest }
+dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
+
+// 与 test/offline/run-all.sh 的 9 个套件一一对应（全部声明 package com.magpie.pocket）
+def offlineTestMains = [
+        'com.magpie.pocket.AnthropicBridgeRequestTest',
+        'com.magpie.pocket.AnthropicBridgeStreamOfflineTest',
+        'com.magpie.pocket.ContextGuardOfflineTest',
+        'com.magpie.pocket.ContextGuardProtectionTest',
+        'com.magpie.pocket.ZCodeAnthropicOfflineTest',
+        'com.magpie.pocket.GatewayProtocolOfflineTest',
+        'com.magpie.pocket.DeepSeekWebTest',
+        'com.magpie.pocket.DeepSeekWebChatTest',
+        'com.magpie.pocket.DeepSeekToolBridgeTest',
+]
+
+def mainClassesDir = layout.buildDirectory.dir('intermediates/javac/release/compileReleaseJavaWithJavac/classes')
+def testClassesDir = layout.buildDirectory.dir('offlinetest-classes')
+
+tasks.register('compileOfflineTests', JavaCompile) {
+    dependsOn 'compileReleaseJavaWithJavac'
+    source = fileTree(dir: 'src/test/java')
+    // 补丁版 org.json 在主代码产物里，必须排在 android.jar 之前
+    classpath = files({ [mainClassesDir.get(), configurations.offlineTest, android.bootClasspath] })
+    destinationDirectory = testClassesDir
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+}
+
+def offlineTestTasks = offlineTestMains.collect { name ->
+    def simple = name.substring(name.lastIndexOf('.') + 1)
+    tasks.register("offlineTest_${simple}", JavaExec) {
+        group = 'verification'
+        description = "运行离线测试 ${name}"
+        dependsOn 'compileOfflineTests'
+        classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, android.bootClasspath] })
+        mainClass = name
+    }
+}
+
+tasks.register('offlineTests') {
+    group = 'verification'
+    description = '依次运行原有 main() 风格离线测试（不改测试代码）'
+    dependsOn offlineTestTasks
+}

@@ -1,0 +1,728 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3425,
+    "authKey": "magpie"
+  },
+  "guard": {
+    "enabled": true,
+    "maxContextTokens": 0,
+    "maxOutputTokens": 0,
+    "maxBodyBytes": 1945600,
+    "keepRecent": 12,
+    "reserveTokens": 4096,
+    "requestTimeoutSeconds": 120,
+    "connectTimeoutSeconds": 30
+  },
+  "privacy": {
+    "enabled": true,
+    "maskApiKeys": true,
+    "maskEmails": true,
+    "maskPhones": true,
+    "maskPasswords": true
+  },
+  "providers": [
+    {
+      "id": "zcode",
+      "name": "ZCode (智谱 GLM Coding)",
+      "status": "ported",
+      "plugin": "packages/zcode",
+      "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "protocol": "openai",
+      "site": "zai",
+      "note": "BigModel 端点优先；api.z.ai 在本机不可达，probeBase 仍会在运行时自动切换",
+      "models": [
+        "glm-4.5",
+        "glm-4.5-air",
+        "glm-4.6",
+        "glm-4.7",
+        "glm-5",
+        "glm-5-turbo",
+        "glm-5.1",
+        "glm-5.2",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "glm-5.3-flashx"
+      ],
+      "keys": [],
+      "accounts": [],
+      "enabled": true
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy (腾讯免Key订阅池)",
+      "status": "native",
+      "plugin": "packages/workbuddy（自研 v1 协议，未对齐 v2）",
+      "baseUrl": "https://copilot.tencent.com/v1",
+      "loginUrl": "https://copilot.tencent.com/login?platform=CLI",
+      "protocol": "openai",
+      "models": [
+        "auto",
+        "hy4-preview",
+        "hy3",
+        "hy3-x",
+        "deepseek-v4.1-flash",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "glm-5.2",
+        "space-bunny",
+        "minimax-m3.1-flash",
+        "minimax-m2.7",
+        "kimi-k3.1-pro",
+        "kimi-k3-1",
+        "kimi-k2.8-preview",
+        "deepseek-v4-pro",
+        "step-5-preview",
+        "mimo-v2.6-pro"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "workbuddy-ai",
+      "name": "WorkBuddy AI (国际版)",
+      "status": "passthrough",
+      "plugin": "packages/workbuddy (workbuddy-ai)",
+      "baseUrl": "https://www.workbuddy.ai/v2",
+      "loginUrl": "https://www.workbuddy.ai/profile/keys",
+      "protocol": "openai",
+      "note": "国际版 build，独立域；用个人中心生成的 API Key（X-API-Key + X-User-Id）",
+      "models": [
+        "auto",
+        "hy4-preview",
+        "hy3",
+        "hy3-x",
+        "deepseek-v4.1-flash",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "glm-5.2",
+        "space-bunny",
+        "minimax-m3.1-flash",
+        "minimax-m2.7",
+        "kimi-k3.1-pro",
+        "kimi-k3-1",
+        "kimi-k2.8-preview",
+        "deepseek-v4-pro",
+        "step-5-preview",
+        "mimo-v2.6-pro"
+      ],
+      "keys": [],
+      "accounts": [],
+      "enabled": true
+    },
+    {
+      "id": "trae-cn",
+      "name": "Trae CN (字节 AI IDE)",
+      "status": "placeholder",
+      "plugin": "packages/trae",
+      "baseUrl": "https://trae-api-cn.mchost.guru",
+      "loginUrl": "https://www.trae.cn",
+      "protocol": "openai",
+      "note": "packages/trae 有 172KB（设备 P-256 证明 + ExchangeToken + llm_utils_chat 自有 SSE），本轮未移植；回调需要 127.0.0.1/authorize",
+      "models": [],
+      "keys": [],
+      "accounts": [],
+      "enabled": true
+    },
+    {
+      "id": "catpaw",
+      "name": "妙手 CatPaw (美团)",
+      "status": "ported",
+      "plugin": "packages/catpaw",
+      "baseUrl": "https://ai.catpaw.meituan.com",
+      "loginUrl": "https://catx.nocode.cn",
+      "protocol": "catpaw",
+      "note": "round→event→turn 三步会话机；不收工具与图片（会明确 400）",
+      "models": [
+        "longcat-2.0",
+        "glm-5.3-flashx",
+        "glm-5.3-flash",
+        "glm-5.3",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "minimax-m3",
+        "kimi-k3",
+        "auto"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "deepseek_web",
+      "name": "DeepSeek (网页模式)",
+      "status": "ported",
+      "baseUrl": "https://chat.deepseek.com/api/v0",
+      "loginUrl": "https://chat.deepseek.com/sign_in",
+      "protocol": "deepseek-web",
+      "note": "网页模式支持文本和社区提示词工具桥，不支持图片和文件。deepseek-chat / deepseek-reasoner 分别对应网页 default / expert 模式，不代表底层模型名称。",
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "agentmore",
+      "name": "AgentMore (智谱企业级)",
+      "status": "placeholder",
+      "baseUrl": "https://agentmore.chatglm.cn/api/v1",
+      "loginUrl": "https://agentmore.chatglm.cn/",
+      "protocol": "openai",
+      "note": "只有 WebView 登录壳，没有请求体构造与签名；packages 里也没有这一家",
+      "models": [
+        "glm-5.3-flash",
+        "glm-4-air"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "wenxin_web",
+      "name": "文心一言 (百度免Key账号池)",
+      "status": "placeholder",
+      "baseUrl": "https://chat.baidu.com/aichat/api/conversation",
+      "loginUrl": "https://wappass.baidu.com/passport/?login&u=https%3A%2F%2Fwenxin.baidu.com%2F",
+      "protocol": "openai",
+      "note": "只有 WebView 登录壳，没有请求体构造与签名；packages 里也没有这一家",
+      "models": [
+        "ernie-4.0-turbo",
+        "ernie-speed",
+        "ernie-3.5"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "meoo",
+      "name": "Meoo (阿里云秒悟)",
+      "status": "placeholder",
+      "baseUrl": "https://meoo.com/api/v1",
+      "loginUrl": "https://meoo.com",
+      "protocol": "openai",
+      "note": "只有 WebView 登录壳，没有请求体构造与签名；packages 里也没有这一家",
+      "models": [
+        "deepseekV41Flash",
+        "deepseekV4Pro",
+        "deepseekV4Flash"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "raccoon",
+      "name": "小浣熊 (商汤通用模型池)",
+      "status": "native",
+      "plugin": "packages/raccoon（自研，缺签到与余额）",
+      "baseUrl": "https://xiaohuanxiong.com/api/web/llm/v2",
+      "loginUrl": "https://xiaohuanxiong.com",
+      "protocol": "openai",
+      "models": [
+        "auto",
+        "raccoon-8c4485",
+        "raccoon-19b265",
+        "raccoon-405a1c",
+        "sn-sensenova-6-8-flash",
+        "sn-sensenova-6-8-flash-lite",
+        "sn-glm-5-3",
+        "sn-kimi-k3",
+        "sn-glm-5-3-flash",
+        "sn-deepseek-v4-1-flash-1017",
+        "raccoon-code",
+        "raccoon-chat-ml-5-5"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "runable",
+      "name": "Runable (多模型聚合池)",
+      "status": "placeholder",
+      "baseUrl": "https://api.runable.com/v1",
+      "loginUrl": "https://runable.com",
+      "protocol": "openai",
+      "note": "只有 WebView 登录壳，没有请求体构造与签名；packages 里也没有这一家",
+      "models": [
+        "runable/runner-chat",
+        "openai/gpt-6-astra",
+        "anthropic/claude-opus-5.5"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "dangbei",
+      "name": "当贝 AI (DeepSeek 专线)",
+      "status": "placeholder",
+      "baseUrl": "https://ai.dangbei.com/api/v1",
+      "loginUrl": "https://ai.dangbei.com/chat",
+      "protocol": "openai",
+      "note": "只有 WebView 登录壳，没有请求体构造与签名；packages 里也没有这一家",
+      "models": [
+        "dangbei/deepseek-v3"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "loomy",
+      "name": "Loomy (讯飞)",
+      "status": "passthrough",
+      "plugin": "packages/loomy",
+      "baseUrl": "https://loomyad.xunfei.cn/api/v1",
+      "loginUrl": "https://loomyad.xunfei.cn",
+      "protocol": "openai",
+      "note": "聊天为 OpenAI 直通（body 必须带 charset=utf-8）；短信登录需 HMAC-SHA1 客户端签名，本轮未做，先用手动 session",
+      "models": [
+        "DeepSeek-V4.1-Flash",
+        "deepseek-v4-flash-0731",
+        "MiniMax-M3",
+        "Kimi-k2.6",
+        "qwen-3.8-max",
+        "GLM-5.3-Flash",
+        "qwen3.8-flash",
+        "spark-x",
+        "mimo-v2.5",
+        "auto"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "tabbit",
+      "name": "Tabbit (极速免费模型池)",
+      "status": "placeholder",
+      "baseUrl": "https://api.tabbit.ai/v1",
+      "loginUrl": "https://tabbit.ai",
+      "protocol": "openai",
+      "note": "只有 WebView 登录壳，没有请求体构造与签名；packages 里也没有这一家",
+      "models": [
+        "deepseek-v4.1-flash-free",
+        "nemotron-3.5-lightning-free",
+        "space-bunny-free"
+      ],
+      "enabled": true,
+      "accounts": [],
+      "keys": []
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek (深度求索)",
+      "status": "passthrough",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "protocol": "openai",
+      "keys": [],
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "siliconflow",
+      "name": "SiliconFlow (硅基流动)",
+      "status": "passthrough",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "protocol": "openai",
+      "keys": [],
+      "models": [
+        "deepseek-ai/DeepSeek-V3",
+        "deepseek-ai/DeepSeek-R1",
+        "Qwen/Qwen2.5-72B-Instruct"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "status": "passthrough",
+      "baseUrl": "https://api.openai.com/v1",
+      "protocol": "openai",
+      "keys": [],
+      "models": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "o1-mini",
+        "o3-mini"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic Claude",
+      "status": "passthrough",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "protocol": "anthropic",
+      "keys": [],
+      "models": [
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "status": "passthrough",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "protocol": "openai",
+      "keys": [],
+      "models": [
+        "anthropic/claude-3.5-sonnet",
+        "deepseek/deepseek-r1"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "tencent",
+      "name": "Tencent Hunyuan (腾讯混元)",
+      "status": "passthrough",
+      "baseUrl": "https://api.hunyuan.cloud.tencent.com/v1",
+      "protocol": "openai",
+      "keys": [],
+      "models": [
+        "hunyuan-pro",
+        "hunyuan-standard",
+        "hunyuan-code",
+        "hunyuan-lite"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "qoder_cn",
+      "name": "Qoder CN (通义千问编程)",
+      "status": "ported",
+      "plugin": "packages/qoder (qoder-cn)",
+      "protocol": "qoder",
+      "site": "cn",
+      "note": "COSY 签名调用，非 OpenAI 兼容",
+      "enabled": true,
+      "models": [],
+      "keys": [],
+      "accounts": []
+    },
+    {
+      "id": "cline",
+      "name": "Cline (cline.bot)",
+      "status": "ported",
+      "plugin": "packages/cline",
+      "baseUrl": "https://api.cline.bot/api/v1",
+      "loginUrl": "https://app.cline.bot",
+      "protocol": "cline",
+      "note": "WorkOS 设备流 / API Key；OpenAI 兼容；推荐模型免登录",
+      "models": [
+        "anthropic/claude-sonnet-5.5",
+        "google/gemini-4-argon",
+        "anthropic/claude-opus-5.5",
+        "openai/gpt-6-astra",
+        "openai/gpt-6.1-sol",
+        "moonshotai/kimi-k3",
+        "reflection/beam-free",
+        "cline-free/nemotron-3.5-super-vl",
+        "nvidia/nemotron-3.5-lightning-free",
+        "cline-free/solar-mini4",
+        "cline-free/deepseek-v4.1-flash",
+        "stealth/space-bunny-alpha",
+        "cline-free/mimo-v2.6-flash",
+        "cline-free/muse-spark-1.3-contributor",
+        "cline-pass/mimo-v2.6-pro",
+        "cline-pass/deepseek-v4.1-flash-1017",
+        "cline-pass/deepseek-v4.1-flash",
+        "cline-pass/kimi-k3.1-pro",
+        "cline-pass/minimax-m3.1-flash",
+        "cline-pass/mimo-v2.6-flash",
+        "cline-pass/glm-5.3",
+        "cline-pass/deepseek-v4-pro",
+        "cline-pass/qwen3.8-max",
+        "cline-pass/muse-spark-1.3-contributor",
+        "cline-pass/kimi-k3",
+        "cline-pass/glm-5.3-flash",
+        "cline-pass/minimax-m3",
+        "cline-pass/qwen3.7-plus",
+        "cline-pass/qwen3.7-max"
+      ],
+      "modelMeta": {
+        "reflection/beam-free": {
+          "free": true,
+          "name": "Beam"
+        },
+        "cline-free/nemotron-3.5-super-vl": {
+          "free": true,
+          "name": "Nemotron 3.5 Super VL"
+        },
+        "nvidia/nemotron-3.5-lightning-free": {
+          "free": true,
+          "name": "Nemotron 3.5 Lightning"
+        },
+        "cline-free/solar-mini4": {
+          "free": true,
+          "name": "Solar Mini 4"
+        },
+        "cline-free/deepseek-v4.1-flash": {
+          "free": true,
+          "name": "DeepSeek V4.1 Flash"
+        },
+        "stealth/space-bunny-alpha": {
+          "free": true,
+          "name": "Space Bunny Alpha"
+        },
+        "cline-free/mimo-v2.6-flash": {
+          "free": true,
+          "name": "MiMo V2.6 Flash"
+        },
+        "cline-free/muse-spark-1.3-contributor": {
+          "free": true,
+          "name": "Muse Spark 1.3 Contributor"
+        },
+        "cline-pass/mimo-v2.6-pro": {
+          "pass": true,
+          "name": "MiMo V2.6 Pro"
+        },
+        "cline-pass/deepseek-v4.1-flash-1017": {
+          "pass": true,
+          "name": "DeepSeek V4.1 Flash 1017"
+        },
+        "cline-pass/deepseek-v4.1-flash": {
+          "pass": true,
+          "name": "DeepSeek V4.1 Flash"
+        },
+        "cline-pass/kimi-k3.1-pro": {
+          "pass": true,
+          "name": "Kimi K3.1 Pro"
+        },
+        "cline-pass/minimax-m3.1-flash": {
+          "pass": true,
+          "name": "MiniMax M3.1 Flash"
+        },
+        "cline-pass/mimo-v2.6-flash": {
+          "pass": true,
+          "name": "MiMo V2.6 Flash"
+        },
+        "cline-pass/glm-5.3": {
+          "pass": true,
+          "name": "GLM 5.3"
+        },
+        "cline-pass/deepseek-v4-pro": {
+          "pass": true,
+          "name": "DeepSeek V4 Pro"
+        },
+        "cline-pass/qwen3.8-max": {
+          "pass": true,
+          "name": "Qwen3.8 Max"
+        },
+        "cline-pass/muse-spark-1.3-contributor": {
+          "pass": true,
+          "name": "Muse Spark 1.3 Contributor"
+        },
+        "cline-pass/kimi-k3": {
+          "pass": true,
+          "name": "Kimi K3"
+        },
+        "cline-pass/glm-5.3-flash": {
+          "pass": true,
+          "name": "GLM 5.3 Flash"
+        },
+        "cline-pass/minimax-m3": {
+          "pass": true,
+          "name": "MiniMax M3"
+        },
+        "cline-pass/qwen3.7-plus": {
+          "pass": true,
+          "name": "Qwen3.7 Plus"
+        },
+        "cline-pass/qwen3.7-max": {
+          "pass": true,
+          "name": "Qwen3.7 Max"
+        }
+      },
+      "enabled": true,
+      "keys": [],
+      "accounts": []
+    },
+    {
+      "id": "codex",
+      "name": "Codex (ChatGPT 订阅)",
+      "status": "ported",
+      "plugin": "builtin/codex",
+      "baseUrl": "https://chatgpt.com/backend-api/codex",
+      "loginUrl": "https://chatgpt.com/codex",
+      "protocol": "codex",
+      "note": "OpenAI Codex OAuth / auth.json / Refresh Token 导入；Responses API 与 OpenAI 互转",
+      "models": [
+        "gpt-5-codex",
+        "gpt-5-codex-mini",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5.1",
+        "gpt-5.2",
+        "o3",
+        "o3-mini",
+        "o1",
+        "o1-mini",
+        "o1-preview",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.5-preview"
+      ],
+      "modelMeta": {
+        "gpt-5-codex": {
+          "name": "GPT-5 Codex",
+          "tier": "codex"
+        },
+        "gpt-5-codex-mini": {
+          "name": "GPT-5 Codex Mini",
+          "tier": "codex"
+        },
+        "gpt-5": {
+          "name": "GPT-5",
+          "tier": "flagship"
+        },
+        "gpt-5-mini": {
+          "name": "GPT-5 Mini",
+          "tier": "light"
+        },
+        "gpt-5.1": {
+          "name": "GPT-5.1",
+          "tier": "flagship"
+        },
+        "gpt-5.2": {
+          "name": "GPT-5.2",
+          "tier": "flagship"
+        },
+        "o3": {
+          "name": "o3",
+          "reasoning": true
+        },
+        "o3-mini": {
+          "name": "o3-mini",
+          "reasoning": true
+        },
+        "o1": {
+          "name": "o1",
+          "reasoning": true
+        },
+        "o1-mini": {
+          "name": "o1-mini",
+          "reasoning": true
+        },
+        "o1-preview": {
+          "name": "o1-preview",
+          "reasoning": true
+        },
+        "gpt-4o": {
+          "name": "GPT-4o"
+        },
+        "gpt-4o-mini": {
+          "name": "GPT-4o Mini"
+        },
+        "gpt-4.5-preview": {
+          "name": "GPT-4.5 Preview"
+        }
+      },
+      "enabled": true,
+      "keys": [],
+      "accounts": []
+    },
+    {
+      "id": "antigravity",
+      "name": "Antigravity (Google 账号)",
+      "status": "ported",
+      "plugin": "builtin/antigravity",
+      "baseUrl": "https://daily-cloudcode-pa.googleapis.com",
+      "loginUrl": "https://antigravity.google",
+      "protocol": "antigravity",
+      "note": "Google Code Assist 信封协议（v1internal:streamGenerateContent?alt=sse）；OAuth 登录，模型与配额来自 fetchAvailableModels；对 Claude Code 提示词默认打散 U+200B",
+      "models": [
+        "gemini-pro-agent",
+        "gemini-3.1-pro-low",
+        "gemini-3-flash",
+        "gemini-3.1-flash-lite",
+        "claude-opus-4-6-thinking",
+        "claude-sonnet-4-6",
+        "gpt-oss-120b-medium"
+      ],
+      "keys": [],
+      "accounts": [],
+      "enabled": true
+    },
+    {
+      "id": "github-copilot",
+      "name": "GitHub Copilot",
+      "status": "ported",
+      "plugin": "packages/copilot",
+      "baseUrl": "https://api.githubcopilot.com",
+      "loginUrl": "https://github.com/login/device",
+      "protocol": "copilot",
+      "note": "GitHub 官方设备流（client Iv1.b507a08c87ecfe98）；GitHub token 换 Copilot token（约 30 分钟，临期自动续）；OpenAI 兼容 /chat/completions，需带 Copilot 客户端指纹头；模型目录 /models",
+      "models": [
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5",
+        "gpt-5-mini",
+        "claude-sonnet-4.5",
+        "claude-opus-4.1",
+        "gemini-3-pro-preview",
+        "o3",
+        "o4-mini"
+      ],
+      "keys": [],
+      "accounts": [],
+      "enabled": true
+    },
+    {
+      "id": "minimax-code",
+      "name": "MiniMax Code",
+      "status": "ported",
+      "plugin": "packages/minimax",
+      "baseUrl": "https://agent.minimax.cn/mavis/api/v1/llm/v1",
+      "loginUrl": "https://agent.minimax.cn",
+      "protocol": "minimax",
+      "note": "MiniMax Code 设备流（OAuth + PKCE S256，client mcode-public）；上游是 Anthropic messages，网关注入 MiniMaxAgent 与 X-Mavis-* 头并做双向转换；花每日签到与 M Plan 的额度；refresh token 一次性，刷新即落盘",
+      "models": [
+        "MiniMax-M3.1-Flash-Preview",
+        "MiniMax-M3.1-Flash",
+        "MiniMax-M3",
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed"
+      ],
+      "keys": [],
+      "accounts": [],
+      "enabled": true
+    }
+  ],
+  "groups": [
+    {
+      "id": "smart-coding",
+      "name": "主力编程路由组",
+      "strategy": "order",
+      "targets": [
+        "workbuddy/glm-5.3",
+        "zcode/glm-5.3",
+        "raccoon/sn-glm-5-3",
+        "workbuddy/hy3"
+      ]
+    },
+    {
+      "id": "reasoning",
+      "name": "深度思考路由组",
+      "strategy": "order",
+      "targets": [
+        "zcode/glm-5.3",
+        "raccoon/sn-sensenova-6-8-flash",
+        "workbuddy/deepseek-v4.1-flash"
+      ]
+    }
+  ]
+}
