@@ -3507,7 +3507,7 @@ public class GatewayServer extends NanoHTTPD {
                         return errorResponse(404, "未知供应商: " + pid
                                 + "（模型要写成 provider/model，供应商列表见 /api/providers）");
                     }
-                    JSONObject missing=getProviderById(pid);
+                    JSONObject missing=pid==null?null:getProviderById(pid);
                     if (missing!=null && "deepseek-web".equals(missing.optString("protocol")) && !providerHasCredential(missing))
                         return errorResponse(401,"请先添加网页账号: " + pid);
                     return errorResponse(400, "No available API Key or active account for model: " + requestedModel);
