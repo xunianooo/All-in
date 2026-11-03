@@ -22,7 +22,7 @@ public final class GatewayMissingProviderOfflineTest {
         field.set(gateway, value);
     }
 
-    private static GatewayServer gateway() throws Exception {
+    private static GatewayServer gateway(boolean fallback) throws Exception {
         Field field = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
         field.setAccessible(true);
         GatewayServer gateway = (GatewayServer) ((sun.misc.Unsafe) field.get(null)).allocateInstance(GatewayServer.class);
@@ -37,6 +37,7 @@ public final class GatewayMissingProviderOfflineTest {
                 .put("keys", new JSONArray());
         set(gateway, "configJson", new JSONObject()
                 .put("setup",new JSONObject().put("done",true))
+                .put("routing",new JSONObject().put("bareModelFallback",fallback))
                 .put("server", new JSONObject().put("authKey", "secret"))
                 .put("providers", new JSONArray().put(provider))
                 .put("privacy", new JSONObject().put("enabled", false)));
@@ -46,6 +47,7 @@ public final class GatewayMissingProviderOfflineTest {
     private static NanoHTTPD.IHTTPSession session(String uri, String model) throws Exception {
         String body = new JSONObject().put("model", model).put("max_tokens", 32)
                 .put("messages", new JSONArray().put(new JSONObject().put("role", "user").put("content", "hello"))).toString();
+        if ("/v1/responses".equals(uri)) body = new JSONObject().put("model", model).put("input", "hello").put("max_output_tokens",32).toString();
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         InputStream input = new ByteArrayInputStream(bytes);
         Map<String, String> headers = new HashMap<String, String>();
@@ -77,9 +79,10 @@ public final class GatewayMissingProviderOfflineTest {
 
     public static void main(String[] args) throws Exception {
         int failures = 0;
-        for (String uri : new String[]{"/v1/chat/completions", "/v1/messages"}) {
+        for (boolean fallback : new boolean[]{false,true}) {
+        for (String uri : new String[]{"/v1/chat/completions", "/v1/messages", "/v1/responses"}) {
             for (String model : new String[]{"unknown-bare-model", "unknown-provider/model"}) {
-                NanoHTTPD.Response response = gateway().serve(session(uri, model));
+                NanoHTTPD.Response response = gateway(fallback).serve(session(uri, model));
                 int status = response.getStatus().getRequestStatus();
                 String body = read(response.getData());
                 System.out.println(uri + " " + model + " => " + status + " " + body);
@@ -90,6 +93,7 @@ public final class GatewayMissingProviderOfflineTest {
                     failures++;
                 }
             }
+        }
         }
         if (failures != 0) throw new AssertionError(failures + " missing-provider endpoint cases failed");
         System.out.println("GatewayMissingProviderOfflineTest OK");

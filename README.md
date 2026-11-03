@@ -8,7 +8,7 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.1.1（versionCode 3）
+- 当前版本：1.2.0（versionCode 4）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
@@ -46,6 +46,10 @@ MAGPIE_KEY_ALIAS=gaeul \
 
 保留历史能力：`./app/build.sh` 仍可独立出包（依赖 `/workspace/tools` 下的
 工具 jar 与 keystore），与本 Gradle 构建双轨并存，产物同源。
+
+## 协议自动转换
+
+网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
 
 ## 接入客户端
 
