@@ -23,6 +23,15 @@ public final class ResponsesBridgeOfflineTest {
         rejects("{\"input\":\"x\",\"store\":true}", "store=true");
         rejects("{\"input\":[{\"type\":\"web_search_call\"}]}", "web_search_call");
         rejects("{\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"file_id\":\"x\"}]}]}", "file_id");
+        JSONObject reply = new JSONObject("{\"choices\":[{\"message\":{\"role\":\"assistant\",\"refusal\":\"no\"},\"finish_reason\":\"stop\"}]}");
+        JSONObject converted = ResponsesBridge.chatResponseToResponses(reply,"m");
+        check(converted.getJSONArray("output").getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("refusal").equals("no"), "refusal json");
+        check(ResponsesBridge.responsesResponseToChat(converted,"m").getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("refusal").equals("no"), "refusal roundtrip");
+        String stream="data: {\"choices\":[{\"delta\":{\"refusal\":\"no\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        java.io.InputStream is=ResponsesBridge.chatStreamToResponses(new java.io.ByteArrayInputStream(stream.getBytes("UTF-8")),"m");
+        java.io.ByteArrayOutputStream buf=new java.io.ByteArrayOutputStream(); int b; while((b=is.read())!=-1)buf.write(b);
+        String events=buf.toString("UTF-8");
+        check(events.contains("response.refusal.delta") && events.contains("response.refusal.done") && events.contains("response.completed"), "refusal SSE lifecycle");
         System.out.println("ResponsesBridgeOfflineTest OK");
     }
 }

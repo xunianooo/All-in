@@ -6294,6 +6294,7 @@ public class GatewayServer extends NanoHTTPD {
         final PrivacyMasker.Session session;
         final java.util.Map<Integer, StreamUnmask> content = new java.util.HashMap<>();
         final java.util.Map<Integer, StreamUnmask> reasoning = new java.util.HashMap<>();
+        final java.util.Map<Integer, StreamUnmask> refusals = new java.util.HashMap<>();
         final java.util.Map<String, StreamUnmask> tools = new java.util.HashMap<>();
         OpenAiUnmask(PrivacyMasker.Session session) { this.session = session; }
         StreamUnmask get(java.util.Map<Integer, StreamUnmask> map, int index) {
@@ -6310,7 +6311,8 @@ public class GatewayServer extends NanoHTTPD {
                 int ci = choice.optInt("index", i);
                 JSONObject delta = choice.optJSONObject("delta");
                 if (delta == null) { delta = new JSONObject(); choice.put("delta", delta); }
-                StreamUnmask c = get(content, ci), r = get(reasoning, ci);
+                StreamUnmask c = get(content, ci), r = get(reasoning, ci), refusal = get(refusals, ci);
+                if (delta.opt("refusal") instanceof String) delta.put("refusal", refusal.feed(delta.optString("refusal")));
                 if (delta.opt("content") instanceof String) delta.put("content", c.feed(delta.optString("content")));
                 if (delta.opt("reasoning_content") instanceof String) delta.put("reasoning_content", r.feed(delta.optString("reasoning_content")));
                 JSONArray calls = delta.optJSONArray("tool_calls");
@@ -6324,7 +6326,8 @@ public class GatewayServer extends NanoHTTPD {
                     fn.put("arguments", u.feed(fn.optString("arguments")));
                 }
                 if (choice.has("finish_reason") && !choice.isNull("finish_reason")) {
-                    String ct = c.flush(), rt = r.flush();
+                    String ct = c.flush(), rt = r.flush(), ft = refusal.flush();
+                    if (!ft.isEmpty()) delta.put("refusal", (delta.opt("refusal") instanceof String ? delta.optString("refusal") : "") + ft);
                     if (!ct.isEmpty()) delta.put("content", (delta.opt("content") instanceof String ? delta.optString("content") : "") + ct);
                     if (!rt.isEmpty()) delta.put("reasoning_content", (delta.opt("reasoning_content") instanceof String ? delta.optString("reasoning_content") : "") + rt);
                     if (calls == null) calls = new JSONArray();

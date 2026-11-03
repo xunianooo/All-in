@@ -159,6 +159,7 @@ final class ResponsesBridge {
         copy(chat, out, "stream", "stream"); copy(chat, out, "max_tokens", "max_output_tokens");
         copy(chat, out, "temperature", "temperature"); copy(chat, out, "top_p", "top_p");
         copy(chat, out, "parallel_tool_calls", "parallel_tool_calls");
+        copy(chat, out, "metadata", "metadata"); copy(chat, out, "prompt_cache_key", "prompt_cache_key"); copy(chat, out, "service_tier", "service_tier");
         if (chat.has("reasoning_effort")) out.put("reasoning", new JSONObject().put("effort", chat.get("reasoning_effort")));
         JSONArray input = new JSONArray(), messages = chat.optJSONArray("messages");
         StringBuilder instructions = new StringBuilder();
@@ -228,7 +229,10 @@ final class ResponsesBridge {
         }
         JSONArray calls=msg.optJSONArray("tool_calls");
         for(int i=0;calls!=null && i<calls.length();i++) { JSONObject c=calls.getJSONObject(i), fn=c.getJSONObject("function"); output.put(functionItem(c.optString("id"),fn.optString("name"),fn.optString("arguments"))); }
-        if (msg.has("refusal") && !msg.isNull("refusal")) throw new IllegalArgumentException("refusal output is unsupported");
+        if (msg.has("refusal") && !msg.isNull("refusal")) {
+            if (!(msg.opt("refusal") instanceof String)) throw new IllegalArgumentException("invalid refusal");
+            output.put(refusalItem(msg.getString("refusal")));
+        }
         String finish=choice.optString("finish_reason", "stop");
         if (!Arrays.asList("stop", "tool_calls", "length", "content_filter").contains(finish)) throw new IllegalArgumentException("Unsupported finish reason: "+finish);
         JSONObject result=responseEnvelope(requestedModel!=null?requestedModel:chat.optString("model"),output,finish);
@@ -243,6 +247,7 @@ final class ResponsesBridge {
         if(p!=null) out.put("input_tokens_details",p); if(c!=null) out.put("output_tokens_details",c); return out;
     }
     static JSONObject messageItem(String text) throws Exception { return new JSONObject().put("id","msg_"+java.util.UUID.randomUUID().toString().replace("-", "")).put("type","message").put("status","completed").put("role","assistant").put("content",new JSONArray().put(new JSONObject().put("type","output_text").put("text",text).put("annotations",new JSONArray()))); }
+    static JSONObject refusalItem(String text) throws Exception { return new JSONObject().put("id","msg_"+java.util.UUID.randomUUID().toString().replace("-", "")).put("type","message").put("status","completed").put("role","assistant").put("content",new JSONArray().put(new JSONObject().put("type","refusal").put("refusal",text))); }
     static JSONObject reasoningItem(String text) throws Exception { return new JSONObject().put("id","rs_"+java.util.UUID.randomUUID().toString().replace("-", "")).put("type","reasoning").put("summary",new JSONArray().put(new JSONObject().put("type","summary_text").put("text",text))); }
     static JSONObject functionItem(String call, String name, String args) throws Exception { return new JSONObject().put("id","fc_"+java.util.UUID.randomUUID().toString().replace("-", "")).put("type","function_call").put("status","completed").put("call_id",call).put("name",name).put("arguments",args); }
     static JSONObject responseEnvelope(String model, JSONArray output, String finish) throws Exception {
@@ -257,7 +262,7 @@ final class ResponsesBridge {
             final java.util.ArrayList<JSONObject> items = new java.util.ArrayList<JSONObject>();
             final java.util.Map<Integer,Integer> tools = new java.util.HashMap<Integer,Integer>();
             final StringBuilder pending = new StringBuilder();
-            JSONObject response, usage; int textIndex=-1, reasoningIndex=-1, sequence=0; String finish=null;
+            JSONObject response, usage; int textIndex=-1, reasoningIndex=-1, refusalIndex=-1, sequence=0; String finish=null;
             byte[] bytes=new byte[0]; int at=0; boolean ended=false, started=false;
             void event(String type, JSONObject value) throws Exception { value.put("type",type).put("sequence_number",sequence++); pending.append("event: ").append(type).append("\ndata: ").append(value.toString()).append("\n\n"); }
             void start() throws Exception {
@@ -278,6 +283,16 @@ final class ResponsesBridge {
                 JSONObject data=new JSONObject().put("item_id",item.getString("id")).put("output_index",index).put(reasoning?"summary_index":"content_index",0).put("delta",value);
                 event(reasoning?"response.reasoning_summary_text.delta":"response.output_text.delta",data);
             }
+            void refusal(String value) throws Exception {
+                if(value.isEmpty()) return;
+                if(refusalIndex<0) {
+                    JSONObject item=refusalItem(""); refusalIndex=add(item);
+                    event("response.content_part.added",new JSONObject().put("item_id",item.getString("id")).put("output_index",refusalIndex).put("content_index",0).put("part",new JSONObject().put("type","refusal").put("refusal","")));
+                }
+                JSONObject item=items.get(refusalIndex), part=item.getJSONArray("content").getJSONObject(0);
+                part.put("refusal",part.getString("refusal")+value);
+                event("response.refusal.delta",new JSONObject().put("item_id",item.getString("id")).put("output_index",refusalIndex).put("content_index",0).put("delta",value));
+            }
             void chunk(JSONObject chunk) throws Exception {
                 if(chunk.has("error")) throw new java.io.IOException("upstream error: "+chunk.opt("error"));
                 if(chunk.optJSONObject("usage")!=null) usage=responsesUsage(chunk.getJSONObject("usage"));
@@ -285,7 +300,7 @@ final class ResponsesBridge {
                 if(choices.length()!=1) throw new java.io.IOException("multiple choices unsupported");
                 JSONObject choice=choices.getJSONObject(0), delta=choice.optJSONObject("delta");
                 if(delta!=null) {
-                    if (delta.has("refusal") && !delta.isNull("refusal")) throw new java.io.IOException("refusal output unsupported");
+                    if (delta.has("refusal") && !delta.isNull("refusal")) { if (!(delta.opt("refusal") instanceof String)) throw new java.io.IOException("invalid refusal"); refusal(delta.getString("refusal")); }
                     text(delta.optString("reasoning_content", ""),true); text(delta.optString("content", ""),false);
                     JSONArray calls=delta.optJSONArray("tool_calls");
                     for(int i=0;calls!=null && i<calls.length();i++) {
@@ -305,7 +320,7 @@ final class ResponsesBridge {
                 JSONArray output=new JSONArray();
                 for(int i=0;i<items.size();i++) {
                     JSONObject item=items.get(i); String type=item.getString("type"), id=item.getString("id");
-                    if("message".equals(type)) { JSONObject part=item.getJSONArray("content").getJSONObject(0); event("response.output_text.done",new JSONObject().put("item_id",id).put("output_index",i).put("content_index",0).put("text",part.getString("text"))); event("response.content_part.done",new JSONObject().put("item_id",id).put("output_index",i).put("content_index",0).put("part",part)); }
+                    if("message".equals(type)) { JSONObject part=item.getJSONArray("content").getJSONObject(0); if ("refusal".equals(part.optString("type"))) event("response.refusal.done",new JSONObject().put("item_id",id).put("output_index",i).put("content_index",0).put("refusal",part.getString("refusal"))); else event("response.output_text.done",new JSONObject().put("item_id",id).put("output_index",i).put("content_index",0).put("text",part.getString("text"))); event("response.content_part.done",new JSONObject().put("item_id",id).put("output_index",i).put("content_index",0).put("part",part)); }
                     else if("reasoning".equals(type)) { JSONObject part=item.getJSONArray("summary").getJSONObject(0); event("response.reasoning_summary_text.done",new JSONObject().put("item_id",id).put("output_index",i).put("summary_index",0).put("text",part.getString("text"))); event("response.reasoning_summary_part.done",new JSONObject().put("item_id",id).put("output_index",i).put("summary_index",0).put("part",part)); }
                     else event("response.function_call_arguments.done",new JSONObject().put("item_id",id).put("output_index",i).put("arguments",item.getString("arguments")));
                     event("response.output_item.done",new JSONObject().put("output_index",i).put("item",item)); output.put(item);
@@ -334,14 +349,16 @@ final class ResponsesBridge {
     }
 
     static JSONObject responsesResponseToChat(JSONObject response,String model) throws Exception {
-        StringBuilder text=new StringBuilder(), reasoning=new StringBuilder(); JSONArray calls=new JSONArray(), output=response.optJSONArray("output");
+        if (!Arrays.asList("completed", "incomplete").contains(response.optString("status"))) throw new IllegalArgumentException("Responses response is not complete");
+        StringBuilder text=new StringBuilder(), reasoning=new StringBuilder(), refusal=new StringBuilder(); JSONArray calls=new JSONArray(), output=response.optJSONArray("output");
         for(int i=0;output!=null && i<output.length();i++) { JSONObject item=output.getJSONObject(i); String type=item.optString("type");
-            if("message".equals(type)) { JSONArray parts=item.optJSONArray("content"); for(int j=0;parts!=null && j<parts.length();j++) { JSONObject part=parts.getJSONObject(j); if("output_text".equals(part.optString("type"))) text.append(part.optString("text")); } }
+            if("message".equals(type)) { JSONArray parts=item.optJSONArray("content"); for(int j=0;parts!=null && j<parts.length();j++) { JSONObject part=parts.getJSONObject(j); if("output_text".equals(part.optString("type"))) text.append(part.optString("text")); else if("refusal".equals(part.optString("type"))) refusal.append(part.optString("refusal")); else throw new IllegalArgumentException("Unsupported Responses output content: "+part.optString("type")); } }
             else if("reasoning".equals(type)) { JSONArray parts=item.optJSONArray("summary"); for(int j=0;parts!=null && j<parts.length();j++) reasoning.append(parts.getJSONObject(j).optString("text")); }
             else if("function_call".equals(type)) calls.put(new JSONObject().put("id",item.optString("call_id")).put("type","function").put("function",new JSONObject().put("name",item.optString("name")).put("arguments",item.optString("arguments"))));
+            else throw new IllegalArgumentException("Unsupported Responses output item: "+type);
         }
         JSONObject msg=new JSONObject().put("role","assistant").put("content",text.length()==0?JSONObject.NULL:text.toString());
-        if(reasoning.length()>0) msg.put("reasoning_content",reasoning.toString()); if(calls.length()>0)msg.put("tool_calls",calls);
+        if(refusal.length()>0) msg.put("refusal",refusal.toString()); if(reasoning.length()>0) msg.put("reasoning_content",reasoning.toString()); if(calls.length()>0)msg.put("tool_calls",calls);
         String finish=calls.length()>0?"tool_calls":"stop"; if("incomplete".equals(response.optString("status"))) { JSONObject details=response.optJSONObject("incomplete_details"); finish=details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"; }
         JSONObject out=new JSONObject().put("id",response.optString("id","chatcmpl-"+System.currentTimeMillis())).put("object","chat.completion").put("created",response.optLong("created_at",System.currentTimeMillis()/1000)).put("model",model).put("choices",new JSONArray().put(new JSONObject().put("index",0).put("message",msg).put("finish_reason",finish)));
         JSONObject u=response.optJSONObject("usage"); if(u!=null)out.put("usage",chatUsage(u)); return out;
@@ -359,6 +376,7 @@ final class ResponsesBridge {
                     try { String line=in.readLine(); if(line==null || line.trim().equals("data: [DONE]")) { ended=true; if(!completed) result="data: {\"error\":{\"message\":\"Responses stream ended before completion\"}}\n\n"; }
                         else if(line.startsWith("data:")) { String raw=line.substring(5).trim(); if(raw.isEmpty())continue; JSONObject event=new JSONObject(raw); String type=event.optString("type"); JSONObject delta=new JSONObject();
                             if("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) { delta.put("content",event.optString("delta")); result=chunk(delta,null,null); }
+                            else if("response.refusal.delta".equals(type)) { delta.put("refusal",event.optString("delta")); result=chunk(delta,null,null); }
                             else if("response.reasoning_summary_text.delta".equals(type) || "response.reasoning_text.delta".equals(type)) { delta.put("reasoning_content",event.optString("delta")); result=chunk(delta,null,null); }
                             else if("response.output_item.added".equals(type)) { JSONObject item=event.optJSONObject("item"); if(item!=null && "function_call".equals(item.optString("type"))) { int outputIndex=event.optInt("output_index"), idx=calls.size(); calls.put(outputIndex,idx); JSONObject fn=new JSONObject().put("name",item.optString("name")).put("arguments",item.optString("arguments","")); JSONObject call=new JSONObject().put("index",idx).put("id",item.optString("call_id")).put("type","function").put("function",fn); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); } }
                             else if("response.function_call_arguments.delta".equals(type)) { Integer idx=calls.get(event.optInt("output_index")); if(idx==null)throw new java.io.IOException("function arguments before item"); JSONObject call=new JSONObject().put("index",idx).put("function",new JSONObject().put("arguments",event.optString("delta"))); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); }
