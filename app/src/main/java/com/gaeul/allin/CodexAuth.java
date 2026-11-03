@@ -653,66 +653,7 @@ public class CodexAuth {
      * 将 OpenAI Chat Completions payload 转换为 Codex Responses 格式 payload
      */
     public static JSONObject chatToResponses(JSONObject chatReq, String upstreamModel) throws Exception {
-        JSONObject respReq = new JSONObject();
-        respReq.put("model", upstreamModel);
-        respReq.put("stream", chatReq.optBoolean("stream", true));
-
-        // 构造 input 数组
-        JSONArray input = new JSONArray();
-        JSONArray messages = chatReq.optJSONArray("messages");
-        if (messages != null) {
-            for (int i = 0; i < messages.length(); i++) {
-                JSONObject msg = messages.optJSONObject(i);
-                if (msg == null) continue;
-                String role = msg.optString("role", "user");
-                String contentStr = "";
-                Object contentObj = msg.opt("content");
-                if (contentObj instanceof String) {
-                    contentStr = (String) contentObj;
-                } else if (contentObj instanceof JSONArray) {
-                    JSONArray ca = (JSONArray) contentObj;
-                    StringBuilder sb = new StringBuilder();
-                    for (int j = 0; j < ca.length(); j++) {
-                        JSONObject item = ca.optJSONObject(j);
-                        if (item != null && "text".equals(item.optString("type"))) {
-                            sb.append(item.optString("text", ""));
-                        }
-                    }
-                    contentStr = sb.toString();
-                }
-
-                JSONObject item = new JSONObject();
-                item.put("type", "message");
-                JSONArray cArr = new JSONArray();
-                JSONObject cObj = new JSONObject();
-
-                if ("system".equalsIgnoreCase(role) || "developer".equalsIgnoreCase(role)) {
-                    item.put("role", "developer");
-                    cObj.put("type", "input_text");
-                    cObj.put("text", contentStr);
-                } else if ("assistant".equalsIgnoreCase(role)) {
-                    item.put("role", "assistant");
-                    cObj.put("type", "output_text");
-                    cObj.put("text", contentStr);
-                } else {
-                    item.put("role", "user");
-                    cObj.put("type", "input_text");
-                    cObj.put("text", contentStr);
-                }
-                cArr.put(cObj);
-                item.put("content", cArr);
-                input.put(item);
-            }
-        }
-        respReq.put("input", input);
-
-        // 工具透传
-        JSONArray tools = chatReq.optJSONArray("tools");
-        if (tools != null && tools.length() > 0) {
-            respReq.put("tools", tools);
-        }
-
-        return respReq;
+        return ResponsesBridge.chatToResponses(chatReq, upstreamModel);
     }
 
     /**

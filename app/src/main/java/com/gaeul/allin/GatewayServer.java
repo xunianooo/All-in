@@ -749,7 +749,29 @@ public class GatewayServer extends NanoHTTPD {
         NATIVE_REQUEST.remove();
         NATIVE_BASELINE.remove();
         NATIVE_DIRECT_ALLOWED.remove();
-        try { return serveRequest(session); }
+        try {
+            Response response = serveRequest(session);
+            if ("/v1/responses".equals(session.getUri()) && session.getMethod() == Method.POST && response != null
+                    && response.getStatus().getRequestStatus() >= 200
+                    && response.getStatus().getRequestStatus() < 300) {
+                String mime = response.getMimeType();
+                if (mime != null && mime.contains("text/event-stream")) {
+                    response.setData(ResponsesBridge.chatStreamToResponses(response.getData(), CLIENT_MODEL.get()));
+                    response.setMimeType("text/event-stream; charset=UTF-8");
+                } else {
+                    try {
+                        String body = drainText(response.getData());
+                        JSONObject converted = ResponsesBridge.chatResponseToResponses(new JSONObject(body), CLIENT_MODEL.get());
+                        response.setData(new ByteArrayInputStream(converted.toString().getBytes("UTF-8")));
+                        response.setMimeType("application/json; charset=UTF-8");
+                    } catch (Exception e) {
+                        return errorResponse(502, "Invalid upstream Chat response: " + e.getMessage());
+                    }
+                }
+                response.setChunkedTransfer(true);
+            }
+            return response;
+        }
         finally { NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); }
     }
 
@@ -799,7 +821,7 @@ public class GatewayServer extends NanoHTTPD {
             }
 
             // 0.05 Copilot 的 Responses 直通：gpt-5.4-nano 这类模型只在 /responses 上可用
-            if (uri.endsWith("/responses") && "POST".equalsIgnoreCase(method)) {
+            if (!"/v1/responses".equals(uri) && uri.endsWith("/responses") && "POST".equalsIgnoreCase(method)) {
                 Response cop = handleCopilotResponses(uri, session.getHeaders(), rawBody);
                 if (cop != null) return cop;
             }
@@ -3365,7 +3387,8 @@ public class GatewayServer extends NanoHTTPD {
             }
 
             // 10. 核心转发接口：/v1/chat/completions 与 /v1/messages
-            if ("/v1/chat/completions".equals(uri) || "/v1/messages".equals(uri)) {
+            if ("/v1/chat/completions".equals(uri) || "/v1/messages".equals(uri) || "/v1/responses".equals(uri)) {
+                if ("/v1/responses".equals(uri) && !"POST".equals(method)) return errorResponse(405, "POST required");
                 String postData = rawBody;
                 if (postData == null || postData.isEmpty()) {
                     return errorResponse(400, "Empty payload");
@@ -3383,6 +3406,10 @@ public class GatewayServer extends NanoHTTPD {
 
                 JSONObject payload = new JSONObject(maskedPayloadStr);
                 String requestedModel = payload.optString("model", "deepseek-chat");
+                if ("/v1/responses".equals(uri)) {
+                    try { payload = ResponsesBridge.toChat(payload); CLIENT_MODEL.set(requestedModel); }
+                    catch (Exception conversionError) { return errorResponse(400, "Responses request: " + conversionError.getMessage()); }
+                }
                 String validationError = validateRawMessages(payload.opt("messages"));
                 if (validationError != null) return errorResponse(400, validationError);
 
@@ -8046,6 +8073,8 @@ public class GatewayServer extends NanoHTTPD {
 
             JSONObject respReq = CodexAuth.chatToResponses(payload, upstreamModel);
             respReq.put("stream", true);
+            respReq.put("store", false);
+            if (!respReq.has("instructions")) respReq.put("instructions", "");
 
             conn = CodexAuth.openHttp(CodexAuth.CODEX_RESPONSES);
             conn.setRequestMethod("POST");
@@ -8129,50 +8158,24 @@ public class GatewayServer extends NanoHTTPD {
                 return out;
             } else {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(is, java.nio.charset.StandardCharsets.UTF_8));
-                StringBuilder fullText = new StringBuilder();
+                JSONObject completed = null;
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("data: ")) {
-                        String data = line.substring(6).trim();
-                        if ("[DONE]".equals(data)) break;
-                        try {
-                            JSONObject ev = new JSONObject(data);
-                            String type = ev.optString("type", "");
-                            if ("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) {
-                                fullText.append(ev.optString("delta", ""));
-                            } else if ("response.output_item.delta".equals(type)) {
-                                JSONObject dObj = ev.optJSONObject("delta");
-                                if (dObj != null) fullText.append(dObj.optString("text", ""));
-                            }
-                        } catch (Exception ignored) {}
-                    }
+                    if (!line.startsWith("data:")) continue;
+                    String data = line.substring(5).trim();
+                    if (data.isEmpty() || "[DONE]".equals(data)) continue;
+                    JSONObject event = new JSONObject(data);
+                    String eventType = event.optString("type");
+                    if ("response.completed".equals(eventType) || "response.incomplete".equals(eventType)) completed = event.optJSONObject("response");
+                    if ("response.failed".equals(eventType) || "error".equals(eventType)) throw new IOException("Codex response failed: " + event.opt("error"));
                 }
                 reader.close();
-
-                String content = PrivacyMasker.unmaskText(fullText.toString(), maskSession);
-                JSONObject sim = new JSONObject();
-                sim.put("id", "chatcmpl-" + System.currentTimeMillis());
-                sim.put("object", "chat.completion");
-                sim.put("created", System.currentTimeMillis() / 1000);
-                sim.put("model", requestedModel);
-
-                JSONArray choices = new JSONArray();
-                JSONObject c0 = new JSONObject();
-                c0.put("index", 0);
-                JSONObject msg = new JSONObject();
-                msg.put("role", "assistant");
-                msg.put("content", content);
-                c0.put("message", msg);
-                c0.put("finish_reason", "stop");
-                choices.put(c0);
-                sim.put("choices", choices);
-
-                JSONObject usage = new JSONObject();
-                usage.put("prompt_tokens", 10);
-                usage.put("completion_tokens", content.length() / 2);
-                usage.put("total_tokens", 10 + content.length() / 2);
-                usage.put("estimated", true);
-                sim.put("usage", usage);
+                if (completed == null) throw new IOException("Codex stream ended before completion");
+                JSONObject sim = ResponsesBridge.responsesResponseToChat(completed, requestedModel);
+                UsageLedger.Row codexUsage = U_ROW.get();
+                if (codexUsage != null) absorbUsage(codexUsage, sim.optJSONObject("usage"));
+                sim = new JSONObject(PrivacyMasker.unmaskText(sim.toString(), maskSession));
+                String content = extractReplyText(sim);
 
                 out.textOut = content;
 
@@ -8192,7 +8195,7 @@ public class GatewayServer extends NanoHTTPD {
             }
 
         } catch (Exception e) {
-            e.printStackTrace();
+            try { if (conn != null) conn.disconnect(); } catch (Throwable ignored) {}
             out.ok = false;
             out.status = 502;
             out.body = "Codex upstream failed: " + e.getMessage();
@@ -8202,55 +8205,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private InputStream convertResponsesToOpenAiStream(final InputStream responsesIs, final String model) {
-        try {
-            final java.io.PipedOutputStream pos = new java.io.PipedOutputStream();
-            final java.io.PipedInputStream pis = new java.io.PipedInputStream(pos, 16384);
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        BufferedReader br = new BufferedReader(new InputStreamReader(responsesIs, java.nio.charset.StandardCharsets.UTF_8));
-                        String line;
-                        String chunkId = "chatcmpl-" + System.currentTimeMillis();
-                        while ((line = br.readLine()) != null) {
-                            if (line.startsWith("data: ")) {
-                                String d = line.substring(6).trim();
-                                if ("[DONE]".equals(d)) break;
-                                try {
-                                    JSONObject ev = new JSONObject(d);
-                                    String type = ev.optString("type", "");
-                                    String deltaText = null;
-                                    if ("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) {
-                                        deltaText = ev.optString("delta", "");
-                                    } else if ("response.output_item.delta".equals(type)) {
-                                        JSONObject dObj = ev.optJSONObject("delta");
-                                        if (dObj != null) deltaText = dObj.optString("text", "");
-                                    }
-                                    if (deltaText != null && !deltaText.isEmpty()) {
-                                        String chunk = CodexAuth.wrapChatDelta(deltaText, model, chunkId);
-                                        pos.write(chunk.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                                        pos.flush();
-                                    } else if ("response.completed".equals(type)) {
-                                        String done = CodexAuth.wrapChatDone(model, chunkId);
-                                        pos.write(done.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                                        pos.flush();
-                                    }
-                                } catch (Exception ignored) {}
-                            }
-                        }
-                        pos.write("data: [DONE]\n\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                        pos.flush();
-                    } catch (Throwable ignored) {
-                    } finally {
-                        try { pos.close(); } catch (Throwable ignored) {}
-                        try { responsesIs.close(); } catch (Throwable ignored) {}
-                    }
-                }
-            }, "Codex-SSE-Converter").start();
-            return pis;
-        } catch (Exception e) {
-            return responsesIs;
-        }
+        return ResponsesBridge.responsesStreamToChat(responsesIs, model);
     }
 
     private synchronized String addCodexAccount(CodexAuth.SignInInfo info, String accName) {
