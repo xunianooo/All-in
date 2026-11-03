@@ -78,6 +78,7 @@ def offlineTestMains = [
         'com.gaeul.allin.DeepSeekWebChatTest',
         'com.gaeul.allin.DeepSeekToolBridgeTest',
         'com.gaeul.allin.GatewayMissingProviderOfflineTest',
+        'com.gaeul.allin.ResponsesBridgeOfflineTest',
 ]
 
 def mainClassesDir = layout.buildDirectory.dir('intermediates/javac/release/compileReleaseJavaWithJavac/classes')
