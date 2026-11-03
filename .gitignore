@@ -6,3 +6,4 @@ local.properties
 !/.github/
 *.log
 MagPocket-*.apk
+.github/
