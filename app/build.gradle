@@ -40,6 +40,8 @@ android {
             // 代码大量使用反射，禁用 R8 裁剪/混淆
             minifyEnabled false
             signingConfig signingConfigs.release
+            // v3 签名支持密钥轮换（借鉴手机端构建的做法）
+            enableV3Signing true
         }
     }
 
