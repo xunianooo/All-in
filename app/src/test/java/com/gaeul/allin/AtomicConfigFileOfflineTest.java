@@ -56,13 +56,22 @@ public final class AtomicConfigFileOfflineTest {
         AtomicConfigFile.write(target, "{\"revision\":0}");
         ExecutorService readers = Executors.newSingleThreadExecutor();
         final java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        CountDownLatch observed = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
         Future<?> observer = readers.submit(() -> {
-            try { while (running.get()) new JSONObject(read(target.toPath())).getInt("revision"); }
-            catch (Exception e) { throw new RuntimeException(e); }
+            try {
+                while (running.get()) {
+                    new JSONObject(read(target.toPath())).getInt("revision");
+                    reads.incrementAndGet(); observed.countDown();
+                }
+            } catch (Exception e) { throw new RuntimeException(e); }
         });
-        try { for (int i = 1; i <= 60; i++) AtomicConfigFile.write(target, "{\"revision\":" + i + "}"); }
-        finally { running.set(false); readers.shutdown(); }
+        try {
+            check(observed.await(10, TimeUnit.SECONDS), "reader started before replacement");
+            for (int i = 1; i <= 60; i++) AtomicConfigFile.write(target, "{\"revision\":" + i + "}");
+        } finally { running.set(false); readers.shutdown(); }
         observer.get(10, TimeUnit.SECONDS);
+        check(reads.get() > 0, "concurrent reader actually read configurations");
         check(new JSONObject(read(target.toPath())).getInt("revision") == 60, "concurrent reader sees only complete configs");
         System.out.println("AtomicConfigFileOfflineTest OK");
     }

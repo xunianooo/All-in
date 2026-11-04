@@ -48,9 +48,24 @@ final class AtomicConfigFile {
             // On Windows File.renameTo refuses an existing destination. OpenJDK's
             // atomic move uses replacement semantics. Unsupported filesystems fail
             // without falling back to deleting or copying over the live file.
-            java.nio.file.Files.move(source.toPath(), target.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            for (int attempt = 0; ; attempt++) {
+                try {
+                    java.nio.file.Files.move(source.toPath(), target.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                    return;
+                } catch (java.nio.file.AccessDeniedException denied) {
+                    // Windows readers/virus scanners may briefly hold a handle without
+                    // delete sharing. Retry only while both files remain ordinary files;
+                    // a permanent denial still fails without altering the destination.
+                    if (attempt >= 49 || !source.isFile() || !target.isFile()) throw denied;
+                    try { Thread.sleep(10); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Interrupted while replacing configuration", interrupted);
+                    }
+                }
+            }
         }
     }
 }
