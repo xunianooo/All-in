@@ -23,7 +23,7 @@ jobs:
           node-version: 22
       - uses: android-actions/setup-android@v3
       - name: Install Android SDK 37
-        shell: bash
+        shell: pwsh
         run: sdkmanager --install "platforms;android-37.0"
       - name: Offline tests
         shell: pwsh
