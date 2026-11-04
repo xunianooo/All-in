@@ -689,16 +689,17 @@
     }
 
     /* ---------- 模型白名单 ---------- */
-    .exp-prov { margin-bottom: 14px; }
+    .exp-prov { padding: 9px 0; border-bottom: 1px solid var(--input-border); }
+    .exp-prov:last-child { border-bottom: 0; }
     .exp-head {
       display: flex; justify-content: space-between; align-items: center;
-      gap: 8px; margin-bottom: 8px;
+      gap: 8px; margin-bottom: 4px;
     }
     .exp-name { font-size: 13.5px; font-weight: 600; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
     .exp-toggle { width: 100%; text-align: left; border: 0; background: transparent; color: inherit; font: inherit; padding: 0; cursor: pointer; }
     .exp-unconfigured { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); font-size: 12px; }
     .exp-sub { font-size: 11.5px; color: var(--text-faint); margin-left: 6px; font-weight: 400; }
-    .exp-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .exp-actions { display: flex; gap: 6px; flex-shrink: 0; margin-bottom: 6px; }
     .exp-mini {
       border: none; background: transparent; color: var(--primary);
       font-size: 12px; font-weight: 600; padding: 2px 4px; cursor: pointer; font-family: inherit;
@@ -3159,15 +3160,18 @@
     }
 
     async function configureExposedProvider(id) {
-      switchTab('providers');
-      // Commercial rows may be created asynchronously by loadConfig.
-      await loadConfig();
+      // Wait for the tab's configuration load before looking for dynamic rows.
+      await switchTab('providers', null, true);
       const badge = document.getElementById('badge-count-' + id);
       const commercial = document.getElementById('commercial-keys-container');
       const row = commercial && Array.from(commercial.children).find(el => el.dataset.providerId === id);
       const target = (badge && badge.closest('.card')) || row;
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      else showToast('未找到该供应商的配置入口');
+      if (target) {
+        for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+          if (parent.tagName === 'DETAILS') parent.open = true;
+        }
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else showToast('未找到该供应商的配置入口');
     }
 
     function renderExposed() {
@@ -3175,6 +3179,9 @@
       if (!box || !exposedData) return;
       const enabled = document.getElementById('exposed-enabled');
       box.style.opacity = (enabled && !enabled.checked) ? '0.55' : '1';
+      const active = document.activeElement;
+      const focusKey = active && box.contains(active) ? active.exposedFocusKey : null;
+      let focusTarget = null;
       box.replaceChildren();
 
       function element(tag, className, text) {
@@ -3189,18 +3196,22 @@
         el.addEventListener('click', handler);
         return el;
       }
+      function focusable(el, key) {
+        el.exposedFocusKey = key;
+        if (focusKey === key) focusTarget = el;
+        return el;
+      }
       function section(key, name, entries, configured, isGroup) {
         const open = exposedOpen.has(key);
         const count = entries.filter(e => exposedSel.has(e.id)).length;
         const wrap = element('div', 'exp-prov');
         const head = element('div', 'exp-head');
-        const title = button('exp-toggle exp-name', '', () => {
-          if (!configured) return;
+        const title = configured ? focusable(button('exp-toggle exp-name', '', () => {
           if (exposedOpen.has(key)) exposedOpen.delete(key); else exposedOpen.add(key);
           renderExposed();
-        });
-        title.setAttribute('aria-expanded', String(configured && open));
-        title.textContent = (configured && open ? '▾ ' : '▸ ') + name;
+        }), JSON.stringify([key, 'title'])) : element('div', 'exp-name');
+        if (configured) title.setAttribute('aria-expanded', String(open));
+        title.textContent = (configured ? (open ? '▾ ' : '▸ ') : '') + name;
         title.appendChild(element('span', 'exp-sub', count + '/' + entries.length + (isGroup ? ' · 虚拟模型' : configured ? ' · 已配置' : ' · 未配置凭据')));
         head.appendChild(title);
         wrap.appendChild(head);
@@ -3211,12 +3222,12 @@
           wrap.appendChild(hint);
         } else if (open) {
           const actions = element('div', 'exp-actions');
-          [true, false].forEach(on => actions.appendChild(button('exp-mini', on ? '全选' : '清空', () => {
+          [true, false].forEach(on => actions.appendChild(focusable(button('exp-mini', on ? '全选' : '清空', () => {
             if (isGroup) setExposedGroupAll(on); else setExposedGroup(key.slice(2), on);
-          })));
+          }), JSON.stringify([key, 'action', on]))));
           wrap.appendChild(actions);
           const chips = element('div', 'exp-chips');
-          entries.forEach(entry => chips.appendChild(button('exp-chip' + (exposedSel.has(entry.id) ? ' on' : ''), entry.name, () => toggleExposed(entry.id))));
+          entries.forEach(entry => chips.appendChild(focusable(button('exp-chip' + (exposedSel.has(entry.id) ? ' on' : ''), entry.name, () => toggleExposed(entry.id)), JSON.stringify([key, 'chip', entry.id]))));
           wrap.appendChild(chips);
         }
         box.appendChild(wrap);
@@ -3228,6 +3239,7 @@
         if (models.length) section('p:' + p.id, p.name || p.id, models.map(m => ({ id: p.id + '/' + m, name: m })), !!p.live, false);
       });
       if (!box.children.length) box.appendChild(element('div', 'exp-empty', '还没有可选的模型，先去供应商页登录并同步模型'));
+      if (focusTarget) focusTarget.focus({ preventScroll: true });
     }
 
     // 路由组的整组操作（groups 不带 models 列表，单独处理）
@@ -3568,7 +3580,7 @@
     try { refreshThemeUI(); } catch (e) {}
     window.addEventListener('load', () => setTimeout(() => moveNavPill(document.querySelector('.tab-btn.active')), 30));
 
-    function switchTab(tabId, el) {
+    function switchTab(tabId, el, preserveScroll) {
       if (tabId === 'privacy') { loadPrivacy(); }
       try {
         const btns = document.querySelectorAll('.tab-btn');
@@ -3592,7 +3604,7 @@
           target.style.animation = 'none';
           void target.offsetWidth;
           target.style.animation = '';
-          window.scrollTo({ top: 0, behavior: 'smooth' });
+          if (!preserveScroll) window.scrollTo({ top: 0, behavior: 'smooth' });
         }
         moveNavPill(document.querySelector('.tab-btn.active'));
         if (tabId === 'insight') {
@@ -3600,7 +3612,7 @@
           try { loadExposed(); } catch (e) {}
           try { loadInsightAll(); } catch (e) {}
         }
-        loadConfig();
+        return loadConfig();
       } catch (err) {
         console.error('switchTab error:', err);
       }
