@@ -3663,15 +3663,18 @@
     }
 
     /** 从服务端拉当前口令 */
+    let authKeyRevision = 0;
     async function loadAuthKey() {
+      const revision = authKeyRevision;
       try {
         const res = await fetch(API_BASE + '/api/server-key');
         const d = await res.json();
-        if (d && d.ok) {
+        if (d && d.ok && revision === authKeyRevision) {
           currentAuthKey = d.authKey || '';
           // 面板若是通过 sessionStorage 带的口令，以服务端为准
           if (currentAuthKey) AUTH_KEY = currentAuthKey;
           renderCredentials();
+          try { refreshAccessSnippets(); } catch (e) {}
         }
       } catch (e) {
         // 401 等情况：说明当前口令不对，把状态提示出来
@@ -3783,6 +3786,7 @@
           showToast('保存失败：' + (d.error && d.error.message ? d.error.message : '未知原因'));
           return;
         }
+        authKeyRevision++;
         currentAuthKey = d.authKey;
         // 立刻切到新密钥，否则后面的请求会被自己刚设的口令挡住
         AUTH_KEY = currentAuthKey;
@@ -4748,7 +4752,7 @@
         await fetch(API_BASE + '/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(appConfig)
+          body: JSON.stringify(Object.assign({}, appConfig, { server: undefined }))
         });
         showToast('配置已保存！');
       } catch (e) {
@@ -4814,7 +4818,19 @@
       if (!d || !d.ok) return;
       setupState.data = d;
 
-      if (d.needed) { openSetupWizard(); return; }
+      if (d.needed) {
+        // 页面可能在系统权限页被重建：已应用的非默认口令应继续展示。
+        let existingKey = '';
+        if (!d.authKeyIsDefault) {
+          try {
+            const keyRes = await fetch(API_BASE + '/api/server-key', { cache: 'no-store' });
+            const keyData = await keyRes.json();
+            if (keyRes.ok && keyData.ok) existingKey = keyData.authKey || '';
+          } catch (e) {}
+        }
+        openSetupWizard(existingKey);
+        return;
+      }
 
       // 已经设置过，但口令还是默认的：给一条可关的提示，不阻断使用
       if (d.authKeyIsDefault) showWeakKeyBanner();
@@ -4841,14 +4857,14 @@
       else host.appendChild(bar);
     }
 
-    function openSetupWizard() {
+    function openSetupWizard(existingKey) {
       const w = document.getElementById('setup-wizard');
       if (!w) return;
       w.style.display = 'block';
       setupState.step = 1;
       setupState.keepCurrent = false;
       const inp = document.getElementById('setup-key');
-      if (inp) inp.value = setupGenKey();
+      if (inp) inp.value = existingKey || setupGenKey();
       setupRenderStep();
     }
 
@@ -4876,15 +4892,42 @@
       if (n === 3) setupRefreshKeepalive();
     }
 
-    function setupNext() {
+    async function setupNext() {
+      if (setupState.busy) return;
       if (setupState.step === 1) {
         const inp = document.getElementById('setup-key');
         const v = inp ? inp.value.trim() : '';
         if (!setupState.keepCurrent) {
-          if (v.length < 4) { showToast('口令至少 4 个字符'); return; }
+          if (v.length < 4 || v.length > 128) { showToast('口令须为 4 到 128 个字符'); return; }
           if (!/^[A-Za-z0-9._~!@#$%^&*+=:-]+$/.test(v)) {
             showToast('只能包含字母、数字和 . _ ~ ! @ # $ % ^ & * + = : -');
             return;
+          }
+        }
+        if (!setupState.keepCurrent) {
+          const next = document.getElementById('setup-btn-next');
+          setupState.busy = true;
+          if (next) next.disabled = true;
+          try {
+            const res = await fetch(API_BASE + '/api/server-key', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ authKey: v })
+            });
+            const d = await res.json();
+            if (!res.ok || !d.ok || d.authKey !== v) {
+              showToast('保存失败：' + (d.error && d.error.message ? d.error.message : '请重试'));
+              return;
+            }
+            authKeyRevision++;
+            AUTH_KEY = currentAuthKey = d.authKey;
+            try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
+            try { renderCredentials(); refreshAccessSnippets(); } catch (e) {}
+          } catch (e) {
+            showToast('保存失败：' + e.message);
+            return;
+          } finally {
+            setupState.busy = false;
+            if (next) next.disabled = false;
           }
         }
         setupState.step = 2;
@@ -4893,14 +4936,14 @@
         setupRenderStep();
         return;
       } else if (setupState.step === 3) {
-        setupFinish();
+        await setupFinish();
         return;
       }
       setupRenderStep();
     }
 
     function setupBack() {
-      if (setupState.step > 1) { setupState.step -= 1; setupRenderStep(); }
+      if (!setupState.busy && setupState.step > 1) { setupState.step -= 1; setupRenderStep(); }
     }
 
     function setupRegen() {
@@ -5041,13 +5084,9 @@
     }
 
     async function setupFinish() {
-      const body = { };
-      if (setupState.keepCurrent) {
-        body.keepCurrent = true;
-      } else {
-        const inp = document.getElementById('setup-key');
-        body.authKey = inp ? inp.value.trim() : '';
-      }
+      if (setupState.busy) return;
+      setupState.busy = true;
+      const body = { keepCurrent: true };
       const next = document.getElementById('setup-btn-next');
       if (next) next.disabled = true;
       try {
@@ -5057,7 +5096,7 @@
           body: JSON.stringify(body)
         });
         const d = await res.json();
-        if (!d.ok) {
+        if (!res.ok || !d.ok) {
           const msg = d.error && d.error.message ? d.error.message : '保存失败';
           showToast(msg);
           if (next) next.disabled = false;
@@ -5067,6 +5106,7 @@
         }
         // 口令变了就立刻切换，否则后续请求会被自己刚设的口令挡在门外
         if (d.authKey) {
+          authKeyRevision++;
           AUTH_KEY = d.authKey;
           currentAuthKey = d.authKey;
           try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
@@ -5081,6 +5121,8 @@
         if (d.authKeyIsDefault) showWeakKeyBanner();
       } catch (e) {
         showToast('保存失败：' + e.message);
+      } finally {
+        setupState.busy = false;
         if (next) next.disabled = false;
       }
     }
@@ -6395,7 +6437,7 @@
             客户端（Claude Code / Cursor / Codex）要用这个口令访问你的网关。
             网关默认监听 <code>0.0.0.0:3425</code>，口令太弱等于把池子里的账号额度对同一个 WiFi 的人开放。
           </div>
-          <input id="setup-key" type="text" spellcheck="false"
+          <input id="setup-key" type="text" spellcheck="false" oninput="setupState.keepCurrent = false"
             style="width:100%; box-sizing:border-box; padding:11px 13px; background:#0d0f17; color:#fff;
                    border:1px solid var(--card-border); border-radius:10px; font-size:0.82rem;
                    font-family:ui-monospace,SFMono-Regular,monospace;">
