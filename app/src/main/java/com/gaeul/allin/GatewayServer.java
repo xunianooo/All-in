@@ -3405,7 +3405,7 @@ public class GatewayServer extends NanoHTTPD {
                 if ("/v1/responses".equals(uri)) {
                     try {
                         JSONObject originalResponses = ResponsesBridge.normalize(payload);
-                        if(originalResponses.length()!=payload.length()) RESP_WARNING.set("unknown-fields-ignored");
+                        if(ResponsesBridge.hasUnknownFields(payload)) RESP_WARNING.set("unknown-fields-ignored");
                         payload = ResponsesBridge.projection(originalResponses);
                         RESP_REQUEST.set(originalResponses); RESP_BASELINE.set(new JSONObject(payload.toString()));
                         CLIENT_MODEL.set(requestedModel);
@@ -8128,6 +8128,8 @@ public class GatewayServer extends NanoHTTPD {
         if(currentCompletion>0 && (currentLimit<=0 || currentCompletion<currentLimit)) currentLimit=currentCompletion;
         if(originalLimit>0 && (currentLimit<=0 || currentLimit>originalLimit)) return null;
         JSONObject candidate=ResponsesBridge.normalize(original);
+        JSONObject nativeOptions=candidate.optJSONObject("stream_options");
+        if(nativeOptions!=null) { nativeOptions.remove("include_usage"); if(nativeOptions.length()==0) candidate.remove("stream_options"); }
         candidate.put("model",model); candidate.put("stream",stream);
         int limit=current.optInt("max_tokens",0), completion=current.optInt("max_completion_tokens",0);
         if(completion>0 && (limit<=0 || completion<limit)) limit=completion;

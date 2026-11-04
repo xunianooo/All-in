@@ -32,7 +32,7 @@ public class ResponsesBridgeAuditTest {
         check(out.contains("response.completed") && !out.contains("response.failed"),"finish then EOF must complete");
     }
     static void requestValidation() throws Exception {
-        String[] bad={"{\"input\":\"x\",\"stream\":\"true\"}","{\"input\":\"x\",\"max_output_tokens\":\"10\"}","{\"input\":\"x\",\"text\":null}","{\"input\":\"x\",\"max_output_tokens\":0}"};
+        String[] bad={"{\"input\":\"x\",\"stream\":\"true\"}","{\"input\":\"x\",\"max_output_tokens\":\"10\"}","{\"input\":\"x\",\"text\":42}","{\"input\":\"x\",\"max_output_tokens\":0}"};
         for(String raw:bad) { boolean rejected=false; try { ResponsesBridge.projection(new JSONObject(raw)); } catch(Exception ex) { rejected=true; } check(rejected,"invalid Responses request accepted: "+raw); }
     }
     static void finalOnly() throws Exception {
@@ -84,7 +84,7 @@ public class ResponsesBridgeAuditTest {
             check(rejected,"projection accepted "+entry);
         }
         JSONObject valid=ResponsesBridge.projection(new JSONObject("{\"input\":\"x\",\"store\":true,\"max_output_tokens\":2147483647,\"parallel_tool_calls\":true,\"temperature\":null,\"top_p\":null}"));
-        check(!valid.has("store") && valid.getInt("max_tokens")==Integer.MAX_VALUE && valid.isNull("temperature"),"valid projection changed");
+        check(!valid.has("store") && valid.getInt("max_tokens")==Integer.MAX_VALUE && !valid.has("temperature"),"valid projection changed");
     }
     static void invalidFinalCalls() throws Exception {
         String[] items={"{\"type\":\"function_call\",\"name\":\"f\",\"arguments\":\"{}\"}","{\"type\":\"function_call\",\"call_id\":\"c\",\"arguments\":\"{}\"}"};

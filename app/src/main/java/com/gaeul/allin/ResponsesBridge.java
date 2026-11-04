@@ -11,7 +11,14 @@ import java.util.Set;
 final class ResponsesBridge {
     private static final Set<String> FIELDS = new HashSet<String>(Arrays.asList(
             "model", "input", "instructions", "stream", "max_output_tokens", "temperature", "top_p",
-            "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "store", "metadata", "include", "prompt_cache_key", "service_tier", "truncation", "user", "stream_options", "background", "previous_response_id", "conversation", "prompt", "max_tool_calls"));
+            "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "store", "metadata", "include", "prompt_cache_key", "service_tier", "truncation", "user", "stream_options", "background", "previous_response_id", "conversation", "prompt", "max_tool_calls", "safety_identifier", "top_logprobs", "prompt_cache_retention", "client_metadata", "context_management", "access_programs"));
+
+    static boolean hasUnknownFields(JSONObject request) {
+        for(Iterator<String> keys=request.keys();keys.hasNext();) if(!FIELDS.contains(keys.next())) return true;
+        JSONObject options=request.optJSONObject("stream_options");
+        if(options!=null) for(Iterator<String> keys=options.keys();keys.hasNext();) { String key=keys.next(); if(!"include_usage".equals(key) && !"include_obfuscation".equals(key)) return true; }
+        return false;
+    }
 
     /** Validate and copy before either native forwarding or Chat projection. */
     static JSONObject normalize(JSONObject request) throws Exception {
@@ -19,11 +26,25 @@ final class ResponsesBridge {
         java.util.List<String> unknown = new java.util.ArrayList<String>();
         for (Iterator<String> it=copy.keys(); it.hasNext();) { String key=it.next(); if(!FIELDS.contains(key)) unknown.add(key); }
         for(String key:unknown) copy.remove(key);
+        // Explicit null means omitted for nullable request parameters.
+        for(String key:new String[]{"store","max_output_tokens","temperature","top_p","parallel_tool_calls","reasoning","instructions","text","service_tier","prompt_cache_key","include","tools","tool_choice","user","metadata","stream","stream_options","background","previous_response_id","conversation","prompt","max_tool_calls","safety_identifier","top_logprobs","prompt_cache_retention","client_metadata","context_management","access_programs"}) if(copy.has(key) && copy.isNull(key)) copy.remove(key);
+        if(copy.has("safety_identifier") && !(copy.opt("safety_identifier") instanceof String)) throw new IllegalArgumentException("safety_identifier must be a string");
+        if(copy.has("prompt_cache_retention") && (!(copy.opt("prompt_cache_retention") instanceof String) || !Arrays.asList("in_memory","24h").contains(copy.opt("prompt_cache_retention")))) throw new IllegalArgumentException("Unsupported prompt_cache_retention");
+        if(copy.has("client_metadata") && !(copy.opt("client_metadata") instanceof JSONObject)) throw new IllegalArgumentException("client_metadata must be an object");
+        if(copy.has("top_logprobs")) { Object v=copy.opt("top_logprobs"); if(!(v instanceof Number) || !Double.isFinite(((Number)v).doubleValue()) || ((Number)v).doubleValue()!=Math.floor(((Number)v).doubleValue()) || ((Number)v).doubleValue()<0 || ((Number)v).doubleValue()>20) throw new IllegalArgumentException("top_logprobs must be an integer from 0 to 20"); }
+        if(copy.has("access_programs") && !(copy.opt("access_programs") instanceof JSONObject)) throw new IllegalArgumentException("access_programs must be an object");
+        if(copy.has("context_management")) {
+            Object v=copy.opt("context_management");
+            if(v instanceof JSONArray && ((JSONArray)v).length()==0) copy.remove("context_management");
+            else throw new IllegalArgumentException("context_management is unsupported; provide complete input without automatic compaction");
+        }
         for(String key:new String[]{"user"}) if(copy.has(key) && !copy.isNull(key) && !(copy.opt(key) instanceof String)) throw new IllegalArgumentException(key+" must be a string or null");
         if(copy.has("metadata") && !copy.isNull("metadata") && !(copy.opt("metadata") instanceof JSONObject)) throw new IllegalArgumentException("metadata must be an object or null");
         if(copy.has("stream_options") && !copy.isNull("stream_options")) {
             JSONObject options=copy.optJSONObject("stream_options"); if(options==null) throw new IllegalArgumentException("stream_options must be an object or null");
-            checkKeys(options,new String[]{"include_usage","include_obfuscation"});
+            java.util.List<String> extra=new java.util.ArrayList<String>();
+            for(Iterator<String> keys=options.keys();keys.hasNext();) { String key=keys.next(); if(!"include_usage".equals(key) && !"include_obfuscation".equals(key)) extra.add(key); }
+            for(String key:extra) options.remove(key);
             for(String key:new String[]{"include_usage","include_obfuscation"}) if(options.has(key) && !(options.opt(key) instanceof Boolean)) throw new IllegalArgumentException("stream_options."+key+" must be boolean");
         }
         if(copy.has("background") && !copy.isNull("background") && !(copy.opt("background") instanceof Boolean)) throw new IllegalArgumentException("background must be boolean or null");
@@ -45,7 +66,8 @@ final class ResponsesBridge {
     /** A conservative projection: native-only fields are never sent through Chat. */
     static JSONObject projection(JSONObject request) throws Exception {
         JSONObject copy = normalize(request);
-        for(String key:new String[]{"previous_response_id","conversation","prompt","background","max_tool_calls"}) copy.remove(key);
+        for(String key:new String[]{"previous_response_id","conversation","prompt","background","max_tool_calls","top_logprobs","prompt_cache_retention","client_metadata","access_programs"}) copy.remove(key);
+        JSONObject streamOptions=copy.optJSONObject("stream_options"); if(streamOptions!=null) { streamOptions.remove("include_obfuscation"); if(streamOptions.length()==0) copy.remove("stream_options"); }
         if(copy.has("include") && !copy.isNull("include") && copy.optJSONArray("include")==null) throw new IllegalArgumentException("include must be an array");
         JSONArray includes=copy.optJSONArray("include");
         for(int i=0;includes!=null && i<includes.length();i++) if(!(includes.opt(i) instanceof String)) throw new IllegalArgumentException("include entries must be strings");
@@ -103,6 +125,7 @@ final class ResponsesBridge {
             if(r.has("max_tool_calls") && !r.isNull("max_tool_calls")) return "max_tool_calls requires a native Responses route";
             JSONArray items=r.optJSONArray("input"); for(int i=0;items!=null && i<items.length();i++) { JSONObject item=items.optJSONObject(i); if(item!=null && "reasoning".equals(item.optString("type")) && !item.isNull("encrypted_content") && !item.optString("encrypted_content", "").isEmpty()) return "encrypted reasoning cannot be represented by Chat; use a native Responses route"; }
             for(int i=0;items!=null && i<items.length();i++) { JSONObject item=items.optJSONObject(i); JSONArray parts=item==null?null:item.optJSONArray("content"); for(int j=0;parts!=null && j<parts.length();j++) { JSONObject part=parts.optJSONObject(j); if(part!=null && "refusal".equals(part.optString("type"))) return "refusal history requires a native Responses route"; } }
+            for(String key:new String[]{"top_logprobs","prompt_cache_retention","client_metadata","access_programs"}) if(r.has(key)) return key+" requires a native Responses route";
             if(r.has("store") && r.optBoolean("store",false)) return "store=true requires a native Responses route";
             JSONArray includes=r.optJSONArray("include"); for(int i=0;includes!=null && i<includes.length();i++) if(!Arrays.asList("reasoning.encrypted_content", "message.output_text.logprobs", "message.input_image.image_url", "file_search_call.results", "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url").contains(includes.optString(i))) return "Unsupported include value: "+includes.optString(i);
             projection(r); return null;
@@ -144,7 +167,7 @@ final class ResponsesBridge {
         copy(request, out, "model", "model"); copy(request, out, "stream", "stream");
         copy(request, out, "max_output_tokens", "max_tokens"); copy(request, out, "temperature", "temperature");
         copy(request, out, "top_p", "top_p"); copy(request, out, "parallel_tool_calls", "parallel_tool_calls");
-        copy(request, out, "user", "user"); copy(request, out, "stream_options", "stream_options");
+        copy(request, out, "user", "user"); copy(request, out, "safety_identifier", "safety_identifier"); copy(request, out, "stream_options", "stream_options");
         copy(request, out, "metadata", "metadata"); copy(request, out, "prompt_cache_key", "prompt_cache_key"); copy(request, out, "service_tier", "service_tier");
         JSONObject reasoning = request.optJSONObject("reasoning");
         if (reasoning != null) {
@@ -193,7 +216,7 @@ final class ResponsesBridge {
                     if (!(rawSummary instanceof JSONArray)) throw new IllegalArgumentException("reasoning summary must be an array");
                     JSONArray summary=(JSONArray)rawSummary; StringBuilder thought=new StringBuilder();
                     for(int j=0;j<summary.length();j++) { JSONObject part=summary.optJSONObject(j); if(part==null || !(part.opt("text") instanceof String) || !("summary_text".equals(part.optString("type")) || "reasoning_text".equals(part.optString("type")))) throw new IllegalArgumentException("Unsupported reasoning part"); checkKeys(part,new String[]{"type","text"}); thought.append(part.getString("text")); }
-                    if(thought.length()>0) { JSONObject last=messages.length()==0?null:messages.optJSONObject(messages.length()-1); if(last==null || !"assistant".equals(last.optString("role")) || last.has("tool_calls")) { last=new JSONObject().put("role","assistant").put("content",JSONObject.NULL); messages.put(last); } last.put("reasoning_content",last.optString("reasoning_content", "")+thought.toString()); }
+                    if(thought.length()>0) { JSONObject last=messages.length()==0?null:messages.optJSONObject(messages.length()-1); if(last==null || !"assistant".equals(last.optString("role")) ) { last=new JSONObject().put("role","assistant").put("content",JSONObject.NULL); messages.put(last); } last.put("reasoning_content",last.optString("reasoning_content", "")+thought.toString()); }
                     continue;
                 }
                 checkKeys(item, "message".equals(type) ? new String[]{"type", "role", "content", "id", "status"} : "function_call".equals(type) ? new String[]{"type", "id", "call_id", "name", "arguments", "status"} : new String[]{"type", "id", "call_id", "output", "status"});
@@ -283,15 +306,16 @@ final class ResponsesBridge {
         catch (org.json.JSONException e) { throw new IllegalArgumentException("Invalid Chat request: " + e.getMessage(), e); }
     }
     private static JSONObject chatToResponsesChecked(JSONObject chat, String model) throws Exception {
-        checkKeys(chat,new String[]{"model","messages","stream","stream_options","user","max_tokens","max_completion_tokens","temperature","top_p","parallel_tool_calls","metadata","prompt_cache_key","service_tier","reasoning_effort","tools","tool_choice","response_format","n"});
+        checkKeys(chat,new String[]{"model","messages","stream","stream_options","user","safety_identifier","max_tokens","max_completion_tokens","temperature","top_p","parallel_tool_calls","metadata","prompt_cache_key","service_tier","reasoning_effort","tools","tool_choice","response_format","n"});
         if(chat.has("n") && chat.optInt("n",1)!=1) throw new IllegalArgumentException("Responses supports one choice");
         if(chat.has("stream_options") && !chat.isNull("stream_options")) {
             JSONObject options=chat.optJSONObject("stream_options");
             if(options==null) throw new IllegalArgumentException("invalid stream_options");
-            checkKeys(options,new String[]{"include_usage","include_obfuscation"});
+            for(String key:new String[]{"include_usage","include_obfuscation"}) if(options.has(key) && !(options.opt(key) instanceof Boolean)) throw new IllegalArgumentException("stream_options."+key+" must be boolean");
         }
         JSONObject out = new JSONObject().put("model", model);
-        copy(chat, out, "stream", "stream"); copy(chat, out, "user", "user"); copy(chat, out, "stream_options", "stream_options"); copy(chat, out, "max_tokens", "max_output_tokens");
+        copy(chat, out, "stream", "stream"); copy(chat, out, "user", "user"); copy(chat, out, "safety_identifier", "safety_identifier"); copy(chat, out, "max_tokens", "max_output_tokens");
+        JSONObject options=chat.optJSONObject("stream_options"); if(options!=null && options.has("include_obfuscation")) out.put("stream_options",new JSONObject().put("include_obfuscation",options.get("include_obfuscation")));
         int completion=chat.optInt("max_completion_tokens",0), max=chat.optInt("max_tokens",0);
         if(completion>0 && (max<=0 || completion<max)) out.put("max_output_tokens",completion);
         copy(chat, out, "temperature", "temperature"); copy(chat, out, "top_p", "top_p");

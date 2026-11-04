@@ -33,13 +33,15 @@ public final class ResponsesGatewayOfflineTest {
     static final class Mock implements AutoCloseable {
         ServerSocket server=new ServerSocket(0); Thread worker; volatile JSONObject received; volatile Throwable error; volatile String requestLine;
         Mock(String body,boolean stream) throws Exception { this(body,stream,200); }
-        Mock(String body,boolean stream,int status) throws Exception {
+        Mock(String body,boolean stream,int status) throws Exception { this(body,stream,status,null); }
+        Mock(String body,boolean stream,int status,java.util.function.Predicate<JSONObject> accept) throws Exception {
             worker=new Thread(()->{try(Socket s=server.accept()) {
                 InputStream in=s.getInputStream(); ByteArrayOutputStream headers=new ByteArrayOutputStream(); int state=0,c;
                 while((c=in.read())!=-1) {headers.write(c);state=(state==0&&c=='\r')?1:(state==1&&c=='\n')?2:(state==2&&c=='\r')?3:(state==3&&c=='\n')?4:0;if(state==4)break;}
                 String h=new String(headers.toByteArray(),StandardCharsets.US_ASCII); requestLine=h.split("\\r\\n")[0]; int len=0;for(String line:h.split("\\r\\n"))if(line.toLowerCase().startsWith("content-length:"))len=Integer.parseInt(line.substring(line.indexOf(':')+1).trim());
                 byte[] b=new byte[len];int n=0;while(n<len){int x=in.read(b,n,len-n);if(x<0)throw new IOException("truncated request");n+=x;} received=new JSONObject(new String(b,StandardCharsets.UTF_8));
-                byte[] response=body.getBytes(StandardCharsets.UTF_8);OutputStream out=s.getOutputStream();out.write(("HTTP/1.1 "+status+" "+(status==200?"OK":"Bad Request")+"\r\nContent-Type: "+(stream?"text/event-stream":"application/json")+"\r\nContent-Length: "+response.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(response);out.flush();
+                int actualStatus=accept!=null && !accept.test(received)?400:status; String actualBody=actualStatus==400 && status==200?"{\"error\":\"unsupported request\"}":body;
+                byte[] response=actualBody.getBytes(StandardCharsets.UTF_8);OutputStream out=s.getOutputStream();out.write(("HTTP/1.1 "+actualStatus+" "+(actualStatus==200?"OK":"Bad Request")+"\r\nContent-Type: "+(stream?"text/event-stream":"application/json")+"\r\nContent-Length: "+response.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(response);out.flush();
             }catch(Throwable e){error=e;}});worker.start();
         }
         public void close() throws Exception {worker.join(5000);server.close();if(error!=null)throw new AssertionError(error);check(!worker.isAlive(),"mock timed out");}
