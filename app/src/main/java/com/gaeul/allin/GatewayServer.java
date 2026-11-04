@@ -718,6 +718,21 @@ public class GatewayServer extends NanoHTTPD {
         return best == null ? "127.0.0.1" : best;
     }
 
+    private static boolean isEventStream(Response response) {
+        if (response == null || response.getMimeType() == null) return false;
+        String mime = response.getMimeType();
+        int parameters = mime.indexOf(';');
+        if (parameters >= 0) mime = mime.substring(0, parameters);
+        return "text/event-stream".equalsIgnoreCase(mime.trim());
+    }
+
+    @Override
+    protected boolean useGzipWhenAccepted(Response response) {
+        // NanoHTTPD applies this policy AFTER serve(). Its gzip body writer does
+        // not flush between events; compressing SSE would hold live content.
+        return !isEventStream(response) && super.useGzipWhenAccepted(response);
+    }
+
     @Override
     public Response serve(IHTTPSession session) {
         NATIVE_REQUEST.remove();
@@ -746,6 +761,11 @@ public class GatewayServer extends NanoHTTPD {
                 response.setChunkedTransfer(true);
             }
             if(response!=null && RESP_WARNING.get()!=null) response.addHeader("X-AllIn-Compatibility-Warning",RESP_WARNING.get());
+            if (isEventStream(response)) {
+                response.setMimeType("text/event-stream; charset=UTF-8");
+                response.addHeader("Cache-Control", "no-cache, no-transform");
+                response.addHeader("X-Accel-Buffering", "no");
+            }
             return response;
         }
         finally { RESP_WARNING.remove(); NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); }

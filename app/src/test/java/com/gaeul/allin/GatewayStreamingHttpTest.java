@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.zip.GZIPInputStream;
 import org.json.*;
 
 /** Real loopback HTTP pacing, measured at complete SSE events, never at TCP packet boundaries. */
@@ -57,9 +58,10 @@ public final class GatewayStreamingHttpTest {
         final CountDownLatch gate = new CountDownLatch(1);
         final Thread producer, serverThread;
         final boolean nativeResponses, gated;
-        volatile Throwable error; volatile long firstSent, lastSent; volatile String path;
+        volatile Throwable error; volatile long firstSent, lastSent, reasoningSent; volatile String path;
         Upstream(boolean nativeResponses, boolean gated) throws Exception { this(nativeResponses, gated, false); }
-        Upstream(boolean nativeResponses, boolean gated, boolean truncated) throws Exception {
+        Upstream(boolean nativeResponses, boolean gated, boolean truncated) throws Exception { this(nativeResponses, gated, truncated, false); }
+        Upstream(boolean nativeResponses, boolean gated, boolean truncated, boolean large) throws Exception {
             this.nativeResponses = nativeResponses; this.gated = gated;
             server.setSoTimeout(10000);
             producer = new Thread(() -> {
@@ -69,7 +71,7 @@ public final class GatewayStreamingHttpTest {
                         source.put(nativeResponses ? responses("response.reasoning_summary_text.delta", new JSONObject().put("item_id", "reason1").put("output_index", 0).put("delta", "thought")) : chatDelta(new JSONObject().put("reasoning_content", "thought")));
                         for (int i = 0; i < 20; i++) {
                             if (i > 0) Thread.sleep(50);
-                            String text = "word" + i + ";";
+                            String text = word(i, large);
                             source.put(nativeResponses ? responses("response.output_text.delta", new JSONObject().put("item_id", "msg1").put("output_index", 1).put("content_index", 0).put("delta", text)) : chatDelta(new JSONObject().put("content", text)));
                             // Actual wire timestamps are recorded by the server writer below.
                         }
@@ -104,6 +106,7 @@ public final class GatewayStreamingHttpTest {
                     while ((n = source.read(bytes, 0, bytes.length)) != -1) {
                         out.write(bytes, 0, n); out.flush();
                         String text = new String(bytes, 0, n, StandardCharsets.UTF_8);
+                        if (text.contains("thought")) reasoningSent = System.nanoTime();
                         if (text.contains("word0;")) firstSent = System.nanoTime();
                         if (text.contains("word19;")) lastSent = System.nanoTime();
                     }
@@ -117,6 +120,9 @@ public final class GatewayStreamingHttpTest {
             check(!serverThread.isAlive() && !producer.isAlive(), "upstream threads did not stop");
             if (error != null) throw new AssertionError("upstream failure", error);
         }
+    }
+    static String word(int i, boolean large) {
+        return "word" + i + ";" + (large ? String.join("", Collections.nCopies(1200, "a")) : "");
     }
     static String readLine(InputStream in) throws IOException {
         ByteArrayOutputStream b = new ByteArrayOutputStream(); int c;
@@ -149,22 +155,41 @@ public final class GatewayStreamingHttpTest {
             start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
             Field socket = NanoHTTPD.class.getDeclaredField("myServerSocket"); socket.setAccessible(true); socket.set(gateway, socket.get(this));
         }
-        @Override public Response serve(IHTTPSession session) { return gateway.serve(session); }
+        @Override protected boolean useGzipWhenAccepted(Response response) { return gateway.useGzipWhenAccepted(response); }
+        @Override public Response serve(IHTTPSession session) {
+            if (session.getUri().equals("/test-html")) return newFixedLengthResponse(Response.Status.OK, "text/html; charset=UTF-8", "<html>" + word(0, true) + "</html>");
+            if (session.getUri().equals("/test-json")) return newFixedLengthResponse(Response.Status.OK, "application/json; charset=UTF-8", new JSONObject().put("text", word(0, true)).toString());
+            return gateway.serve(session);
+        }
         public void close() { stop(); }
     }
     static final class Client implements AutoCloseable {
-        final Socket socket; final BufferedReader reader;
-        Client(int port, String uri) throws Exception {
+        final Socket socket; final BufferedReader reader; final Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        Client(int port, String uri) throws Exception { this(port, uri, "identity"); }
+        Client(int port, String uri, String encoding) throws Exception {
             socket = new Socket("127.0.0.1", port); socket.setSoTimeout(7000);
             String payload = uri.endsWith("/responses") ? "{\"model\":\"mock/m\",\"input\":\"hi\",\"stream\":true}" :
                     uri.endsWith("/messages") ? "{\"model\":\"mock/m\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}" :
                     "{\"model\":\"mock/m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}";
             byte[] body = payload.getBytes(StandardCharsets.UTF_8); OutputStream out = socket.getOutputStream();
-            out.write(("POST " + uri + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\nContent-Type: application/json\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII)); out.write(body); out.flush();
+            out.write(("POST " + uri + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\nContent-Type: application/json\r\nContent-Length: " + body.length + "\r\nAccept-Encoding: " + encoding + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII)); out.write(body); out.flush();
             InputStream in = socket.getInputStream(); String status = readLine(in); check(status.contains(" 200 "), "HTTP status " + status);
-            boolean chunked = false; String line;
-            while (!(line = readLine(in)).isEmpty()) if (line.toLowerCase(Locale.ROOT).startsWith("transfer-encoding:") && line.toLowerCase(Locale.ROOT).contains("chunked")) chunked = true;
-            reader = new BufferedReader(new InputStreamReader(chunked ? new Chunked(in) : in, StandardCharsets.UTF_8));
+            String line;
+            while (!(line = readLine(in)).isEmpty()) {
+                int colon = line.indexOf(':');
+                if (colon > 0) headers.merge(line.substring(0, colon).trim(), line.substring(colon + 1).trim(), (x, y) -> x + ", " + y);
+            }
+            if (uri.startsWith("/v1/")) {
+                check(headers.getOrDefault("content-type", "").toLowerCase(Locale.ROOT).matches("text/event-stream\\s*(;.*)?"), "SSE content type " + headers);
+                check(headers.getOrDefault("content-type", "").toLowerCase(Locale.ROOT).contains("charset=utf-8"), "SSE charset " + headers);
+                check(!headers.containsKey("content-encoding"), "SSE must not be compressed: " + headers);
+                String cache = headers.getOrDefault("cache-control", "").toLowerCase(Locale.ROOT);
+                check(Arrays.asList(cache.replace(" ", "").split(",")).containsAll(Arrays.asList("no-cache", "no-transform")), "SSE cache control " + headers);
+                check("no".equalsIgnoreCase(headers.get("x-accel-buffering")), "SSE buffering header " + headers);
+            }
+            InputStream decoded = headers.getOrDefault("transfer-encoding", "").toLowerCase(Locale.ROOT).contains("chunked") ? new Chunked(in) : in;
+            if (headers.getOrDefault("content-encoding", "").equalsIgnoreCase("gzip")) decoded = new GZIPInputStream(decoded);
+            reader = new BufferedReader(new InputStreamReader(decoded, StandardCharsets.UTF_8));
         }
         String next() throws Exception {
             String line; StringBuilder data = new StringBuilder();
@@ -182,15 +207,17 @@ public final class GatewayStreamingHttpTest {
         JSONArray choices = o.optJSONArray("choices"); if (choices == null || choices.length() == 0) return "";
         JSONObject d = choices.getJSONObject(0).optJSONObject("delta"); return d == null ? "" : d.optString("content");
     }
-    static void paced(String label, String uri, boolean nativeResponses) throws Exception {
-        try (Upstream upstream = new Upstream(nativeResponses, false); Fixture fixture = new Fixture(upstream.server.getLocalPort(), nativeResponses ? "responses" : "openai"); Client client = new Client(fixture.getListeningPort(), uri)) {
+    static void paced(String label, String uri, boolean nativeResponses) throws Exception { paced(label, uri, nativeResponses, "identity", false); }
+    static void paced(String label, String uri, boolean nativeResponses, String encoding, boolean large) throws Exception {
+        try (Upstream upstream = new Upstream(nativeResponses, false, false, large); Fixture fixture = new Fixture(upstream.server.getLocalPort(), nativeResponses ? "responses" : "openai"); Client client = new Client(fixture.getListeningPort(), uri, encoding)) {
+            long reasoningAt = 0;
             StringBuilder content = new StringBuilder(), all = new StringBuilder(); List<Long> times = new ArrayList<>(); String data;
             while ((data = client.next()) != null) {
-                all.append(data).append('\n'); if (data.equals("[DONE]")) continue;
+                all.append(data).append('\n'); if (reasoningAt == 0 && data.contains("thought")) reasoningAt = System.nanoTime(); if (data.equals("[DONE]")) continue;
                 JSONObject o = new JSONObject(data); String d = delta(uri, o);
                 if (!d.isEmpty()) { content.append(d); times.add(System.nanoTime()); }
             }
-            StringBuilder expected = new StringBuilder(); for (int i=0;i<20;i++) expected.append("word").append(i).append(';');
+            StringBuilder expected = new StringBuilder(); for (int i=0;i<20;i++) expected.append(word(i, large));
             check(content.toString().equals(expected.toString()), label + " content " + content);
             check(times.size() >= 4, label + " expected multiple SSE content events: " + times.size());
             check(upstream.firstSent != 0 && upstream.lastSent > upstream.firstSent, label + " missing upstream timestamps");
@@ -203,7 +230,9 @@ public final class GatewayStreamingHttpTest {
             for (int i = 1; i < times.size(); i++)
                 if (times.get(i) - times.get(i-1) >= TimeUnit.MILLISECONDS.toNanos(20)) gaps++;
             check(gaps >= 4, label + " insufficient paced content intervals: " + gaps);
-            check(all.toString().contains("thought"), label + " lost reasoning");
+            check(reasoningAt != 0 && upstream.reasoningSent != 0, label + " lost reasoning or timestamp");
+            check(reasoningAt - upstream.reasoningSent < TimeUnit.MILLISECONDS.toNanos(700) && reasoningAt < upstream.lastSent, label + " reasoning delayed");
+            if (large) check(content.length() > 16 * 1024, label + " expected content over 16 KiB");
             String terminal = uri.endsWith("/responses") ? "response.completed" : uri.endsWith("/messages") ? "message_stop" : "[DONE]";
             check(all.toString().contains(terminal) && !all.toString().contains("response.failed"), label + " terminal " + all);
             check(upstream.path.endsWith(nativeResponses ? "/responses" : "/chat/completions"), label + " upstream path " + upstream.path);
@@ -212,7 +241,8 @@ public final class GatewayStreamingHttpTest {
             System.out.println(label + " pacing OK (" + times.size() + " content events, first lag=" + lag + "ms, span=" + span + "ms)");
         }
     }
-    static void gated(String label, String uri, boolean nativeResponses) throws Exception {
+    static void gated(String label, String uri, boolean nativeResponses) throws Exception { gated(label, uri, nativeResponses, "identity"); }
+    static void gated(String label, String uri, boolean nativeResponses, String encoding) throws Exception {
         try (Upstream upstream = new Upstream(nativeResponses, true); Fixture fixture = new Fixture(upstream.server.getLocalPort(), nativeResponses ? "responses" : "openai")) {
             // Messages intentionally defers tool blocks until fragmented identities
             // are complete. Preserve that compatibility; only text pacing and final
@@ -220,7 +250,7 @@ public final class GatewayStreamingHttpTest {
             // expose the first argument while the upstream still holds the rest.
             boolean early = !uri.endsWith("/messages");
             if (!early) upstream.gate.countDown();
-            try (Client client = new Client(fixture.getListeningPort(), uri)) {
+            try (Client client = new Client(fixture.getListeningPort(), uri, encoding)) {
             StringBuilder arguments = new StringBuilder(), all = new StringBuilder(); boolean opened = false; String data;
             while ((data = client.next()) != null) {
                 all.append(data).append('\n'); if (data.equals("[DONE]")) continue;
@@ -243,14 +273,32 @@ public final class GatewayStreamingHttpTest {
             }
         }
     }
-    static void truncated(String label, String uri, boolean nativeResponses) throws Exception {
-        try (Upstream upstream = new Upstream(nativeResponses, false, true); Fixture fixture = new Fixture(upstream.server.getLocalPort(), nativeResponses ? "responses" : "openai"); Client client = new Client(fixture.getListeningPort(), uri)) {
+    static void truncated(String label, String uri, boolean nativeResponses) throws Exception { truncated(label, uri, nativeResponses, "identity"); }
+    static void truncated(String label, String uri, boolean nativeResponses, String encoding) throws Exception {
+        try (Upstream upstream = new Upstream(nativeResponses, false, true); Fixture fixture = new Fixture(upstream.server.getLocalPort(), nativeResponses ? "responses" : "openai"); Client client = new Client(fixture.getListeningPort(), uri, encoding)) {
             StringBuilder all = new StringBuilder(); String data;
             while ((data = client.next()) != null) all.append(data).append('\n');
             String body = all.toString();
             check(body.contains("word0;") && !body.contains("response.completed"), label + " truncated output " + body);
             check(body.contains(uri.endsWith("/responses") ? "response.failed" : "error"), label + " missing error terminal " + body);
             System.out.println(label + " truncated stream OK");
+        }
+    }
+    static void compressedNonSse() throws Exception {
+        try (Fixture fixture = new Fixture(1, "openai")) {
+            for (String mime : new String[]{"text/event-stream", "Text/Event-Stream; charset=UTF-8"}) {
+                NanoHTTPD.Response response = NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, mime, "data: x\n\n");
+                check(!fixture.useGzipWhenAccepted(response), "SSE gzip policy for " + mime);
+            }
+            for (String uri : new String[]{"/test-html", "/test-json"}) {
+                try (Client client = new Client(fixture.getListeningPort(), uri, "gzip")) {
+                    check("gzip".equalsIgnoreCase(client.headers.get("content-encoding")), uri + " must remain gzip: " + client.headers);
+                    StringBuilder body = new StringBuilder(); char[] buf = new char[1024]; int count;
+                    while ((count = client.reader.read(buf)) != -1) body.append(buf, 0, count);
+                    if (uri.endsWith("json")) check(new JSONObject(body.toString()).getString("text").equals(word(0, true)), "JSON gzip decode");
+                    else check(body.toString().equals("<html>" + word(0, true) + "</html>"), "HTML gzip decode");
+                }
+            }
         }
     }
     public static void main(String[] args) throws Exception {
@@ -273,6 +321,29 @@ public final class GatewayStreamingHttpTest {
             truncated("Chat native from Chat", chat, false);
             truncated("Responses converted from Chat", responses, false);
             truncated("Responses native", responses, true);
+            for (String encoding : new String[]{"gzip", "gzip, deflate"}) {
+                paced("Chat " + encoding, chat, false, encoding, false);
+                paced("Messages " + encoding, messages, false, encoding, false);
+                paced("Responses from Chat " + encoding, responses, false, encoding, false);
+                paced("Responses native " + encoding, responses, true, encoding, false);
+                paced("Chat from Responses " + encoding, chat, true, encoding, false);
+                gated("Chat " + encoding, chat, false, encoding);
+                gated("Messages " + encoding, messages, false, encoding);
+                gated("Responses from Chat " + encoding, responses, false, encoding);
+                gated("Responses native " + encoding, responses, true, encoding);
+                gated("Chat from Responses " + encoding, chat, true, encoding);
+                truncated("Chat " + encoding, chat, false, encoding);
+                truncated("Messages " + encoding, messages, false, encoding);
+                truncated("Responses from Chat " + encoding, responses, false, encoding);
+                truncated("Responses native " + encoding, responses, true, encoding);
+                truncated("Chat from Responses " + encoding, chat, true, encoding);
+            }
+            paced("Chat large gzip", chat, false, "gzip", true);
+            paced("Messages large gzip", messages, false, "gzip", true);
+            paced("Responses from Chat large gzip", responses, false, "gzip", true);
+            paced("Responses native large gzip", responses, true, "gzip", true);
+            paced("Chat from Responses large gzip", chat, true, "gzip", true);
+            compressedNonSse();
         } finally {
             GatewayStreamReadOfflineTest.closeLedger();
             try (java.util.stream.Stream<Path> paths = Files.walk(dir)) {

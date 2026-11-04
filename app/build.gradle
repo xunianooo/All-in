@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 12
-        versionName '1.2.7v2'
+        versionCode 13
+        versionName '1.2.7v3'
     }
 
     signingConfigs {
