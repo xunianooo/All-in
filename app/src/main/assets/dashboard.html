@@ -1687,7 +1687,7 @@
       <div class="card">
         <div class="card-title">🔐 权限与保活（网关不响应时先查这里）</div>
         <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6;margin-bottom:12px;">
-          网关是常驻服务，需要通知权限和电池白名单才能不被系统冻结。
+          网关是常驻服务，建议检查通知与电池设置，以降低后台受限的可能。
           系统冻结进程时端口仍在监听，但所有请求都不会处理，表现就是「网关突然没反应」。
         </p>
         <div id="perm-list" style="font-size:0.8rem;line-height:1.6;"></div>
@@ -2545,11 +2545,10 @@
       }
     }
 
-    // 自启动 / 省电策略：MIUI 上没有任何可读接口，不能假装检测到失败。
-    // 做法是「去设置 → 回来后点我已设置」记一次，再用冻结事实反推实际情况。
+    // 用户确认仅表示记录，不代表系统验证。
     function ackRow(title, desc, target, acked, ackedAt, extra) {
-      const color = acked ? 'var(--accent)' : 'var(--text-muted)';
-      const badge = acked ? '✅ 已确认' : '· 需自行确认';
+      const color = 'var(--text-muted)';
+      const badge = acked ? '· 手动确认（未验证）' : '· 未知';
       const when = acked && ackedAt > 0 ? ('（' + new Date(ackedAt).toLocaleDateString() + ' 确认）') : '';
       return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
         + '<div style="flex:1;min-width:0;">'
@@ -2782,7 +2781,7 @@
     function permRow(ok, title, desc, target, btnLabel) {
       const isInfo = (ok === 'info');
       const color = ok === true ? 'var(--accent)' : (isInfo ? 'var(--text-muted)' : '#f59e0b');
-      const badge = ok === true ? '✅ 已就绪' : (isInfo ? '· 请确认' : '⚠️ 需要处理');
+      const badge = ok === true ? '✅ 系统实测' : (isInfo ? '· 未知' : '⚠️ 需要处理');
       const label = btnLabel || '去开启';
       return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
         + '<div style="flex:1;min-width:0;">'
@@ -2864,100 +2863,23 @@
         const fgs = p.foregroundService || {};
 
         let html = '';
-        html += permRow(noti.ok === true, '通知权限',
-          noti.ok === true ? '前台服务通知可正常显示' : '通知被关闭时，系统可能降级前台服务并冻结进程',
-          'notifications');
-        html += permRow(batt.ok === true, '电池优化白名单',
-          batt.known === false ? '系统未提供查询接口，建议手动确认'
-            : (batt.ignored ? '已加入白名单，不会被后台限制' : '未加入白名单，息屏后容易被冻结'),
-          'battery');
-        html += permRow(fgs.ok === true, '前台服务类型',
-          fgs.ok === true ? '已声明 dataSync 类型，可获得 FGS 豁免' : '未声明类型，Android 14+ 将拿不到豁免',
-          'app');
-        // ---- 自启动 / 省电策略 ----
-        // 这两项 MIUI 没有可读接口，所以不硬编码成「需要处理」：
-        // 让用户去设置里确认一次，回来点「我已设置」记下来；
-        // 再用守护进程上报的冻结次数反推实际有没有生效。
-        const auto = p.autostart || {};
-        const ps = p.powersave || {};
-        const wd0 = d.watchdog || {};
-        const recentFreeze = (wd0.unfreezeAgeSeconds >= 0 && wd0.unfreezeAgeSeconds < 86400);
-
-        html += ackRow('自启动', '国产 ROM 常额外限制自启动，需在系统管家类应用里单独放行',
-          'autostart', auto.acked === true, auto.ackedAt || 0, '');
-
-        html += ackRow('省电策略', '点进去把本应用设为「无限制」',
-          'powersave', ps.acked === true, ps.ackedAt || 0,
-          recentFreeze
-            ? '<span style="color:#fbbf24;">⚠ 近 24 小时仍被冻结过 —— 这一项很可能没生效</span>'
-            : (ps.acked ? '<span style="color:#34d399;">近 24 小时未被冻结</span>' : ''));
-
+        html += permRow(measuredPermission(noti), '通知权限', noti.known === true ? (noti.ok === true ? '系统报告通知可用' : '系统报告通知不可用') : '系统未能确认通知状态', 'notifications');
+        html += permRow(measuredPermission(batt), '电池优化白名单', batt.known === true ? (batt.ignored === true ? '系统报告已加入白名单，仍可能受到其他后台限制' : '系统报告未加入白名单') : '系统未提供查询结果，请手动确认', 'battery');
+        html += permRow(fgs.ok === true, '前台服务类型', fgs.ok === true ? '运行时已使用前台服务类型' : '尚未确认类型化前台服务启动成功', 'app');
+        const auto = p.autostart || {}, ps = p.powersave || {};
+        html += ackRow('自启动', '如系统提供此选项，请允许本应用自启动；系统未验证', 'autostart', auto.acked === true, auto.ackedAt || 0, '');
+        html += ackRow('省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0, '');
         const wd = d.watchdog || {};
-        const freezeFlag = p.freezeFlag;
-        const alive = wd.alive === true;
-        html += infoRow(alive ? 'ok' : 'warn', '防冻结守护进程',
-          alive
-            ? ('运行中 · 最近心跳 ' + fmtAgo(wd.beatAgeSeconds) + ' · 累计解冻 ' + (wd.unfreezeCount || 0) + ' 次')
-            : (wd.lastBeatAt > 0
-              ? ('已停止 · 最后心跳 ' + fmtAgo(wd.beatAgeSeconds) + '，网关被冻结后不会自动恢复')
-              : '尚未收到上报，守护进程可能未启动'));
-
-        // 两小时以内才算「正在发生」，更早的只作为历史记录，别一直挂个黄标吓人
+        const wi = watchdogInfo(wd);
+        html += infoRow(wi.tone, '防冻结守护进程', wi.desc);
         const frAge = wd.unfreezeAgeSeconds;
-        const frTone = (frAge >= 0 && frAge < 7200) ? 'warn' : 'ok';
-        let frDesc;
-        if (frAge >= 0 && frAge < 7200) {
-          frDesc = fmtAgo(frAge) + '（' + fmtClock(wd.lastUnfreezeAt)
-            + '）已被守护进程自动解冻 —— 说明省电策略仍没拦住冻结';
-        } else if (frAge >= 0) {
-          frDesc = '最近一次是 ' + fmtAgo(frAge) + '（' + fmtClock(wd.lastUnfreezeAt)
-            + '），已由守护进程解冻；此后没有再被冻结';
-        } else {
-          frDesc = '还没有冻结记录' + (freezeFlag === -1 ? '（本机读不到冻结标记，以守护上报为准）' : '');
-        }
-        html += infoRow(frTone, '最近一次被系统冻结', frDesc);
-
-        // 非 root 保活：靠系统闹钟把进程叫醒并自检，和上面的守护进程是两条路，可以并存
-        // keepalive 挂在 /api/permissions 的顶层，和 permissions 平级，不在 p 里面
-        const ka = p.keepalive || d.keepalive || {};
-        const kaOk = ka.scheduled === true;
-        const kaDesc = kaOk
-          ? ('每 ' + Math.round((ka.intervalSeconds || 900) / 60) + ' 分钟一次 · 上次自检 '
-              + (ka.lastCheckAt > 0
-                  ? (fmtAgo(ka.lastCheckAgeSeconds) + (ka.lastAlive ? ' · 服务正常' : ' · 服务异常，已尝试重启'))
-                  : '暂无记录')
-              + (ka.reviveCount > 0 ? ' · 累计自动重启 ' + ka.reviveCount + ' 次' : ''))
-          : '未排程（下次打开 App 会补上）；没有 root 时这是唯一的自救通道';
-        html += infoRow(kaOk ? 'ok' : 'warn', '定时自检（无 root 保活）', kaDesc);
-        html += '<div style="display:flex;gap:8px;margin:2px 0 6px;">'
-          + '<button class="btn btn-outline" onclick="keepalivePing()" '
-          + 'style="flex:1;justify-content:center;font-size:0.74rem;padding:7px 0;border-radius:16px;'
-          + 'color:#34d399;border-color:rgba(16,185,129,0.35);">⚡ 立即自检</button>'
-          + '<button class="btn btn-outline" onclick="loadPermissions()" '
-          + 'style="flex:1;justify-content:center;font-size:0.74rem;padding:7px 0;border-radius:16px;'
-          + 'color:#38bdf8;border-color:rgba(56,189,248,0.35);">🔄 刷新</button>'
-          + '</div>';
-
-        if (p.rom === 'miui') {
-        html += '<div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);font-size:0.74rem;line-height:1.75;color:var(--text-muted);">'
-          + '<b style="color:#fbbf24;">本机（MIUI / HyperOS）实测结论</b><br>'
-          + '实测这台机器：通知已授权、电池白名单已加入、前台服务已声明、'
-          + '省电策略已选 <code>无限制</code>，但退到后台 <b>30-40 秒仍会被系统冻结</b>。'
-          + '也就是说这几项系统设置<b>并不能</b>阻止 MIUI 的冻结，只能降低概率。<br>'
-          + '还能做的：<br>'
-          + '1. 点「自启动」→ 允许本应用自启动（读不到状态，请自行确认）<br>'
-          + '2. 最近任务里下拉本应用卡片加锁，防止被一键清理<br>'
-          + '3. <b>真正兜底的是上面的守护进程</b>：它每 30 秒检查一次，发现被冻结就立刻解冻'
-          + '</div>';
-        }
-
-        const svc = d.service || {};
-        html += '<div style="margin-top:10px;color:var(--text-muted);font-size:0.74rem;">服务状态：'
-          + (svc.running ? '<span style="color:var(--accent);">运行中</span>' : '<span style="color:#ef4444;">未运行</span>')
-          + ' · 端口 ' + (svc.port || '-')
-          + (freezeFlag === 1 ? ' · <span style="color:#f59e0b;">进程当前已冻结</span>'
-            : (freezeFlag === 0 ? ' · 进程未被冻结' : ''))
-          + '</div>';
+        const recorded = wd.verifiedTarget === true && typeof frAge === 'number' && frAge >= 0;
+        html += infoRow(recorded && frAge < 7200 ? 'warn' : 'unknown', '最近一次冻结记录', recorded ? fmtAgo(frAge) + '有守护进程解冻记录；无法据此判断之后是否冻结' : '未知：没有可验证的本应用冻结记录');
+        const ki = keepaliveInfo(p.keepalive || d.keepalive);
+        html += infoRow(ki.tone, '定时自检（无 root 保活）', ki.desc);
+        html += '<div style="display:flex;gap:8px;margin:2px 0 6px;"><button class="btn btn-outline" onclick="keepalivePing()">立即自检</button><button class="btn btn-outline" onclick="loadPermissions()">刷新</button></div>';
+        html += '<div style="margin-top:12px;font-size:0.74rem;line-height:1.75;color:var(--text-muted);">' + backgroundBrandHint(p.rom) + '</div>';
+        html += infoRow('unknown', '服务状态', serviceHealthInfo(d.service));
         box.innerHTML = html;
       } catch (e) {
         if (box) box.innerHTML = '<div style="color:var(--text-muted);">读取权限状态失败：' + e.message + '</div>';
@@ -5075,9 +4997,51 @@
       }
     }
 
+    function backgroundBrandHint(rom) {
+      const names = {miui:'MIUI / HyperOS', coloros:'ColorOS / 一加 / realme', vivo:'vivo / iQOO', huawei:'华为', honor:'荣耀', samsung:'三星', other:'Android'};
+      const name = names[rom] || names.other;
+      return name + '：在应用详情中查找电池或后台活动设置并允许后台运行；如有自启动选项请允许，最近任务如支持锁定可锁定本应用。各版本名称和入口可能不同。'
+        + (rom === 'miui' ? ' MIUI / HyperOS 即使设置后仍可能冻结后台，请以实际运行情况为准。' : '');
+    }
+
+    function measuredPermission(item) {
+      return item && item.known === true ? (item.ok === true ? true : false) : 'info';
+    }
+
+    function keepaliveInfo(k) {
+      k = k || {};
+      const age = typeof k.lastCheckAgeSeconds === 'number' ? k.lastCheckAgeSeconds : -1;
+      const interval = typeof k.intervalSeconds === 'number' && k.intervalSeconds > 0 ? k.intervalSeconds : 900;
+      const overdue = k.lastCheckAt > 0 && age > interval;
+      const schedule = k.scheduled === true ? '已请求约每 ' + Math.round(interval / 60) + ' 分钟定时自检' : (k.scheduled === false ? '未请求定时自检' : '排程状态未知');
+      return {tone: overdue || k.scheduled === false ? 'warn' : 'unknown', desc: schedule + '；系统可能延迟执行'
+        + (overdue ? '，上次自检已超过请求间隔' : '') + '。上次自检：' + (k.lastCheckAt > 0 && age >= 0 ? fmtAgo(age) : '未知')
+        + '。进程内自检间隔约 30 秒，冻结期间线程也不运行；不能保证所有 ROM 永不掉线。'};
+    }
+
+    function watchdogInfo(wd) {
+      wd = wd || {};
+      if (wd.verifiedTarget !== true) return {tone:'unknown', desc: wd.alive === true ? '收到守护进程心跳，但未验证目标是本应用，保护状态未知' : '未验证守护目标是本应用，保护状态未知'};
+      if (wd.alive === true) return {tone:'unknown', desc:'收到本应用目标的上报心跳，实际保护能力仍需核查 · ' + fmtAgo(wd.beatAgeSeconds)};
+      return {tone: wd.alive === false ? 'warn' : 'unknown', desc: wd.alive === false ? '已验证目标，但未收到有效心跳' : '守护进程状态未知'};
+    }
+
+    function serviceHealthInfo(service) {
+      service = service || {};
+      const h = service.health || service;
+      const val = (v) => v === undefined || v === null ? '未知' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const bool = (v) => v === true ? '是' : v === false ? '否' : '未知';
+      return '服务运行：' + bool(service.running) + ' · 端口：' + val(service.port) + ' · PID：' + val(h.pid)
+        + ' · 监听存活：' + bool(h.listenerAlive) + ' · 健康状态：' + val(h.healthState)
+        + ' · 上次探测：' + (typeof h.lastProbeAgeSeconds === 'number' && h.lastProbeAgeSeconds >= 0 ? fmtAgo(h.lastProbeAgeSeconds) : (h.lastProbeAt > 0 ? fmtClock(h.lastProbeAt) : '未知'))
+        + ' · 探测码：' + (h.lastProbeAt > 0 ? val(h.lastProbeCode) : '未知') + ' · 连续失败：' + val(h.consecutiveFailures)
+        + ' · 重启次数：' + val(h.restartCount) + ' · 活跃请求：' + val(h.activeRequests)
+        + ' · 唤醒锁：' + bool(h.wakeLockHeld) + ' · Wi-Fi 锁：' + bool(h.wifiLockHeld);
+    }
+
     function setupPermRow(ok, title, desc, target, acked, ackedAt) {
-      const tone = ok === true ? '#34d399' : (acked ? '#34d399' : '#f59e0b');
-      const badge = ok === true ? '✅ 已就绪' : (acked ? '✅ 已确认' : '⚠️ 待确认');
+      const tone = ok === true ? '#34d399' : (ok === 'info' || acked ? 'var(--text-muted)' : '#f59e0b');
+      const badge = ok === true ? '✅ 系统实测' : (acked ? '· 手动确认（未验证）' : (ok === 'info' ? '· 未知' : '⚠️ 待处理'));
       return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;'
         + 'padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
         + '<div style="flex:1;min-width:0;">'
@@ -5088,7 +5052,7 @@
         + '<span style="color:' + tone + ';font-size:0.7rem;white-space:nowrap;">' + badge + '</span>'
         + '<button class="btn" style="font-size:0.68rem;padding:4px 10px;border-radius:12px;'
         + 'background:rgba(99,102,241,0.85);" onclick="openPermSettings(\'' + target + '\')">去设置</button>'
-        + (ok === true ? '' : '<button class="btn btn-outline" style="font-size:0.68rem;padding:4px 9px;'
+        + ((target !== 'autostart' && target !== 'powersave') || acked ? '' : '<button class="btn btn-outline" style="font-size:0.68rem;padding:4px 9px;'
             + 'border-radius:12px;color:#34d399;border-color:rgba(16,185,129,0.4);" '
             + 'onclick="setupAck(\'' + target + '\')">我已设置</button>')
         + '</div></div>';
@@ -5101,7 +5065,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ target: target, ack: true })
         });
-        showToast('已记录，稍后回来点「刷新状态」核实');
+        showToast('已记录手动确认，系统状态仍无法验证');
       } catch (e) { showToast('记录失败'); }
     }
 
@@ -5122,17 +5086,12 @@
       const noti = p.notifications || {}, batt = p.battery || {}, fgs = p.foregroundService || {};
       const auto = p.autostart || {}, ps = p.powersave || {};
       let html = '';
-      html += setupPermRow(noti.ok === true, '通知权限',
-        noti.ok === true ? '前台服务通知可以正常显示' : '通知被关时系统可能降级前台服务', 'notifications');
-      html += setupPermRow(batt.ok === true, '电池优化白名单',
-        batt.ignored ? '已在白名单' : '未加入白名单，息屏后容易被冻结', 'battery');
-      html += setupPermRow(fgs.ok === true, '前台服务类型',
-        fgs.ok === true ? '已声明 dataSync 类型' : '未声明类型，Android 14+ 拿不到豁免', 'app');
-      html += setupPermRow(false, '自启动',
-        '国产 ROM 常额外限制自启动，需在系统管家类应用里单独放行',
-        'autostart', auto.acked === true, auto.ackedAt || 0);
-      html += setupPermRow(false, '省电策略',
-        '点进去把本应用设为「无限制」', 'powersave', ps.acked === true, ps.ackedAt || 0);
+      html += setupPermRow(measuredPermission(noti), '通知权限', noti.known === true ? (noti.ok ? '系统报告通知可用' : '系统报告通知不可用') : '系统未能确认通知状态', 'notifications');
+      html += setupPermRow(measuredPermission(batt), '电池优化白名单', batt.known === true ? (batt.ignored ? '系统报告已加入白名单' : '系统报告未加入白名单') : '系统未提供查询结果', 'battery');
+      html += setupPermRow(fgs.ok === true, '前台服务类型', fgs.ok === true ? '运行时已使用前台服务类型' : '尚未确认类型化前台服务启动成功', 'app');
+      html += setupPermRow('info', '自启动', '如系统提供此选项，请允许自启动；系统未验证', 'autostart', auto.acked === true, auto.ackedAt || 0);
+      html += setupPermRow('info', '省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0);
+      html += '<div style="font-size:0.74rem;color:var(--text-muted);">' + backgroundBrandHint(p.rom) + '</div>';
       box.innerHTML = html;
     }
 
@@ -5147,19 +5106,8 @@
       } catch (e) {}
       const k = (d && d.keepalive) || {};
       const wd = (setupState.data && setupState.data.watchdog) || null;
-      let html = '<div style="font-size:0.76rem;color:var(--text-main);line-height:1.7;">';
-      html += k.scheduled
-        ? '<div style="color:#34d399;">✅ 定时自检已排程 · 每 ' + Math.round((k.intervalSeconds || 900) / 60) + ' 分钟一次</div>'
-        : '<div style="color:#f59e0b;">⚠️ 定时自检未排程（会在下次打开 App 时补上）</div>';
-      html += '<div style="color:var(--text-muted);">上次自检：'
-        + (k.lastCheckAt > 0 ? fmtAgo(k.lastCheckAgeSeconds) + (k.lastAlive ? ' · 服务正常' : ' · 服务异常已尝试重启') : '还没有记录')
-        + (k.reviveCount > 0 ? ' · 累计自动重启 ' + k.reviveCount + ' 次' : '') + '</div>';
-      if (wd && wd.alive === true) {
-        html += '<div style="color:#34d399;margin-top:4px;">✅ root 守护进程在位（比定时自检更及时，30 秒一轮）</div>';
-      } else {
-        html += '<div style="color:var(--text-muted);margin-top:4px;">· 没有 root 守护进程，只靠上面的定时自检</div>';
-      }
-      html += '</div>';
+      const ki = keepaliveInfo(k), wi = watchdogInfo(wd);
+      let html = '<div style="font-size:0.76rem;color:var(--text-main);line-height:1.7;">' + ki.desc + '<br>守护进程：' + wi.desc + '</div>';
       box.innerHTML = html;
     }
 
@@ -6559,8 +6507,7 @@
         <!-- 第 2 步：权限 -->
         <div id="setup-step-2" style="display:none;">
           <div style="font-size:0.78rem; color:var(--text-muted); line-height:1.7; margin-bottom:10px;">
-            这三项不放过，前台服务会被系统降级并冻结，网关会「端口还在但不再响应」。
-            点「去设置」逐项放行，回来点「刷新状态」核实。
+            请检查通知与后台设置。部分厂商选项无法自动读取，手动确认不等于系统验证。
           </div>
           <div id="setup-perm-list"></div>
           <button id="setup-btn-refresh-perms" class="btn btn-outline" onclick="setupRefreshPerms()"
@@ -6571,10 +6518,7 @@
         <!-- 第 3 步：保活 -->
         <div id="setup-step-3" style="display:none;">
           <div style="font-size:0.78rem; color:var(--text-muted); line-height:1.7; margin-bottom:10px;">
-            <b style="color:#c7d2fe;">没有 root</b>：靠系统的周期闹钟每 15 分钟把进程叫醒一次，
-            顺便检查网关是否还活着，死了就自动重启。<br>
-            <b style="color:#c7d2fe;">有 root</b>：配合 <code>magpie_watchdog.sh</code> 更及时（30 秒一轮），
-            两者可以同时存在，不冲突。
+            系统定时自检请求间隔约 15 分钟，系统可能延迟执行；进程内自检间隔约 30 秒，冻结期间线程也不运行。无法保证所有 ROM 永不掉线。
           </div>
           <div id="setup-keepalive-body"
             style="background:rgba(255,255,255,0.03); border:1px solid var(--card-border); border-radius:10px;

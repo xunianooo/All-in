@@ -453,6 +453,10 @@ public class GatewayServer extends NanoHTTPD {
             // 留 3 倍余量容忍设备休眠/短暂卡顿）
             boolean alive = lastBeat > 0 && (now - lastBeat) < 15L * 60L * 1000L;
             out.put("alive", alive);
+            out.put("targetPackage", st.optString("targetPackage", ""));
+            out.put("reportedTargetMatches", "com.gaeul.allin".equals(st.optString("targetPackage", "")));
+            // A package name in a heartbeat is a claim, not proof of protection.
+            out.put("verifiedTarget", false);
             out.put("beatAgeSeconds", lastBeat > 0 ? (now - lastBeat) / 1000L : -1);
             out.put("unfreezeAgeSeconds", lastUnfreeze > 0 ? (now - lastUnfreeze) / 1000L : -1);
             JSONArray arr = new JSONArray();
@@ -733,8 +737,54 @@ public class GatewayServer extends NanoHTTPD {
         return !isEventStream(response) && super.useGzipWhenAccepted(response);
     }
 
+    // Lazy initialisation also supports the existing isolated JVM fixtures.
+    private ForwardRequestGate forwardGate;
+    private String healthId;
+    private synchronized ForwardRequestGate requestGate() {
+        if (forwardGate == null) forwardGate = new ForwardRequestGate();
+        return forwardGate;
+    }
+    public synchronized String healthInstanceId() {
+        if (healthId == null) healthId = java.util.UUID.randomUUID().toString();
+        return healthId;
+    }
+    public int activeForwardRequests() { return requestGate().active(); }
+    public boolean beginIdleRecovery() { return requestGate().beginRecovery(); }
+    private static boolean isModelRequest(IHTTPSession session) {
+        String uri = session.getUri();
+        // Cover every currently accepted forwarding route, including native and
+        // legacy /responses aliases; no method-based gap in recovery protection.
+        return uri != null && (uri.startsWith("/v1/") || uri.startsWith("/v1beta/")
+                || uri.startsWith("/backend-api/") || uri.endsWith("/responses"));
+    }
     @Override
     public Response serve(IHTTPSession session) {
+        if ("/api/health".equals(session.getUri())) {
+            if (!isLocalRequest(session)) return newFixedLengthResponse(Status.FORBIDDEN, "text/plain", "Loopback only");
+            if (session.getMethod() != Method.GET) return newFixedLengthResponse(Status.METHOD_NOT_ALLOWED, "text/plain", "GET required");
+            Response health = newFixedLengthResponse(Status.OK, "application/json; charset=UTF-8",
+                    new JSONObject().put("ok", true).put("service", "com.gaeul.allin")
+                            .put("instance", healthInstanceId()).toString());
+            health.addHeader("Cache-Control", "no-store");
+            return health;
+        }
+        if (!isModelRequest(session)) return serveTrackedRequest(session);
+        final ForwardRequestGate gate = requestGate();
+        if (!gate.enter()) return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "application/json",
+                "{\"error\":{\"message\":\"Gateway listener is recovering; retry shortly\"}}");
+        boolean handedOff = false;
+        try {
+            Response response = serveTrackedRequest(session);
+            if (response == null) return null;
+            Response tracked = new fi.iki.elonen.AllInTrackedResponse(response, new Runnable() {
+                @Override public void run() { gate.leave(); }
+            });
+            handedOff = true;
+            return tracked;
+        } finally { if (!handedOff) gate.leave(); }
+    }
+
+    private Response serveTrackedRequest(IHTTPSession session) {
         NATIVE_REQUEST.remove();
         NATIVE_BASELINE.remove();
         NATIVE_DIRECT_ALLOWED.remove();
@@ -965,6 +1015,7 @@ public class GatewayServer extends NanoHTTPD {
                 JSONObject svc = new JSONObject();
                 svc.put("running", GatewayService.isRunning());
                 svc.put("port", getListeningPort());
+                svc.put("health", GatewayService.healthStatus(context));
                 ret.put("service", svc);
                 ret.put("watchdog", buildWatchdogStatus());
                 // 非 root 保活的真实状态：闹钟排了没、上次自检什么时候、重启过几次
@@ -1021,6 +1072,7 @@ public class GatewayServer extends NanoHTTPD {
                             }
                             while (watchdogLog.size() > 20) watchdogLog.remove(watchdogLog.size() - 1);
                         }
+                        watchdogState.put("targetPackage", req.optString("targetPackage", ""));
                         watchdogState.put("lastBeatAt", now);
                         watchdogState.put("lastBeatPid", req.optString("pid", ""));
                         saveWatchdogState();

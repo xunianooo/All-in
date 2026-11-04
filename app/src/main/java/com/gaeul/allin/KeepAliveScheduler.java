@@ -8,144 +8,103 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import org.json.JSONObject;
 
-/**
- * 非 root 保活：用 AlarmManager 周期唤醒本进程做自检。
- *
- * 为什么这个在没有 root 的机器上有用：
- *  - 国产 ROM（MIUI/HyperOS 实测）把亮屏切后台的进程塞进 cgroup.freeze 后，
- *    端口还 LISTEN，但不响应，等于假活。root 靠 watchdog 轮询 cgroup.freeze 解冻。
- *  - 没有 root 时，唯一还能穿透冻结态把进程叫醒的机制就是 AlarmManager：
- *    闹钟广播投递前系统必须先冻结解冻（thaw）目标进程，广播才送得到。
- *    所以「周期闹钟」不是心灵鸡汤，是能把进程定期解冻回来的动作。
- *  - 自检本身同时兼顾另一种死法：服务被 ROM 直接停掉（端口不再监听），
- *    这时广播里直接把前台服务重新拉起来。
- *
- * 只能做到「定期叫醒 + 发现死了就重启」，做不到「永不被冻结」——
- * 15 分钟一次是 setInexactRepeating 在 Doze 下能被保证的下限，别指望更密。
- */
+/** Inexact one-shot requests: delivery depends on Android and vendor policy. */
 public class KeepAliveScheduler {
-
-    private static final String TAG = "Magpie";
-    private static final String PREFS = "magpie_keepalive";
-    private static final String KEY_LAST_CHECK = "lastCheckAt";
-    private static final String KEY_LAST_ALIVE = "lastAlive";
-    private static final String KEY_LAST_CODE = "lastCode";
-    private static final String KEY_REVIVE = "reviveCount";
-    private static final String KEY_SCHEDULED_AT = "scheduledAt";
-    private static final String KEY_SCHEDULED_ELAPSED = "scheduledElapsed";
-
-    /** Doze 下 setInexactRepeating 的实际节流下限：15 分钟。写小了也不会更快。 */
     public static final long INTERVAL_MS = 15L * 60L * 1000L;
     private static final int REQ_CODE = 3425;
-
-    private static PendingIntent buildPendingIntent(Context ctx) {
-        Intent i = new Intent(ctx, KeepAliveReceiver.class);
-        i.setAction(KeepAliveReceiver.ACTION_TICK);
+    private static SharedPreferences prefs(Context c) { return c.getSharedPreferences("magpie_keepalive", Context.MODE_PRIVATE); }
+    private static PendingIntent pending(Context c) {
+        Intent i = new Intent(c, KeepAliveReceiver.class).setAction(KeepAliveReceiver.ACTION_TICK)
+                .putExtra(KeepAliveReceiver.EXTRA_ALARM, true);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
-        return PendingIntent.getBroadcast(ctx, REQ_CODE, i, flags);
+        return PendingIntent.getBroadcast(c, REQ_CODE, i, flags);
     }
-
-    /** 排程（幂等：重复调用只是续上同一个闹钟） */
-    public static boolean schedule(Context ctx) {
-        if (ctx == null) return false;
+    public static synchronized boolean schedule(Context c) {
+        if (c == null) return false;
+        if (!GatewayService.isGatewayEnabled(c)) { cancel(c); return false; }
+        SharedPreferences p = prefs(c);
+        long now = SystemClock.elapsedRealtime();
+        long scheduled = p.getLong("scheduledElapsed", 0);
+        long target = p.getLong("nextElapsed", 0);
+        long scheduledWall = p.getLong("scheduledAt", 0);
+        long wallAge = System.currentTimeMillis() - scheduledWall;
+        // A reboot changes elapsed time; wall/elapsed mismatch also catches fast reboots.
+        if ("inexactOneShot".equals(p.getString("mode", "")) && scheduled > 0 && now >= scheduled && target > 0 && wallAge >= 0
+                && Math.abs(wallAge - (now - scheduled)) < 60000L) return true;
+        return request(c, now);
+    }
+    static synchronized void rearmAfterDelivery(Context c) {
+        if (!GatewayService.isGatewayEnabled(c)) { cancel(c); return; }
+        request(c, SystemClock.elapsedRealtime());
+    }
+    private static boolean request(Context c, long now) {
         try {
-            AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-            if (am == null) return false;
-            long nowElapsed = SystemClock.elapsedRealtime();
-            long lastElapsed = prefs(ctx).getLong(KEY_SCHEDULED_ELAPSED, 0L);
-            // 5 分钟内刚排过就跳过：多个入口（服务 onCreate/onDestroy、Activity、开机广播）
-            // 连着调时，不要每次都把首次触发重置成「+60 秒」——那会让 15 分钟周期退化成 60 秒。
-            // 用 elapsedRealtime 判断顺带处理了重启：重启后 nowElapsed 变小，条件不成立，会重新排。
-            if (lastElapsed > 0 && nowElapsed >= lastElapsed && nowElapsed - lastElapsed < 5L * 60L * 1000L) {
-                return true;
-            }
-            PendingIntent pi = buildPendingIntent(ctx);
-            long first = nowElapsed + 60L * 1000L;
-            am.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, first, INTERVAL_MS, pi);
-            prefs(ctx).edit()
-                    .putLong(KEY_SCHEDULED_AT, System.currentTimeMillis())
-                    .putLong(KEY_SCHEDULED_ELAPSED, nowElapsed)
-                    .apply();
-            Log.i(TAG, "keepalive alarm scheduled, interval=" + INTERVAL_MS + "ms");
+            AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+            if (am == null) { recordOutcome(c, "scheduleFailed", "AlarmManagerUnavailable"); return false; }
+            long target = now + INTERVAL_MS;
+            if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, target, pending(c));
+            else am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, target, pending(c));
+            long wall = System.currentTimeMillis();
+            prefs(c).edit().putLong("scheduledAt", wall).putLong("scheduledElapsed", now)
+                    .putLong("nextElapsed", target).putLong("nextRequestedAt", wall + INTERVAL_MS)
+                    .putString("mode", "inexactOneShot").apply();
             return true;
         } catch (Throwable t) {
-            Log.w(TAG, "keepalive schedule failed: " + t.getMessage());
+            recordOutcome(c, "scheduleFailed", t.getClass().getSimpleName());
+            Log.w("Magpie", "Alarm request failed: " + t.getClass().getSimpleName());
             return false;
         }
     }
-
-    public static void cancel(Context ctx) {
-        if (ctx == null) return;
+    public static synchronized void cancel(Context c) {
+        if (c == null) return;
         try {
-            AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-            if (am != null) am.cancel(buildPendingIntent(ctx));
-            prefs(ctx).edit().remove(KEY_SCHEDULED_AT).remove(KEY_SCHEDULED_ELAPSED).apply();
-        } catch (Throwable ignored) {
-        }
+            AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+            if (am != null) am.cancel(pending(c));
+        } catch (Throwable ignored) { }
+        prefs(c).edit().remove("scheduledAt").remove("scheduledElapsed").remove("nextElapsed")
+                .remove("nextRequestedAt").remove("mode").apply();
     }
-
-    /** 立即触发一次自检（面板上的「立即自检」按钮走这里） */
-    public static void tickNow(Context ctx) {
-        if (ctx == null) return;
-        try {
-            Intent i = new Intent(ctx, KeepAliveReceiver.class);
-            i.setAction(KeepAliveReceiver.ACTION_TICK);
-            ctx.sendBroadcast(i);
-        } catch (Throwable t) {
-            Log.w(TAG, "tickNow failed: " + t.getMessage());
-        }
+    public static void tickNow(Context c) {
+        if (c == null) return;
+        c.sendBroadcast(new Intent(c, KeepAliveReceiver.class).setAction(KeepAliveReceiver.ACTION_TICK));
     }
-
-    static void recordCheck(Context ctx, boolean alive, int code) {
-        try {
-            prefs(ctx).edit()
-                    .putLong(KEY_LAST_CHECK, System.currentTimeMillis())
-                    .putBoolean(KEY_LAST_ALIVE, alive)
-                    .putInt(KEY_LAST_CODE, code)
-                    .apply();
-        } catch (Throwable ignored) {
-        }
+    static void recordCheck(Context c, boolean alive, int code) {
+        prefs(c).edit().putLong("lastCheckAt", System.currentTimeMillis()).putBoolean("lastAlive", alive)
+                .putInt("lastCode", code).putLong("lastOutcomeAt", System.currentTimeMillis())
+                .putString("lastOutcome", alive ? "healthy" : "unhealthy")
+                .putString("lastErrorType", "").apply();
     }
-
-    static void recordRevive(Context ctx) {
-        try {
-            SharedPreferences sp = prefs(ctx);
-            sp.edit().putInt(KEY_REVIVE, sp.getInt(KEY_REVIVE, 0) + 1).apply();
-        } catch (Throwable ignored) {
-        }
+    static void recordOutcome(Context c, String outcome, String error) {
+        prefs(c).edit().putString("lastOutcome", outcome).putString("lastErrorType", error)
+                .putLong("lastOutcomeAt", System.currentTimeMillis()).apply();
     }
-
-    /** 给 /api/permissions 用的真实状态；读不到就如实说没有 */
-    public static org.json.JSONObject status(Context ctx) {
-        org.json.JSONObject o = new org.json.JSONObject();
+    static void recordRevive(Context c) {
+        SharedPreferences p = prefs(c);
+        p.edit().putInt("reviveCount", p.getInt("reviveCount", 0) + 1).apply();
+    }
+    public static JSONObject status(Context c) {
+        JSONObject o = new JSONObject();
         try {
-            SharedPreferences sp = prefs(ctx);
-            long scheduledAt = sp.getLong(KEY_SCHEDULED_AT, 0);
-            long lastCheck = sp.getLong(KEY_LAST_CHECK, 0);
-            long now = System.currentTimeMillis();
-            o.put("scheduled", scheduledAt > 0);
-            o.put("scheduledAt", scheduledAt);
+            SharedPreferences p = prefs(c);
+            long at = p.getLong("scheduledAt", 0), check = p.getLong("lastCheckAt", 0);
+            o.put("scheduled", at > 0); // persisted request, not proof of delivery
+            o.put("mode", p.getString("mode", "unknown"));
+            o.put("scheduledAt", at);
+            o.put("nextRequestedAt", p.getLong("nextRequestedAt", 0));
             o.put("intervalSeconds", INTERVAL_MS / 1000);
-            o.put("lastCheckAt", lastCheck);
-            o.put("lastCheckAgeSeconds", lastCheck > 0 ? (now - lastCheck) / 1000 : -1);
-            o.put("lastAlive", sp.getBoolean(KEY_LAST_ALIVE, false));
-            o.put("lastCode", sp.getInt(KEY_LAST_CODE, 0));
-            o.put("reviveCount", sp.getInt(KEY_REVIVE, 0));
-            // 排程只存在内存里，进程被杀后会丢；这里用「服务是否在跑」作为参考
+            o.put("lastCheckAt", check);
+            o.put("lastCheckAgeSeconds", check > 0 ? (System.currentTimeMillis() - check) / 1000 : -1);
+            o.put("lastAlive", p.getBoolean("lastAlive", false));
+            o.put("lastCode", p.getInt("lastCode", 0));
+            o.put("reviveCount", p.getInt("reviveCount", 0));
+            o.put("lastOutcome", p.getString("lastOutcome", ""));
+            o.put("lastOutcomeAt", p.getLong("lastOutcomeAt", 0));
+            o.put("lastErrorType", p.getString("lastErrorType", ""));
             o.put("serviceRunning", GatewayService.isRunning());
-        } catch (Throwable t) {
-            try {
-                o.put("scheduled", false);
-                o.put("error", t.getMessage());
-            } catch (Throwable ignored) {
-            }
-        }
+        } catch (Throwable ignored) { }
         return o;
-    }
-
-    private static SharedPreferences prefs(Context ctx) {
-        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 }

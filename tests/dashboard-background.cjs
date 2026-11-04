@@ -1,0 +1,34 @@
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+const html = fs.readFileSync('app/src/main/assets/dashboard.html', 'utf8');
+function extract(name) {
+  const start = html.indexOf('    function ' + name + '(');
+  assert(start >= 0, 'missing function ' + name);
+  const next = html.indexOf('\n    }', start);
+  assert(next >= 0);
+  return html.slice(start, next + 6);
+}
+const names = ['fmtAgo','fmtClock','backgroundBrandHint','measuredPermission','keepaliveInfo','watchdogInfo','serviceHealthInfo','ackRow','setupPermRow'];
+const ctx = {};
+vm.createContext(ctx);
+vm.runInContext(names.map(extract).join('\n'), ctx);
+assert.match(ctx.backgroundBrandHint('miui'), /MIUI/);
+for (const brand of ['coloros','vivo','huawei','honor','samsung','other']) assert.match(ctx.backgroundBrandHint(brand), /后台/);
+assert.strictEqual(ctx.measuredPermission({ok:true}), 'info');
+assert.strictEqual(ctx.measuredPermission({known:false,ok:true}), 'info');
+assert.strictEqual(ctx.measuredPermission({known:true,ok:true}), true);
+assert.strictEqual(ctx.measuredPermission({known:true,ok:false}), false);
+assert.match(ctx.ackRow('a','b','autostart',true,0,''), /手动确认（未验证）/);
+assert.match(ctx.ackRow('a','b','autostart',false,0,''), /未知/);
+assert.match(ctx.setupPermRow('info','a','b','autostart',true,0), /手动确认（未验证）/);
+assert.strictEqual(ctx.keepaliveInfo({scheduled:true,lastCheckAt:1,lastCheckAgeSeconds:901,intervalSeconds:900}).tone, 'warn');
+assert.match(ctx.keepaliveInfo({scheduled:true}).desc, /可能延迟/);
+assert.strictEqual(ctx.watchdogInfo({alive:true}).tone, 'unknown');
+assert.match(ctx.watchdogInfo({alive:true}).desc, /未验证/);
+assert.strictEqual(ctx.watchdogInfo({alive:true,verifiedTarget:true}).tone, 'unknown');
+assert.match(ctx.serviceHealthInfo({running:true}), /监听存活：未知/);
+assert.match(ctx.serviceHealthInfo({listenerAlive:true, pid:42}), /监听存活：是/);
+assert.match(ctx.serviceHealthInfo({health:{lastProbeAt:0,lastProbeCode:0}}), /探测码：未知/);
+assert.match(ctx.serviceHealthInfo({health:{healthState:'<bad>'}}), /&lt;bad&gt;/);
+console.log('dashboard background tests passed');

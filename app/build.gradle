@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 13
-        versionName '1.2.7v3'
+        versionCode 14
+        versionName '1.2.8'
     }
 
     signingConfigs {
@@ -89,6 +89,9 @@ def offlineTestMains = [
         'com.gaeul.allin.SetupKeyOfflineTest',
         'com.gaeul.allin.AtomicConfigFileOfflineTest',
         'com.gaeul.allin.GatewayStreamReadOfflineTest',
+        'com.gaeul.allin.BackgroundHealthOfflineTest',
+        'com.gaeul.allin.RecoveryPolicyTest',
+        'fi.iki.elonen.TrackedResponseOfflineTest',
 ]
 
 def mainClassesDir = provider { tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().destinationDirectory.get() }

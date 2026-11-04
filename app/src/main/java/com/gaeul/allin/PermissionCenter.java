@@ -49,7 +49,8 @@ public class PermissionCenter {
 
         // ---------- 通知 ----------
         JSONObject noti = new JSONObject();
-        boolean granted = true;
+        boolean granted = false;
+        boolean notificationKnown = false;
         boolean runtime = true;
         int importance = -1;
         try {
@@ -58,7 +59,7 @@ public class PermissionCenter {
                 try {
                     Method m = nm.getClass().getMethod("areNotificationsEnabled");
                     Object r = m.invoke(nm);
-                    if (r instanceof Boolean) granted = ((Boolean) r).booleanValue();
+                    if (r instanceof Boolean) { granted = ((Boolean) r).booleanValue(); notificationKnown = true; }
                 } catch (Throwable ignored) {
                 }
                 try {
@@ -72,14 +73,15 @@ public class PermissionCenter {
             if (Build.VERSION.SDK_INT >= 33) {
                 runtime = ctx.checkCallingOrSelfPermission("android.permission.POST_NOTIFICATIONS")
                         == android.content.pm.PackageManager.PERMISSION_GRANTED;
-                if (!runtime) granted = false;
+                if (!runtime) { granted = false; notificationKnown = true; }
             }
         } catch (Throwable ignored) {
         }
+        put(noti, "known", notificationKnown);
         put(noti, "granted", granted);
         put(noti, "runtime", runtime);
         put(noti, "importance", importance);
-        put(noti, "ok", granted);
+        put(noti, "ok", notificationKnown && granted);
         put(out, "notifications", noti);
 
         // ---------- 电池优化白名单 ----------
@@ -100,7 +102,7 @@ public class PermissionCenter {
         }
         put(battery, "ignored", ignored);
         put(battery, "known", known);
-        put(battery, "ok", !known || ignored);
+        put(battery, "ok", known && ignored);
         put(out, "battery", battery);
 
         // ---------- 前台服务类型 ----------
@@ -124,15 +126,17 @@ public class PermissionCenter {
         // com.miui.securitycenter 的私有数据库里，应用级省电策略存在
         // com.miui.powerkeeper 里，普通应用身份都读不到。
         //
-        // 所以不假装能检测，改成「用户自己确认 + 用冻结事实反推」：
+        // 无公开接口时只记录用户确认，不能推断系统设置：
         //   acked   —— 用户点过「我已设置」
-        //   ok      —— 只有 acked 才算 ok，绝不硬编码成失败
+        //   ok      —— 未经系统验证时为 false
         JSONObject auto = new JSONObject();
         boolean autoAck = isAcked(ctx, "autostart");
         put(auto, "detectable", false);
         put(auto, "acked", autoAck);
         put(auto, "ackedAt", ackedAt(ctx, "autostart"));
-        put(auto, "ok", autoAck);
+        put(auto, "verified", false);
+        put(auto, "status", autoAck ? "user_confirmed" : "unknown");
+        put(auto, "ok", false);
         put(out, "autostart", auto);
 
         JSONObject powersave = new JSONObject();
@@ -140,12 +144,14 @@ public class PermissionCenter {
         put(powersave, "detectable", false);
         put(powersave, "acked", psAck);
         put(powersave, "ackedAt", ackedAt(ctx, "powersave"));
-        put(powersave, "ok", psAck);
+        put(powersave, "verified", false);
+        put(powersave, "status", psAck ? "user_confirmed" : "unknown");
+        put(powersave, "ok", false);
         put(out, "powersave", powersave);
 
         put(out, "sdk", Build.VERSION.SDK_INT);
         put(out, "packageName", pkg);
-        put(out, "rom", isMiui() ? "miui" : "other");
+        put(out, "rom", brandFamily(Build.MANUFACTURER, Build.BRAND));
         return out;
     }
 
@@ -185,23 +191,22 @@ public class PermissionCenter {
         }
     }
 
-    /** 是否小米系 ROM */
+    public static String brandFamily(String manufacturer, String brand) {
+        String[] values = {brand, manufacturer};
+        for (String value : values) {
+            String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+            if (v.equals("xiaomi") || v.equals("redmi") || v.equals("poco")) return "miui";
+            if (v.equals("oppo") || v.equals("oneplus") || v.equals("realme")) return "coloros";
+            if (v.equals("vivo") || v.equals("iqoo")) return "vivo";
+            if (v.equals("huawei")) return "huawei";
+            if (v.equals("honor")) return "honor";
+            if (v.equals("samsung")) return "samsung";
+        }
+        return "other";
+    }
+
     public static boolean isMiui() {
-        try {
-            Class<?> c = Class.forName("android.os.SystemProperties");
-            Object o = c.getMethod("get", String.class).invoke(null, "ro.miui.ui.version.name");
-            String v = (o == null) ? "" : o.toString();
-            if (v != null && v.length() > 0) return true;
-        } catch (Throwable ignored) {
-        }
-        try {
-            Class<?> c = Class.forName("android.os.SystemProperties");
-            Object o = c.getMethod("get", String.class).invoke(null, "ro.miui.build.region");
-            String v = (o == null) ? "" : o.toString();
-            if (v != null && v.length() > 0) return true;
-        } catch (Throwable ignored) {
-        }
-        return false;
+        return "miui".equals(brandFamily(Build.MANUFACTURER, Build.BRAND));
     }
 
     private static void put(JSONObject o, String k, Object v) {
@@ -216,35 +221,6 @@ public class PermissionCenter {
      * @param target notifications / battery / app / autostart
      * @return 是否成功唤起了某个页面
      */
-    /**
-     * 小米/Redmi 的「应用信息」页：一页里同时有「省电策略」和「自启动」两项，
-     * 是本机实测唯一能直接落到应用级省电策略的入口。
-     * （PowerSettings 打开的是全局省电页，改不了单个应用的"无限制"）
-     */
-    private static boolean openMiuiAppInfo(Context ctx, String pkg) {
-        // 首选系统标准 action：MIUI 会把它路由到自家的「应用信息」页，
-        // 而直接点名私有类名 com.miui.appmanager.ApplicationsDetailsActivity
-        // 在普通应用身份下会被拦（实测启动后立刻回退），只有 root shell 能启动。
-        if (openAppDetails(ctx)) return true;
-        String[][] candidates = new String[][]{
-                {"com.miui.securitycenter", "com.miui.appmanager.ApplicationsDetailsActivity"},
-                {"com.miui.securitycenter", "com.miui.appmanager.AppManagerMainActivity"}
-        };
-        for (String[] c : candidates) {
-            try {
-                Intent i = new Intent();
-                i.setClassName(c[0], c[1]);
-                i.putExtra("packageName", pkg);
-                i.putExtra("extra_package_uid", ctx.getApplicationInfo().uid);
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                ctx.startActivity(i);
-                return true;
-            } catch (Throwable ignored) {
-            }
-        }
-        return false;
-    }
-
     public static boolean openSettings(Context ctx, String target) {
         if (ctx == null) return false;
         String pkg = ctx.getPackageName();
@@ -285,24 +261,20 @@ public class PermissionCenter {
         }
 
         if ("autostart".equals(t)) {
-            // 本机实测：应用信息页里直接就有「自启动」开关，比独立的自启动列表页更好找
-            if (isMiui() && openMiuiAppInfo(ctx, pkg)) return true;
-            // 国产 ROM 的自启动管理页不在 AOSP 标准里，按常见程度逐个尝试。
-            String[][] candidates = new String[][]{
-                    // 小米 / Redmi (MIUI / HyperOS)
-                    {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"},
-                    // OPPO / 一加 / realme (ColorOS)
+            String rom = brandFamily(Build.MANUFACTURER, Build.BRAND);
+            if ("miui".equals(rom) && openAppDetails(ctx)) return true;
+            String[][] candidates;
+            if ("miui".equals(rom)) candidates = new String[][]{
+                    {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"}};
+            else if ("coloros".equals(rom)) candidates = new String[][]{
                     {"com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"},
                     {"com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"},
-                    {"com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"},
-                    // vivo
-                    {"com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"},
-                    // 华为 / 荣耀
-                    {"com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
-                    // 三星 / 其它
-                    {"com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"},
-                    {"com.letv.android.letvsafe", "com.letv.android.letvsafe.AutobootManageActivity"}
-            };
+                    {"com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"}};
+            else if ("vivo".equals(rom)) candidates = new String[][]{
+                    {"com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"}};
+            else if ("huawei".equals(rom)) candidates = new String[][]{
+                    {"com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"}};
+            else candidates = new String[0][];
             for (String[] c : candidates) {
                 try {
                     Intent i = new Intent();
@@ -310,40 +282,12 @@ public class PermissionCenter {
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     ctx.startActivity(i);
                     return true;
-                } catch (Throwable ignoredAuto) {
-                }
+                } catch (Throwable ignoredAuto) { }
             }
             return openAppDetails(ctx);
         }
 
-        if ("powersave".equals(t)) {
-            // 应用级「省电策略 → 无限制」只在本应用的详情页里，全局省电页改不了它。
-            if (isMiui() && openMiuiAppInfo(ctx, pkg)) return true;
-            String[][] powerPages = new String[][]{
-                    {"com.miui.securitycenter", "com.miui.powercenter.PowerSettings"},
-                    {"com.miui.securitycenter", "com.miui.powercenter.PowerMainActivity"},
-                    {"com.coloros.safecenter", "com.coloros.safecenter.permission.PermissionManagerActivity"}
-            };
-            for (String[] c : powerPages) {
-                try {
-                    Intent i = new Intent();
-                    i.setClassName(c[0], c[1]);
-                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    ctx.startActivity(i);
-                    return true;
-                } catch (Throwable ignoredPw) {
-                }
-            }
-            // 退回系统的电池使用情况页
-            try {
-                Intent i = new Intent(ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                ctx.startActivity(i);
-                return true;
-            } catch (Throwable ignoredPw2) {
-            }
-            return openAppDetails(ctx);
-        }
+        if ("powersave".equals(t)) return openAppDetails(ctx);
 
         return openAppDetails(ctx);
     }

@@ -16,88 +16,233 @@ public class GatewayService extends Service {
     private static final String CHANNEL_ID = "magpie_pocket_channel";
     private static final int NOTIFICATION_ID = 3425;
 
-    private static volatile boolean RUNNING = false;
-    /** 带 foregroundServiceType 的 startForeground 是否成功（供权限页展示真实状态） */
-    private static volatile boolean TYPED_FOREGROUND_OK = false;
-    private static volatile int FOREGROUND_TYPE_MASK = 0;
-
-    public static boolean isTypedForeground() {
-        return TYPED_FOREGROUND_OK;
-    }
-
-    public static int foregroundTypeMask() {
-        return FOREGROUND_TYPE_MASK;
-    }
-
-    private GatewayServer server;
+    private static volatile boolean RUNNING;
+    private static volatile boolean TYPED_FOREGROUND_OK;
+    private static volatile int FOREGROUND_TYPE_MASK;
+    private static volatile GatewayService current;
+    private static volatile String startError = "";
+    private final Object lifecycle = new Object();
+    private static final Object ENGINE_SERIAL = new Object();
+    private static final java.util.concurrent.atomic.AtomicInteger PENDING_STOPS = new java.util.concurrent.atomic.AtomicInteger();
+    private final RecoveryPolicy recoveryPolicy = new RecoveryPolicy();
+    private volatile GatewayServer server;
+    private volatile boolean disposed;
+    private volatile boolean foreground;
+    private volatile long createdAt, lastProbeAt, lastProbeMs;
+    private volatile int lastCode, failures, restartCount;
+    private volatile String phase = "created", lastReason = "", errorType = "";
+    private java.util.concurrent.ScheduledExecutorService worker;
+    private final java.util.concurrent.atomic.AtomicBoolean checkQueued = new java.util.concurrent.atomic.AtomicBoolean();
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
 
-    // 供 UI 与开关按钮查询网关当前的真实运行状态
-    public static boolean isRunning() {
-        return RUNNING;
+    public static boolean isTypedForeground() { return TYPED_FOREGROUND_OK; }
+    public static int foregroundTypeMask() { return FOREGROUND_TYPE_MASK; }
+    public static boolean isRunning() { return RUNNING; }
+    public static boolean isGatewayEnabled(Context context) {
+        try { return context.getSharedPreferences("magpie_prefs", MODE_PRIVATE)
+                .getBoolean("gateway_enabled", true); }
+        catch (Throwable t) { return false; }
     }
 
-    @Override
-    public void onCreate() {
+    public static void requestHealthCheck(Context context, String reason) {
+        if (context == null || !isGatewayEnabled(context)) return;
+        GatewayService instance = current;
+        if (instance != null && !instance.disposed) {
+            instance.enqueue(reason);
+            return;
+        }
+        try {
+            Intent intent = new Intent(context, GatewayService.class);
+            if (Build.VERSION.SDK_INT >= 26) {
+                Context.class.getMethod("startForegroundService", Intent.class).invoke(context, intent);
+            } else context.startService(intent);
+            startError = "";
+            KeepAliveScheduler.recordOutcome(context, "restartRequested", "");
+        } catch (Throwable t) {
+            Throwable cause = t.getCause() != null ? t.getCause() : t;
+            startError = cause.getClass().getSimpleName();
+            KeepAliveScheduler.recordOutcome(context, "startRestricted", startError);
+            Log.w("Magpie", "Foreground service start failed: " + startError);
+        }
+    }
+
+    public static org.json.JSONObject healthStatus(Context context) {
+        org.json.JSONObject o = new org.json.JSONObject();
+        GatewayService s = current;
+        try {
+            o.put("enabled", context != null && isGatewayEnabled(context));
+            o.put("serviceCreatedAt", s == null ? 0 : s.createdAt);
+            o.put("pid", android.os.Process.myPid());
+            GatewayServer server = s == null ? null : s.server;
+            o.put("listenerAlive", server != null && server.isAlive());
+            o.put("foreground", s != null && s.foreground);
+            o.put("typedForeground", TYPED_FOREGROUND_OK);
+            o.put("foregroundTypeMask", FOREGROUND_TYPE_MASK);
+            o.put("wakeLockHeld", s != null && s.wakeLock != null && s.wakeLock.isHeld());
+            o.put("wifiLockHeld", s != null && s.wifiLock != null && s.wifiLock.isHeld());
+            o.put("phase", s == null ? "stopped" : s.phase);
+            o.put("healthState", s == null ? "stopped" : s.phase);
+            o.put("activeRequests", server == null ? 0 : server.activeForwardRequests());
+            o.put("lastProbeAgeSeconds", s == null || s.lastProbeAt == 0 ? -1 : Math.max(0, (System.currentTimeMillis() - s.lastProbeAt) / 1000));
+            o.put("lastProbeAt", s == null ? 0 : s.lastProbeAt);
+            o.put("lastProbeCode", s == null ? 0 : s.lastCode);
+            o.put("lastProbeMs", s == null ? 0 : s.lastProbeMs);
+            o.put("consecutiveFailures", s == null ? 0 : s.failures);
+            o.put("restartCount", s == null ? 0 : s.restartCount);
+            o.put("lastReason", s == null ? "" : s.lastReason);
+            o.put("errorType", s == null ? startError : s.errorType);
+        } catch (Throwable ignored) { }
+        return o;
+    }
+
+    @Override public void onCreate() {
         super.onCreate();
-        
-        // 尝试创建前台通知与保活
-        try {
-            createNotificationChannel();
-            startForegroundNotification();
-        } catch (Throwable t) {
-            Log.w("Magpie", "Foreground notification warning: " + t.getMessage());
+        createdAt = System.currentTimeMillis();
+        current = this;
+        createNotificationChannel();
+        startForegroundNotification();
+        if (!isGatewayEnabled(this)) {
+            phase = "disabled";
+            KeepAliveScheduler.cancel(this);
+            stopSelf();
+            return;
         }
-
-        try {
-            acquireLocks();
-        } catch (Throwable t) {
-            Log.w("Magpie", "Acquire locks warning: " + t.getMessage());
-        }
-
-        // 启动本地网关引擎（带重试与冲突自愈）
-        // 放到工作线程：GatewayServer 构造函数要读 config.json、初始化用量账本（解析最多 90 天 jsonl），
-        // 失败分支还会 sleep 600ms —— 这些全在主线程做，冷启动/开机/自愈重启都有 ANR 风险。
-        new Thread(new Runnable() {
-            @Override
+        acquireLocks();
+        worker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        worker.scheduleWithFixedDelay(new Runnable() {
             public void run() {
-                startGatewayEngine();
+                try { check("periodic"); } catch (Throwable t) { RUNNING = false; errorType = t.getClass().getSimpleName(); phase = "checkError"; }
             }
-        }, "gateway-boot").start();
+        }, 2, 30, java.util.concurrent.TimeUnit.SECONDS);
     }
 
-    private void startGatewayEngine() {
-        try {
-            server = new GatewayServer(this, 3425);
-            server.start();
-            RUNNING = true;
-            Log.i("Magpie", "GatewayServer started on port 3425");
-            try {
-                KeepAliveScheduler.schedule(this);
-            } catch (Throwable ignored) {}
-        } catch (Throwable e) {
-            Log.w("Magpie", "GatewayServer first start failed: " + e.getMessage() + ", retrying after brief pause...");
-            try {
-                Thread.sleep(600);
-                if (server != null) { try { server.stop(); } catch (Throwable ignored) {} }
-                server = new GatewayServer(this, 3425);
-                server.start();
-                RUNNING = true;
-                Log.i("Magpie", "GatewayServer retry start succeeded on port 3425");
-            } catch (Throwable e2) {
-                // 如果 3425 端口已被占用且正在响应，视为网关仍在运行
-                try {
-                    java.net.Socket s = new java.net.Socket();
-                    s.connect(new java.net.InetSocketAddress("127.0.0.1", 3425), 300);
-                    s.close();
-                    RUNNING = true;
-                } catch (Throwable ignored) {
-                    RUNNING = false;
+    private void enqueue(final String reason) {
+        java.util.concurrent.ScheduledExecutorService w = worker;
+        if (w == null || disposed || !checkQueued.compareAndSet(false, true)) return;
+        try { w.execute(new Runnable() { public void run() {
+            try { check(reason); } catch (Throwable t) { RUNNING = false; errorType = t.getClass().getSimpleName(); phase = "checkError"; }
+            finally { checkQueued.set(false); }
+        } }); } catch (java.util.concurrent.RejectedExecutionException ignored) { checkQueued.set(false); }
+    }
+
+    private void check(String reason) {
+        if (disposed || !isGatewayEnabled(this)) return;
+        lastReason = safeReason(reason);
+        GatewayServer own = server;
+        if (own == null || !own.isAlive()) {
+            RUNNING = false;
+            startEngine();
+            return;
+        }
+        phase = "probing";
+        long begin = android.os.SystemClock.elapsedRealtime();
+        HealthProbe.Result result = HealthProbe.probe(own.healthInstanceId());
+        lastProbeMs = android.os.SystemClock.elapsedRealtime() - begin;
+        lastProbeAt = System.currentTimeMillis();
+        lastCode = result.code;
+        errorType = result.error;
+        if (disposed || !isGatewayEnabled(this)) return;
+        KeepAliveScheduler.recordCheck(this, result.ok, result.code);
+        if (result.ok) {
+            recoveryPolicy.probeSucceeded();
+            failures = 0;
+            synchronized (lifecycle) {
+                if (disposed || !isGatewayEnabled(this) || server != own) return;
+                phase = "healthy";
+                RUNNING = own.isAlive();
+            }
+            return;
+        }
+        RUNNING = false;
+        recoveryPolicy.probeFailed();
+        failures = recoveryPolicy.failures();
+        phase = "unhealthy";
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (!recoveryPolicy.mayRecover(now)) return;
+        synchronized (ENGINE_SERIAL) {
+            synchronized (lifecycle) {
+                if (disposed || !isGatewayEnabled(this) || server != own) return;
+                if (!own.beginIdleRecovery()) { phase = "waitingForRequests"; return; }
+                recoveryPolicy.recoveryStarted(now);
+                phase = "restarting";
+                server = null;
+                restartCount++;
+            }
+            try { own.stop(); } catch (Throwable t) { errorType = t.getClass().getSimpleName(); }
+        }
+        startEngine();
+    }
+
+    private void startEngine() {
+        synchronized (ENGINE_SERIAL) {
+            if (disposed || !isGatewayEnabled(this)) return;
+            if (PENDING_STOPS.get() > 0) { phase = "waitingForStop"; scheduleFollowup(2000L); return; }
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (!recoveryPolicy.mayStart(now)) { phase = "startBackoff"; return; }
+            GatewayServer old;
+            synchronized (lifecycle) {
+                if (disposed || !isGatewayEnabled(this)) return;
+                old = server;
+                if (old != null) {
+                    if (old.isAlive()) return;
+                    if (!old.beginIdleRecovery()) { phase = "waitingForRequests"; return; }
+                    server = null;
                 }
-                Log.e("Magpie", "GatewayServer start final result: running=" + RUNNING + ", err=" + e2.getMessage());
+            }
+            if (old != null) try { old.stop(); } catch (Throwable t) { errorType = t.getClass().getSimpleName(); }
+            if (disposed || !isGatewayEnabled(this)) return;
+            phase = "starting";
+            GatewayServer candidate = null;
+            boolean published = false;
+            try {
+                candidate = new GatewayServer(this, 3425);
+                if (disposed || !isGatewayEnabled(this)) return;
+                candidate.start();
+                if (!candidate.isAlive()) throw new IllegalStateException("listener not alive");
+                synchronized (lifecycle) {
+                    if (disposed || !isGatewayEnabled(this)) return;
+                    server = candidate;
+                    published = true;
+                    RUNNING = false; // Only the identity probe establishes health.
+                    phase = "awaitingProbe";
+                    errorType = "";
+                }
+                recoveryPolicy.startSucceeded();
+                if (!disposed && isGatewayEnabled(this)) {
+                    KeepAliveScheduler.schedule(this);
+                    scheduleFollowup(2000L);
+                }
+            } catch (Throwable t) {
+                if (!disposed) {
+                    RUNNING = false;
+                    phase = "startFailed";
+                    errorType = t.getClass().getSimpleName();
+                    long delay = recoveryPolicy.startFailed(android.os.SystemClock.elapsedRealtime());
+                    Log.w("Magpie", "Gateway start failed: " + errorType + "; retry in " + delay + "ms");
+                    scheduleFollowup(delay);
+                }
+            } finally {
+                if (!published && candidate != null) {
+                    try { candidate.stop(); } catch (Throwable t) { Log.w("Magpie", "Candidate stop: " + t.getClass().getSimpleName()); }
+                }
             }
         }
+    }
+
+    private void scheduleFollowup(long delay) {
+        java.util.concurrent.ScheduledExecutorService w = worker;
+        if (disposed || w == null) return;
+        try { w.schedule(new Runnable() { public void run() { enqueue("periodic"); } },
+                delay, java.util.concurrent.TimeUnit.MILLISECONDS); }
+        catch (java.util.concurrent.RejectedExecutionException ignored) { }
+    }
+
+    private static String safeReason(String reason) {
+        if (reason == null) return "unknown";
+        if ("periodic".equals(reason) || "start".equals(reason) || "alarm".equals(reason)
+                || "boot".equals(reason) || "manual".equals(reason)) return reason;
+        return "external";
     }
 
     private void createNotificationChannel() {
@@ -181,6 +326,7 @@ public class GatewayService extends Service {
             try {
                 Method m = Service.class.getMethod("startForeground", int.class, Notification.class, int.class);
                 m.invoke(this, Integer.valueOf(NOTIFICATION_ID), notification, Integer.valueOf(TYPE_DATA_SYNC));
+                foreground = true;
                 TYPED_FOREGROUND_OK = true;
                 FOREGROUND_TYPE_MASK = TYPE_DATA_SYNC;
                 Log.i("Magpie", "startForeground with type=dataSync ok");
@@ -192,6 +338,7 @@ public class GatewayService extends Service {
             }
         }
         startForeground(NOTIFICATION_ID, notification);
+        foreground = true;
     }
 
     private void acquireLocks() {
@@ -199,58 +346,66 @@ public class GatewayService extends Service {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MagpiePocket::WakeLock");
+                wakeLock.setReferenceCounted(false);
                 wakeLock.acquire();
             }
-
+        } catch (Throwable t) { Log.w("Magpie", "Wake lock: " + t.getClass().getSimpleName()); }
+        try {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
                 wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "MagpiePocket::WifiLock");
+                wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) { Log.w("Magpie", "Wifi lock: " + t.getClass().getSimpleName()); }
     }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!isGatewayEnabled(this)) {
+            KeepAliveScheduler.cancel(this);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        KeepAliveScheduler.schedule(this);
+        enqueue("start");
         return START_STICKY;
     }
 
-    /**
-     * 用户从最近任务里划掉 App 时，ROM 常在随后几十秒内回收前台服务。
-     * 这里补一次排程：闹钟在下个周期会醒来看一眼，服务没了就重新拉起。
-     */
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        try {
-            KeepAliveScheduler.schedule(this);
-        } catch (Throwable ignored) {
-        }
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        if (isGatewayEnabled(this)) KeepAliveScheduler.schedule(this);
+        else KeepAliveScheduler.cancel(this);
         super.onTaskRemoved(rootIntent);
     }
 
-    @Override
-    public void onDestroy() {
-        RUNNING = false;
-        // 服务被停不代表用户想永久关掉；把自检留着，下次闹钟会决定要不要重新拉起
-        try {
-            KeepAliveScheduler.schedule(this);
-        } catch (Throwable ignored) {
-        }
-        if (server != null) {
-            try { server.stop(); } catch (Throwable ignored) {}
+    @Override public void onDestroy() {
+        disposed = true;
+        if (worker != null) worker.shutdownNow();
+        final GatewayServer toStop;
+        synchronized (lifecycle) {
+            if (current == this) current = null;
+            RUNNING = false;
+            toStop = server;
+            if (toStop != null) PENDING_STOPS.incrementAndGet();
             server = null;
         }
-        if (wakeLock != null && wakeLock.isHeld()) {
-            try { wakeLock.release(); } catch (Throwable ignored) {}
+        if (toStop != null) {
+            new Thread(new Runnable() { public void run() {
+                synchronized (ENGINE_SERIAL) {
+                    try { toStop.stop(); } catch (Throwable t) {
+                        Log.w("Magpie", "Gateway stop: " + t.getClass().getSimpleName());
+                    } finally { PENDING_STOPS.decrementAndGet(); }
+                }
+            } }, "gateway-stop").start();
         }
-        if (wifiLock != null && wifiLock.isHeld()) {
-            try { wifiLock.release(); } catch (Throwable ignored) {}
-        }
+        TYPED_FOREGROUND_OK = false;
+        FOREGROUND_TYPE_MASK = 0;
+        foreground = false;
+        try { stopForeground(true); } catch (Throwable ignored) { }
+        try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Throwable ignored) { }
+        try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Throwable ignored) { }
+        if (!isGatewayEnabled(this)) KeepAliveScheduler.cancel(this);
         super.onDestroy();
     }
 
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
+    @Override public IBinder onBind(Intent intent) { return null; }
 }

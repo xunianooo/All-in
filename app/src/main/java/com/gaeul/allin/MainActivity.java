@@ -875,8 +875,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (!GatewayService.isRunning() && isGatewayEnabledPref()) {
-            startGatewayService();
+        if (isGatewayEnabledPref()) {
+            GatewayService.requestHealthCheck(this, "resume");
         }
         if (webView != null) {
             webView.postDelayed(new Runnable() {
