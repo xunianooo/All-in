@@ -8,10 +8,12 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.2.4（versionCode 8）
+- 当前版本：1.2.5（versionCode 9）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
+
+首页顶部提供作者 Gaeul（@xunianooo）主页与项目直达链接，图标使用本地内嵌 GitHub 矢量标识。项目仍为私密时，需要使用有访问权限的 GitHub 账号查看。
 
 ## 致谢
 
@@ -70,3 +72,5 @@ MAGPIE_KEY_ALIAS=gaeul \
 `.github/workflows/ci.yml`：push 时自动跑离线测试并产出 Debug APK artifact。
 正式签名 job 需要配置 Secrets（`MAGPIE_KEYSTORE_BASE64` / `MAGPIE_KEYSTORE_PASS`）
 后取消注释启用。
+
+GitHub 标识来自 Primer Octicons，许可见 `app/src/main/assets/licenses/primer-octicons-MIT.txt`。
