@@ -79,6 +79,7 @@ def offlineTestMains = [
         'com.gaeul.allin.DeepSeekToolBridgeTest',
         'com.gaeul.allin.GatewayMissingProviderOfflineTest',
         'com.gaeul.allin.ResponsesBridgeOfflineTest',
+        'com.gaeul.allin.ResponsesBridgeAuditTest',
         'com.gaeul.allin.ResponsesGatewayOfflineTest',
         'com.gaeul.allin.RoutingSetupOfflineTest',
 ]
