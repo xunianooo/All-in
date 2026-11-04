@@ -4626,7 +4626,7 @@ public class GatewayServer extends NanoHTTPD {
         final boolean[] uCommitted = new boolean[]{false};
 
         InputStream pipedStream = new InputStream() {
-            private final BufferedReader reader = new BufferedReader(new InputStreamReader(upstreamIs));
+            private final BufferedReader reader = new BufferedReader(new InputStreamReader(upstreamIs, java.nio.charset.StandardCharsets.UTF_8));
             private ByteArrayInputStream currentChunkIs = null;
             private boolean flushedTail = false;
             private boolean sawDone = false;
@@ -4777,6 +4777,22 @@ public class GatewayServer extends NanoHTTPD {
 
                 currentChunkIs = new ByteArrayInputStream((restored + "\n").getBytes("UTF-8"));
                 return currentChunkIs.read();
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                if (b == null) throw new NullPointerException();
+                if (off < 0 || len < 0 || off > b.length - len) throw new IndexOutOfBoundsException();
+                if (len == 0) return 0;
+                // The default bulk read waits for len bytes or EOF across SSE lines.
+                // NanoHTTPD requests 16 KiB; return the current line immediately.
+                // Use read() to retain the existing transformation/error pipeline.
+                int first = read();
+                if (first < 0) return -1;
+                b[off] = (byte) first;
+                int count = Math.min(len - 1, currentChunkIs.available());
+                if (count > 0) currentChunkIs.read(b, off + 1, count);
+                return count + 1;
             }
 
             @Override

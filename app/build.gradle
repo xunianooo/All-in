@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 11
-        versionName '1.2.7'
+        versionCode 12
+        versionName '1.2.7v2'
     }
 
     signingConfigs {
@@ -88,6 +88,7 @@ def offlineTestMains = [
         'com.gaeul.allin.RoutingAuditOfflineTest',
         'com.gaeul.allin.SetupKeyOfflineTest',
         'com.gaeul.allin.AtomicConfigFileOfflineTest',
+        'com.gaeul.allin.GatewayStreamReadOfflineTest',
 ]
 
 def mainClassesDir = provider { tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().destinationDirectory.get() }
@@ -120,6 +121,14 @@ tasks.register('offlineTests') {
     dependsOn offlineTestTasks
 }
 
+
+tasks.register('streamingHttpTests', JavaExec) {
+    group = 'verification'
+    description = '运行真实环回 HTTP 流式节奏回归测试'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.GatewayStreamingHttpTest'
+}
 
 tasks.register('setupKeyHttpTests', JavaExec) {
     group = 'verification'

@@ -44,6 +44,11 @@ jobs:
         run: |
           if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat setupKeyHttpTests --no-daemon }
           else { ./gradlew setupKeyHttpTests --no-daemon }
+      - name: Streaming HTTP pacing and gated tools
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat streamingHttpTests --no-daemon }
+          else { ./gradlew streamingHttpTests --no-daemon }
       - name: Debug APK
         shell: pwsh
         run: |
