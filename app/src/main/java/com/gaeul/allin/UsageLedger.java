@@ -7,6 +7,9 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.RandomAccessFile;
+import java.util.TreeMap;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.text.SimpleDateFormat;
@@ -49,6 +52,42 @@ public class UsageLedger {
     private static File currentFile;
     private static OutputStreamWriter writer;
     private static String currentMonth = "";
+    private static final Object REBUILD_LOCK = new Object();
+    private static Map<String, HeatCounts> heatDays = new LinkedHashMap<String, HeatCounts>();
+    // Timestamp precision from the indexed local day onward supports clock rollback.
+    private static final TreeMap<Long, HeatCounts> future = new TreeMap<Long, HeatCounts>();
+    private static TimeZone heatZone;
+    private static long firstTimestamp = Long.MAX_VALUE;
+    private static long invalidLines, readErrors, persistenceErrors, uncertainWrites;
+    private static long precisionStart;
+    private static boolean initializing;
+    // Package-private fault hooks for deterministic offline tests.
+    interface RollbackHook { boolean rollback(File file, long length) throws Exception; }
+    static RollbackHook rollbackHook;
+    static Runnable rebuildSnapshotHook;
+    private static List<Row> rebuildDelta;
+    private static final List<Row> unpersisted = new ArrayList<Row>();
+    private static long generation;
+
+    private static final class HeatCounts {
+        long input, output, requests, failed;
+        void add(Row r) { requests++; if (r.failed()) failed++; else { input += r.in; output += r.out; } }
+        void add(HeatCounts c) { input += c.input; output += c.output; requests += c.requests; failed += c.failed; }
+        void subtract(HeatCounts c) { input -= c.input; output -= c.output; requests -= c.requests; failed -= c.failed; }
+        JSONObject json() { JSONObject o = new JSONObject(); o.put("tokens", input + output); o.put("input", input); o.put("output", output); o.put("requests", requests); o.put("failed", failed); return o; }
+    }
+    private static void addHeat(Map<String, HeatCounts> index, Row r, TimeZone zone) {
+        String key = dayKey(r.t, zone);
+        HeatCounts c = index.get(key);
+        if (c == null) { c = new HeatCounts(); index.put(key, c); }
+        c.add(r);
+    }
+    private static void addFuture(TreeMap<Long, HeatCounts> index, Row r) {
+        HeatCounts c = index.get(r.t);
+        if (c == null) { c = new HeatCounts(); index.put(r.t, c); }
+        c.add(r);
+    }
+
 
     /** 内存索引：按天分桶，天 -> 行列表 */
     private static final LinkedHashMap<String, List<Row>> DAYS = new LinkedHashMap<String, List<Row>>();
@@ -80,22 +119,22 @@ public class UsageLedger {
             return status >= 400 || (err != null && !err.isEmpty());
         }
 
-        public int tokens() {
-            return in + out;
+        public long tokens() {
+            return (long) in + out;
         }
     }
 
     // ---------------------------------------------------------------- 汇总
 
     public static class Totals {
-        public int input, output, cacheRead, cacheWrite, reasoning;
-        public int requests, failed, retried;
-        public int timed;          // 有 TTFT 的成功调用数
+        public long input, output, cacheRead, cacheWrite, reasoning;
+        public long requests, failed, retried;
+        public long timed;          // 有 TTFT 的成功调用数
         public long ttftSum;
         public long msSum;
         public long decodeMs;
-        public int decodeOut;
-        public int cacheUnknown;
+        public long decodeOut;
+        public long cacheUnknown;
 
         void add(Row r) {
             requests++;
@@ -122,7 +161,7 @@ public class UsageLedger {
             }
         }
 
-        public int tokens() {
+        public long tokens() {
             return input + output;
         }
 
@@ -136,7 +175,7 @@ public class UsageLedger {
 
         /** @return 命中率 0..1，和一个「是否可算」的标志 */
         public double[] hitRate() {
-            int p = input + cacheRead + cacheWrite - cacheUnknown;
+            long p = input + cacheRead + cacheWrite - cacheUnknown;
             if (p <= 0) return new double[]{0, 0};
             return new double[]{(double) cacheRead / p, 1};
         }
@@ -168,17 +207,39 @@ public class UsageLedger {
     // ---------------------------------------------------------------- 生命周期
 
     public static void init(File filesDir) {
-        synchronized (LOCK) {
-            baseDir = new File(filesDir, DIR);
-            if (!baseDir.exists()) baseDir.mkdirs();
-            load();
-            openWriter();
+        synchronized (REBUILD_LOCK) {
+            synchronized (LOCK) {
+                closeWriter();
+                baseDir = new File(filesDir, DIR);
+                DAYS.clear(); heatDays.clear(); future.clear(); unpersisted.clear(); firstTimestamp = Long.MAX_VALUE;
+                invalidLines = 0; readErrors = 0; persistenceErrors = 0; uncertainWrites = 0;
+                initializing = true;
+                if (!baseDir.exists() && !baseDir.mkdirs()) persistenceErrors++;
+                heatZone = null; generation++;
+            }
+            rebuild(TimeZone.getDefault(), true, System.currentTimeMillis());
+            synchronized (LOCK) { openWriter(); }
         }
     }
 
-    private static String dayKey(long t) {
+    private static String dayKey(long t) { return dayKey(t, TimeZone.getDefault()); }
+    private static String dayKey(long t, TimeZone zone) {
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        f.setTimeZone(zone);
         return f.format(new Date(t));
+    }
+
+    private static void closeWriter() {
+        if (writer != null) {
+            try { writer.close(); } catch (Exception e) { persistenceErrors++; }
+            writer = null;
+        }
+    }
+
+    private static long midnight(long now, TimeZone zone) {
+        Calendar c = Calendar.getInstance(zone, Locale.US); c.setTimeInMillis(now);
+        c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
+        return c.getTimeInMillis();
     }
 
     private static String monthKey(long t) {
@@ -188,56 +249,82 @@ public class UsageLedger {
 
     private static void openWriter() {
         try {
-            if (writer != null) {
-                try {
-                    writer.flush();
-                    writer.close();
-                } catch (Throwable ignored) {
-                }
-            }
+            closeWriter();
             String m = monthKey(System.currentTimeMillis());
             currentMonth = m;
             currentFile = new File(baseDir, "ledger-" + m + ".jsonl");
+            // A previous failed append may have left a partial JSON line. Preserve
+            // it for the scanner to report, but never join a new row to it.
+            if (currentFile.exists() && currentFile.length() > 0) {
+                try (RandomAccessFile file = new RandomAccessFile(currentFile, "rw")) {
+                    file.seek(file.length() - 1);
+                    if (file.read() != '\n') { file.seek(file.length()); file.write('\n'); }
+                }
+            }
             writer = new OutputStreamWriter(new FileOutputStream(currentFile, true), "UTF-8");
         } catch (Throwable e) {
             writer = null;
+            persistenceErrors++;
         }
     }
 
-    /** 启动时把最近 MEMORY_DAYS 天的账本读进内存 */
-    private static void load() {
-        DAYS.clear();
-        long cutoff = System.currentTimeMillis() - MEMORY_DAYS * 86400000L;
-        File[] files = baseDir.listFiles();
-        if (files == null) return;
-        for (File f : files) {
+    // Snapshot file lengths under LOCK, then read only that prefix without holding LOCK.
+    // Records written concurrently are replayed exactly once from rebuildDelta.
+    private static void rebuild(TimeZone zone, boolean loadRows, long now) {
+        Map<String, HeatCounts> next = new LinkedHashMap<String, HeatCounts>();
+        TreeMap<Long, HeatCounts> nextFuture = new TreeMap<Long, HeatCounts>();
+        List<Row> loaded = new ArrayList<Row>();
+        File[] files; long[] lengths; List<Row> pending; long gen; long bad = 0, errors = 0, first = Long.MAX_VALUE;
+        long cutoffPrecision = midnight(now, zone);
+        synchronized (LOCK) {
+            gen = generation;
+            files = baseDir == null ? null : baseDir.listFiles();
+            if (files == null) { files = new File[0]; errors++; }
+            lengths = new long[files.length];
+            for (int i = 0; i < files.length; i++) lengths[i] = files[i].length();
+            pending = new ArrayList<Row>(unpersisted);
+            rebuildDelta = new ArrayList<Row>();
+            if (loadRows) { initializing = false; LOCK.notifyAll(); }
+        }
+        Runnable snapshotHook = rebuildSnapshotHook;
+        if (snapshotHook != null) snapshotHook.run();
+        for (int i = 0; i < files.length; i++) {
+            File f = files[i];
             if (!f.getName().startsWith("ledger-") || !f.getName().endsWith(".jsonl")) continue;
-            BufferedReader br = null;
-            try {
-                br = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
+            final long limit = lengths[i];
+            try (InputStream raw = new FileInputStream(f);
+                 InputStream bounded = new java.io.FilterInputStream(raw) {
+                     long left = limit;
+                     public int read() throws java.io.IOException { if (left <= 0) return -1; int x = super.read(); if (x >= 0) left--; return x; }
+                     public int read(byte[] b, int off, int len) throws java.io.IOException { if (left <= 0) return -1; int n = super.read(b, off, (int)Math.min(left, len)); if (n > 0) left -= n; return n; }
+                 };
+                 BufferedReader br = new BufferedReader(new InputStreamReader(bounded, "UTF-8"))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    line = line.trim();
-                    if (line.isEmpty()) continue;
-                    Row r = parse(line);
-                    if (r == null || r.t < cutoff) continue;
-                    bucket(r.t).add(r);
+                    Row r = parse(line.trim());
+                    if (r == null || r.t <= 0) { bad++; continue; }
+                    first = Math.min(first, r.t); addHeat(next, r, zone);
+                    if (r.t >= cutoffPrecision) addFuture(nextFuture, r);
+                    if (loadRows && r.t >= now - MEMORY_DAYS * 86400000L) loaded.add(r);
                 }
-            } catch (Throwable ignored) {
-            } finally {
-                try {
-                    if (br != null) br.close();
-                } catch (Throwable ignored) {
-                }
-            }
+            } catch (Exception e) { errors++; }
         }
-        // 按天排序，方便出图
-        List<String> keys = new ArrayList<String>(DAYS.keySet());
-        Collections.sort(keys);
-        LinkedHashMap<String, List<Row>> sorted = new LinkedHashMap<String, List<Row>>();
-        for (String k : keys) sorted.put(k, DAYS.get(k));
-        DAYS.clear();
-        DAYS.putAll(sorted);
+        synchronized (LOCK) {
+            if (gen != generation) return;
+            for (Row r : pending) { addHeat(next, r, zone); first = Math.min(first, r.t); if (r.t >= cutoffPrecision) addFuture(nextFuture, r); }
+            for (Row r : rebuildDelta) {
+                addHeat(next, r, zone); first = Math.min(first, r.t);
+                if (r.t >= cutoffPrecision) addFuture(nextFuture, r);
+            }
+            heatDays = next; future.clear(); future.putAll(nextFuture); heatZone = (TimeZone)zone.clone(); precisionStart = cutoffPrecision;
+            firstTimestamp = first; invalidLines = bad; readErrors = errors; rebuildDelta = null;
+            if (loadRows) for (Row r : loaded) bucket(r.t).add(r);
+        }
+    }
+
+    private static void ensureZone(TimeZone zone, long now) {
+        synchronized (LOCK) { if (heatZone != null && heatZone.equals(zone) && now >= precisionStart) return; }
+        rebuild(zone, false, now);
     }
 
     private static List<Row> bucket(long t) {
@@ -261,19 +348,41 @@ public class UsageLedger {
             r.hour = c.get(java.util.Calendar.HOUR_OF_DAY);
         }
         synchronized (LOCK) {
-            bucket(r.t).add(r);
+            while (initializing) {
+                try { LOCK.wait(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+            boolean known = true;
+            long before = -1;
             try {
                 String m = monthKey(r.t);
                 if (writer == null || !m.equals(currentMonth)
-                        || (currentFile != null && currentFile.length() > MAX_FILE_BYTES)) {
-                    openWriter();
+                        || (currentFile != null && currentFile.length() > MAX_FILE_BYTES)) openWriter();
+                if (writer == null) { persistenceErrors++; unpersisted.add(r); }
+                else {
+                    before = currentFile.length();
+                    writer.write(toJsonLine(r)); writer.write("\n"); writer.flush();
                 }
-                if (writer != null) {
-                    writer.write(toJsonLine(r));
-                    writer.write("\n");
-                    writer.flush();
+            } catch (Throwable e) {
+                persistenceErrors++;
+                closeWriter();
+                boolean rolledBack = false;
+                if (before >= 0 && currentFile != null) {
+                    try {
+                        if (rollbackHook != null) rolledBack = rollbackHook.rollback(currentFile, before);
+                        else try (RandomAccessFile file = new RandomAccessFile(currentFile, "rw")) {
+                            file.setLength(before); rolledBack = file.length() == before;
+                        }
+                    } catch (Exception ignored) { }
                 }
-            } catch (Throwable ignored) {
+                if (rolledBack || before < 0) unpersisted.add(r);
+                else { uncertainWrites++; known = false; }
+            }
+            if (known) {
+                bucket(r.t).add(r);
+                if (heatZone != null) addHeat(heatDays, r, heatZone);
+                firstTimestamp = Math.min(firstTimestamp, r.t);
+                if (r.t >= precisionStart) addFuture(future, r);
+                if (rebuildDelta != null) rebuildDelta.add(r);
             }
         }
         // 顺带把老的实时计数器续上，老的 /api/quota 不至于变空
@@ -373,14 +482,21 @@ public class UsageLedger {
      * @param group 按什么维度拆分：model / provider
      */
     public static JSONObject summary(int days, String group) {
-        long now = System.currentTimeMillis();
-        long from = now - (long) days * 86400000L;
+        return summary(days, group, System.currentTimeMillis(), TimeZone.getDefault());
+    }
+
+    static JSONObject summary(int days, String group, long now, TimeZone zone) {
+        Calendar start = Calendar.getInstance(zone, Locale.US);
+        start.setTimeInMillis(now);
+        start.set(Calendar.HOUR_OF_DAY, 0); start.set(Calendar.MINUTE, 0); start.set(Calendar.SECOND, 0); start.set(Calendar.MILLISECOND, 0);
+        start.add(Calendar.DAY_OF_MONTH, 1 - days);
+        long from = start.getTimeInMillis();
         Totals total = new Totals();
         Map<String, Totals> by = new LinkedHashMap<String, Totals>();
         Map<String, Totals> byDay = new LinkedHashMap<String, Totals>();
         Map<String, Totals> byProv = new LinkedHashMap<String, Totals>();
         Map<String, Totals> bySession = new LinkedHashMap<String, Totals>();
-        final int[] hourTokens = new int[24];
+        final long[] hourTokens = new long[24];
         final int[] hourReq = new int[24];
         Map<String, Integer> errCount = new LinkedHashMap<String, Integer>();
         int rows = 0;
@@ -388,7 +504,7 @@ public class UsageLedger {
         synchronized (LOCK) {
             for (Map.Entry<String, List<Row>> e : DAYS.entrySet()) {
                 for (Row r : e.getValue()) {
-                    if (r.t < from) continue;
+                    if (r.t < from || r.t > now) continue;
                     rows++;
                     total.add(r);
                     String key = "model".equals(group)
@@ -400,10 +516,11 @@ public class UsageLedger {
                         by.put(key, t);
                     }
                     t.add(r);
-                    Totals d = byDay.get(e.getKey());
+                    String day = dayKey(r.t, zone);
+                    Totals d = byDay.get(day);
                     if (d == null) {
                         d = new Totals();
-                        byDay.put(e.getKey(), d);
+                        byDay.put(day, d);
                     }
                     d.add(r);
                     String pk = r.prov == null || r.prov.isEmpty() ? "未知" : r.prov;
@@ -453,7 +570,7 @@ public class UsageLedger {
             Collections.sort(list, new Comparator<Map.Entry<String, Totals>>() {
                 @Override
                 public int compare(Map.Entry<String, Totals> a, Map.Entry<String, Totals> b) {
-                    return b.getValue().tokens() - a.getValue().tokens();
+                    return Long.compare(b.getValue().tokens(), a.getValue().tokens());
                 }
             });
             for (Map.Entry<String, Totals> e : list) {
@@ -473,10 +590,9 @@ public class UsageLedger {
 
             // 补齐区间内的每一天，柱状图不会因为某天没请求而错位
             JSONArray daily = new JSONArray();
-            SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
-            for (int i = days - 1; i >= 0; i--) {
-                long t = now - (long) i * 86400000L;
-                String k = f.format(new Date(t));
+            Calendar dayCursor = (Calendar)start.clone();
+            for (int i = 0; i < days; i++, dayCursor.add(Calendar.DAY_OF_MONTH, 1)) {
+                String k = dayKey(dayCursor.getTimeInMillis(), zone);
                 Totals d = byDay.get(k);
                 JSONObject o = new JSONObject();
                 o.put("day", k);
@@ -488,11 +604,11 @@ public class UsageLedger {
                     o.put("failed", 0);
                 } else {
                     JSONObject dj = d.toJson();
-                    o.put("tokens", dj.optInt("tokens", 0));
-                    o.put("input", dj.optInt("input", 0));
-                    o.put("output", dj.optInt("output", 0));
-                    o.put("requests", dj.optInt("requests", 0));
-                    o.put("failed", dj.optInt("failed", 0));
+                    o.put("tokens", dj.optLong("tokens", 0));
+                    o.put("input", dj.optLong("input", 0));
+                    o.put("output", dj.optLong("output", 0));
+                    o.put("requests", dj.optLong("requests", 0));
+                    o.put("failed", dj.optLong("failed", 0));
                 }
                 daily.put(o);
             }
@@ -502,7 +618,7 @@ public class UsageLedger {
             List<Row> all = new ArrayList<Row>();
             synchronized (LOCK) {
                 for (List<Row> l : DAYS.values()) {
-                    for (Row r : l) if (r.t >= from) all.add(r);
+                    for (Row r : l) if (r.t >= from && r.t <= now) all.add(r);
                 }
             }
             Collections.sort(all, new Comparator<Row>() {
@@ -535,7 +651,7 @@ public class UsageLedger {
             Collections.sort(sl, new Comparator<Map.Entry<String, Totals>>() {
                 @Override
                 public int compare(Map.Entry<String, Totals> a, Map.Entry<String, Totals> b) {
-                    return b.getValue().tokens() - a.getValue().tokens();
+                    return Long.compare(b.getValue().tokens(), a.getValue().tokens());
                 }
             });
             for (int i = 0; i < sl.size() && i < 12; i++) {
@@ -576,6 +692,57 @@ public class UsageLedger {
         } catch (Exception ignored) {
         }
         return out;
+    }
+
+    public static JSONObject heatmap() { return heatmapInternal(null, TimeZone.getDefault()); }
+
+    static JSONObject heatmap(long now, TimeZone zone) { return heatmapInternal(now, zone); }
+
+    private static JSONObject heatmapInternal(Long fixedNow, TimeZone zone) {
+        synchronized (REBUILD_LOCK) {
+            for (;;) {
+                long observed;
+                synchronized (LOCK) { observed = fixedNow == null ? System.currentTimeMillis() : fixedNow; }
+                ensureZone(zone, observed);
+                synchronized (LOCK) {
+                    long now = fixedNow == null ? System.currentTimeMillis() : fixedNow;
+                    if (now < precisionStart) continue;
+                    long today = midnight(now, zone);
+                    if (today > precisionStart) { future.headMap(today, false).clear(); precisionStart = today; }
+                    return heatmapLocked(now, zone);
+                }
+            }
+        }
+    }
+
+    // Caller holds LOCK, so the clock snapshot and included records are consistent.
+    private static JSONObject heatmapLocked(long now, TimeZone zone) {
+        Calendar start = Calendar.getInstance(zone, Locale.US);
+        start.setTimeInMillis(now);
+        start.set(Calendar.HOUR_OF_DAY, 0); start.set(Calendar.MINUTE, 0); start.set(Calendar.SECOND, 0); start.set(Calendar.MILLISECOND, 0);
+        start.add(Calendar.DAY_OF_MONTH, -((start.get(Calendar.DAY_OF_WEEK) + 5) % 7) - 52 * 7);
+        String end = dayKey(now, zone);
+        JSONArray days = new JSONArray(); HeatCounts totals = new HeatCounts();
+        Map<String, HeatCounts> exclusions = new LinkedHashMap<String, HeatCounts>();
+        for (Map.Entry<Long, HeatCounts> e : future.tailMap(now, false).entrySet()) {
+            String date = dayKey(e.getKey(), zone); HeatCounts count = exclusions.get(date);
+            if (count == null) { count = new HeatCounts(); exclusions.put(date, count); }
+            count.add(e.getValue());
+        }
+        for (Calendar c = (Calendar)start.clone(); ; c.add(Calendar.DAY_OF_MONTH, 1)) {
+            String date = dayKey(c.getTimeInMillis(), zone);
+            if (date.compareTo(end) > 0) break;
+            HeatCounts count = new HeatCounts(); HeatCounts original = heatDays.get(date);
+            if (original != null) count.add(original);
+            HeatCounts excluded = exclusions.get(date); if (excluded != null) count.subtract(excluded);
+            totals.add(count); JSONObject day = count.json(); day.put("date", date); days.put(day);
+        }
+        JSONObject out = new JSONObject(); out.put("ok", true); out.put("timezone", zone.getID());
+        out.put("start", dayKey(start.getTimeInMillis(), zone)); out.put("end", end); out.put("weeks", 53);
+        out.put("days", days); out.put("totals", totals.json());
+        out.put("firstRecordedDate", firstTimestamp > now ? JSONObject.NULL : dayKey(firstTimestamp, zone));
+        out.put("invalidLines", invalidLines); out.put("readErrors", readErrors); out.put("persistenceErrors", persistenceErrors);
+        out.put("uncertainWrites", uncertainWrites); out.put("generatedAt", now); return out;
     }
 
     /** 导出 CSV（给「导出 CSV」用） */

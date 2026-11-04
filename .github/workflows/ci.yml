@@ -40,6 +40,7 @@ jobs:
           node tests/dashboard-routing-audit.cjs
           node tests/dashboard-exposed.cjs
           node tests/dashboard-background.cjs
+          node tests/dashboard-heatmap.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |

@@ -1108,6 +1108,7 @@ public class GatewayServer extends NanoHTTPD {
                 String ugroup = (up.containsKey("group") && !up.get("group").isEmpty())
                         ? up.get("group").get(0) : "model";
 
+                if ("/api/usage/heatmap".equals(uri)) return jsonResponse(UsageLedger.heatmap());
                 if ("/api/usage/csv".equals(uri)) {
                     String csv = UsageLedger.csv(udays);
                     Response r = newFixedLengthResponse(Status.OK, "text/csv; charset=UTF-8", csv);

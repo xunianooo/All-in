@@ -1,7 +1,7 @@
 const fs = require('fs'), vm = require('vm'), assert = require('assert'), path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '../app/src/main/assets/dashboard.html'), 'utf8');
 function slice(a,b) { const start=html.indexOf(a), end=html.indexOf(b,start); assert(start>=0 && end>start); return html.slice(start,end); }
-const source = [slice('    let authKeyRevision = 0;', '    function toggleKeyVisible()'), slice('    function refreshAccessSnippets()', '    function copySnippet('), slice('    async function loadConfig()', '    // 记住上一次'), slice('    async function saveProviders()', '    function testMaskSandbox()'), slice('    let setupState =', '    // 页面启动初始化')].join('\n');
+const source = [slice('    let authKeyRevision = 0;', '    function toggleKeyVisible()'), slice('    let gatewayIp =', '    /** 从服务端拉当前口令 */'), slice('    async function loadConfig()', '    // 记住上一次'), slice('    async function saveProviders()', '    function testMaskSandbox()'), slice('    let setupState =', '    // 页面启动初始化')].join('\n');
 const response = data => ({ok:true,json:async()=>JSON.parse(JSON.stringify(data))});
 function createServer() {
  const server={key:'magpie',disk:'magpie',done:false,requests:[],delayed:{},fail:false};
@@ -22,7 +22,7 @@ function createServer() {
 }
 function page(server) {
  const elements={}; const document={getElementById(id){return elements[id] || (elements[id]={value:'',innerText:'',innerHTML:'',style:{},focus(){},select(){},setSelectionRange(){}})},createElement(){return {style:{},appendChild(){}}},body:{appendChild(){}}};
- const context={document,window:{crypto:{getRandomValues(buf){buf.fill(9)}},zcodeGiftLoaded:true},Uint8Array,Math,JSON,API_BASE:'',AUTH_KEY:'magpie',currentAuthKey:'',authKeyVisible:false,appConfig:null,lastConfigSig:'',renderDirty:false,fetch:server.fetch,sessionStorage:{setItem(){}},navigator:{},console,setTimeout,showToast(message){context.toasts.push(message)},toasts:[],alerts:[],gatewayBaseUrl:()=> 'http://host:3425',renderCredentials(){},autoSyncAfterLogin(){},renderCommercialKeys(){},renderGroups(){},bindGroupEvents(){},renderWbAccounts(){},renderWbModelTags(){},renderAllProvidersCards(){},refreshProviderBadges(){},applyPlaceholderGuard(){},renderMiddleware(){},renderPingProviders(){},renderAllModelsTags(){},loadZCodeGift(){},alert(message){context.alerts.push(message)}};
+ const context={document,window:{crypto:{getRandomValues(buf){buf.fill(9)}},zcodeGiftLoaded:true},Uint8Array,Math,JSON,location:{hostname:'127.0.0.1',port:'3425'},API_BASE:'',AUTH_KEY:'magpie',currentAuthKey:'',authKeyVisible:false,appConfig:null,lastConfigSig:'',renderDirty:false,fetch:server.fetch,sessionStorage:{setItem(){}},navigator:{},console,setTimeout,showToast(message){context.toasts.push(message)},toasts:[],alerts:[],gatewayBaseUrl:()=> 'http://host:3425',renderCredentials(){},autoSyncAfterLogin(){},renderCommercialKeys(){},renderGroups(){},bindGroupEvents(){},renderWbAccounts(){},renderWbModelTags(){},renderAllProvidersCards(){},refreshProviderBadges(){},applyPlaceholderGuard(){},renderMiddleware(){},renderPingProviders(){},renderAllModelsTags(){},loadZCodeGift(){},alert(message){context.alerts.push(message)}};
  vm.createContext(context); vm.runInContext(source,context); return {c:context,e:elements};
 }
 (async()=>{
@@ -34,7 +34,7 @@ function page(server) {
  const p2=page(s); await p2.c.loadAuthKey(); await p2.c.checkSetup(); assert.equal(p2.c.currentAuthKey,chosen); assert.equal(p2.e['setup-key'].value,chosen); assert.equal(s.done,false);
  // A stale auth response must not overwrite the newly applied key.
  const race=createServer(), r=page(race); const delayed=[]; race.delayed['/api/server-key']=delayed; const old=r.c.loadAuthKey(); delete race.delayed['/api/server-key']; await r.c.checkSetup(); const next=r.e['setup-key'].value; await r.c.setupNext(); delayed[0](); await old;
- assert.equal(r.c.currentAuthKey,next); assert.equal(vm.runInContext('AUTH_KEY',r.c),next); assert(r.e['code-openai'].innerText.includes(next));
+ assert.equal(r.c.currentAuthKey,next); assert.equal(vm.runInContext('AUTH_KEY',r.c),next); assert.equal(r.e['cred-api-key'].value,next);
  // A startup config response can arrive after the write; saving providers must not post its old server.
  const stale=createServer(), q=page(stale), delayedConfig=[]; stale.delayed['/api/config']=delayedConfig; const oldConfig=q.c.loadConfig(); delete stale.delayed['/api/config']; await q.c.checkSetup(); const newKey=q.e['setup-key'].value; await q.c.setupNext(); delayedConfig[0](); await oldConfig; await q.c.saveProviders(); assert.equal(stale.key,newKey); assert(!('server' in stale.requests.find(x=>x.url==='/api/config' && x.body).body));
  // Keep-current is cleared by actual user input.
@@ -54,7 +54,7 @@ function page(server) {
  // checkSetup's newer read invalidates an earlier loadAuthKey read after WebView reconstruction.
  const re=createServer(); re.key=re.disk='restored-key'; const rp=page(re), oldRead=[]; re.delayed['/api/server-key']=oldRead;
  const staleRead=rp.c.loadAuthKey(); re.key=re.disk='new-restored-key'; delete re.delayed['/api/server-key']; await rp.c.checkSetup(); oldRead[0](); await staleRead;
- assert.equal(rp.c.currentAuthKey,'new-restored-key'); assert.equal(vm.runInContext('AUTH_KEY',rp.c),'new-restored-key'); assert(rp.e['code-openai'].innerText.includes('new-restored-key'));
+ assert.equal(rp.c.currentAuthKey,'new-restored-key'); assert.equal(vm.runInContext('AUTH_KEY',rp.c),'new-restored-key'); assert.equal(rp.e['cred-api-key'].value,'new-restored-key');
  // Explicit keep does not apply the generated candidate.
  const keep=createServer(), kept=page(keep); await kept.c.checkSetup(); kept.c.setupKeepCurrent(); await kept.c.setupNext(); await kept.c.setupNext(); await kept.c.setupNext(); assert.equal(keep.key,'magpie'); assert(keep.done); assert.equal(kept.e['setup-btn-next'].disabled,false);
  // A changed server key cannot be reported as a successful applied-key completion.

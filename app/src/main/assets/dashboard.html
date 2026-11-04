@@ -488,6 +488,51 @@
       background: var(--card-bg) !important;
       box-shadow: 0 0 0 3px rgba(47, 109, 237, 0.14);
     }
+    /* 所有二态开关：颜色与滑块位置共同表达状态。 */
+    input[type="checkbox"] {
+      position: relative;
+      display: inline-block;
+      vertical-align: middle;
+      flex: 0 0 46px;
+      width: 46px !important;
+      min-width: 46px;
+      height: 28px !important;
+      margin: 0;
+      padding: 0 !important;
+      border: 1px solid transparent !important;
+      border-radius: 999px !important;
+      background: #d1d1d8 !important;
+      box-shadow: none;
+      cursor: pointer;
+      transition: background .18s ease;
+    }
+    input[type="checkbox"]::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .16);
+      transition: transform .18s ease;
+    }
+    input[type="checkbox"]:checked { background: var(--primary) !important; }
+    input[type="checkbox"]:checked::after { transform: translateX(18px); }
+    input[type="checkbox"]:focus { border-color: transparent !important; }
+    input[type="checkbox"]:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+    input[type="checkbox"]:disabled { opacity: .45; cursor: default; }
+    html[data-theme="dark"] input[type="checkbox"]:not(:checked) { background: #48484c !important; }
+    .switch-state { min-width: 3em; font-size: .78rem; color: var(--text-muted); }
+    .switch-state::before { content: '已关闭'; }
+    input:checked + .switch-state { color: var(--primary); }
+    input:checked + .switch-state::before { content: '已开启'; }
+    label:has(input[type="checkbox"]), label[for="groups-enabled"], label[for="bare-fallback"] {
+      min-height: 44px;
+      cursor: pointer;
+    }
+
     select {
       background-image: linear-gradient(45deg, transparent 50%, #8a8a93 50%),
                         linear-gradient(135deg, #8a8a93 50%, transparent 50%);
@@ -699,6 +744,41 @@
     .project-info-text { min-width: 0; overflow-wrap: anywhere; }
     .project-info-text strong { color: var(--text); }
     .project-github-icon { display: block; width: 20px; height: 20px; flex: 0 0 20px; color: var(--text); }
+
+    /* 周列 × 星期行；手机保留可点按的格子，横向滑到历史。 */
+    .heat-panel { border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:18px 0; margin-top:20px; }
+    .heat-head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .heat-title { font-size:16px; font-weight:650; letter-spacing:-.3px; }
+    .heat-caption { font-size:11.5px; color:var(--text-muted); margin-top:3px; }
+    .heat-modes { display:flex; padding:3px; background:var(--fill); border-radius:999px; }
+    .heat-mode { border:0; background:transparent; color:var(--text-muted); font:inherit; font-size:12px; padding:7px 12px; border-radius:999px; cursor:pointer; }
+    .heat-mode[aria-pressed="true"] { background:var(--card-bg); color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,.08); }
+    .heat-layout { display:flex; gap:8px; margin-top:18px; }
+    .heat-weekdays { display:grid; grid-template-rows:18px repeat(7,16px); gap:4px; flex:0 0 18px; font-size:10px; color:var(--text-faint); text-align:left; }
+    .heat-scroll { overflow-x:auto; overscroll-behavior-x:contain; min-width:0; flex:1; padding:0 2px 6px; scrollbar-width:thin; scrollbar-color:var(--scroll-thumb) transparent; }
+    .heat-months { display:grid; grid-template-columns:repeat(53,16px); gap:4px; height:18px; margin-bottom:4px; font-size:10px; color:var(--text-faint); }
+    .heat-months span { white-space:nowrap; }
+    .heat-grid { display:grid; grid-template-rows:repeat(7,16px); grid-template-columns:repeat(53,16px); grid-auto-flow:column; gap:4px; width:max-content; }
+    .heat-cell, .heat-swatch { border:0; border-radius:4px; background:var(--fill); }
+    .heat-cell { display:block; width:16px; height:16px; padding:0; cursor:pointer; transition:box-shadow .12s; }
+    .heat-cell[data-level="1"], .heat-swatch[data-level="1"] { background:#c7d8fa; }
+    .heat-cell[data-level="2"], .heat-swatch[data-level="2"] { background:#91b3f4; }
+    .heat-cell[data-level="3"], .heat-swatch[data-level="3"] { background:#5c8ce8; }
+    .heat-cell[data-level="4"], .heat-swatch[data-level="4"] { background:#2f6ded; }
+    html[data-theme="dark"] .heat-cell[data-level="1"], html[data-theme="dark"] .heat-swatch[data-level="1"] { background:#20365c; }
+    html[data-theme="dark"] .heat-cell[data-level="2"], html[data-theme="dark"] .heat-swatch[data-level="2"] { background:#305797; }
+    html[data-theme="dark"] .heat-cell[data-level="3"], html[data-theme="dark"] .heat-swatch[data-level="3"] { background:#4379d0; }
+    html[data-theme="dark"] .heat-cell[data-level="4"], html[data-theme="dark"] .heat-swatch[data-level="4"] { background:#6a9dff; }
+    .heat-cell.future { visibility:hidden; pointer-events:none; }
+    .heat-cell[aria-pressed="true"], .heat-cell:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+    .heat-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:8px; font-size:11px; color:var(--text-muted); }
+    .heat-legend { display:flex; align-items:center; gap:4px; }
+    .heat-swatch { display:inline-block; width:10px; height:10px; border-radius:3px; }
+    .heat-detail { border-top:1px solid var(--line); margin-top:14px; padding-top:12px; min-height:54px; }
+    .heat-detail-top { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; font-size:13px; font-weight:600; font-variant-numeric:tabular-nums; }
+    .heat-detail-sub { margin-top:5px; font-size:11.5px; line-height:1.6; color:var(--text-muted); }
+    .heat-note { font-size:10.5px; line-height:1.6; color:var(--text-faint); margin-top:10px; }
+    .heat-refresh { border:0; background:transparent; color:var(--primary); font:inherit; font-size:11.5px; padding:6px 0 6px 8px; cursor:pointer; }
 
     /* ---------- 模型白名单 ---------- */
     .exp-prov { padding: 9px 0; border-bottom: 1px solid var(--input-border); }
@@ -1019,40 +1099,6 @@
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title">
-          <span>🚀 电脑端 Agent 快速接入</span>
-          <span style="font-size:0.8rem; color:var(--text-muted);">局域网 IP: <b id="display-ip" style="color:#38bdf8;">127.0.0.1</b></span>
-        </div>
-        <div id="addr-hint" style="display:none;"></div>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
-          在电脑、笔记本终端中执行以下命令，即可将所有 Agent 流量转发到本手机：
-        </p>
-
-        <div style="font-size: 0.8rem; font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">1. Claude Code 专用配置:</div>
-        <div class="code-block">
-          <code id="code-claude">export ANTHROPIC_BASE_URL="http://127.0.0.1:3425" ANTHROPIC_API_KEY="magpie"</code>
-          <button class="copy-btn" onclick="copySnippet('code-claude')">复制</button>
-        </div>
-
-        <div style="font-size: 0.8rem; font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">2. 通用 OpenAI 兼容 (Cursor / Codex / 终端 / OpenCode):</div>
-        <div class="code-block">
-          <code id="code-openai">export OPENAI_BASE_URL="http://127.0.0.1:3425/v1" OPENAI_API_KEY="magpie"</code>
-          <button class="copy-btn" onclick="copySnippet('code-openai')">复制</button>
-        </div>
-
-        <div style="font-size: 0.8rem; font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">3. WorkBuddy / WorkBuddy AI (一键配置):</div>
-        <div class="code-block">
-          <code id="code-workbuddy">export WORKBUDDY_OPENAI_BASE_URL="http://127.0.0.1:3425/v1" WORKBUDDY_OPENAI_API_KEY="magpie"</code>
-          <button class="copy-btn" onclick="copySnippet('code-workbuddy')">复制命令</button>
-        </div>
-        <div style="background: rgba(255,255,255,0.02); border: 1px dashed var(--card-border); border-radius: 8px; padding: 10px; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
-          💡 <b>WorkBuddy 客户端/插件设置</b>：在设置中选择「自定义 OpenAI 兼容接口」：<br>
-          • <b>Base URL</b>: <code id="wb-base" style="color:#38bdf8;">http://127.0.0.1:3425/v1</code><br>
-          • <b>API Key</b>: <code id="wb-key" style="color:#38bdf8;">magpie</code><br>
-          • <b>模型名称</b>: 填入 <code style="color:#a78bfa;">group/smart-coding</code> (自动主备故障转移) 或 <code style="color:#a78bfa;">deepseek/deepseek-chat</code>
-        </div>
-      </div>
     </section>
 
     <section id="tab-providers" class="tab-pane">
@@ -1473,11 +1519,11 @@
           前一个调不动会自动换下一个，客户端看不到报错。
         </p>
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; padding:10px 12px; border:1px solid var(--card-border); border-radius:10px; background:rgba(255,255,255,0.02);">
-          <input type="checkbox" id="groups-enabled" onchange="setGroupsEnabled(this.checked)" style="width:18px;height:18px;">
+          <input type="checkbox" role="switch" id="groups-enabled" onchange="setGroupsEnabled(this.checked)">
           <label for="groups-enabled" style="font-size:0.78rem; color:var(--text); cursor:pointer;">启用路由组（默认关闭，建议按需再开）</label>
         </div>
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; padding:10px 12px; border:1px solid var(--card-border); border-radius:10px;">
-          <input type="checkbox" id="bare-fallback" onchange="setBareFallback(this.checked)" style="width:18px;height:18px;">
+          <input type="checkbox" role="switch" id="bare-fallback" onchange="setBareFallback(this.checked)">
           <label for="bare-fallback" style="font-size:0.78rem; color:var(--text); cursor:pointer;">允许裸模型兜底（默认关闭）</label>
         </div>
         <p style="font-size:0.75rem; color:var(--text-muted); line-height:1.6;">仅影响不带 provider/ 前缀的模型：找不到已列出的模型时，开启后尝试第一家配置了密钥的供应商。关闭时返回错误；provider/model 和 group/组id 的路由不受影响。</p>
@@ -1522,6 +1568,27 @@
         <div id="usage-chart" style="display:flex;align-items:flex-end;gap:6px;height:150px;margin-top:18px;padding-top:8px;border-top:1px solid var(--line);overflow-x:auto;"></div>
         <div id="usage-axis" style="display:flex;gap:6px;margin-top:6px;font-size:10.5px;color:var(--text-faint);overflow-x:auto;"></div>
 
+      <div class="heat-panel" id="usage-heatmap-card">
+        <div class="heat-head">
+          <div><div class="heat-title">用量热力图</div><div class="heat-caption">最近 53 周 · 每格一天 · 左右滑动</div></div>
+          <div class="heat-modes" aria-label="热力图统计指标">
+            <button class="heat-mode" id="heat-tokens" aria-pressed="true" onclick="setHeatMetric('tokens')">Token</button>
+            <button class="heat-mode" id="heat-requests" aria-pressed="false" onclick="setHeatMetric('requests')">请求</button>
+          </div>
+        </div>
+        <div class="heat-layout">
+          <div class="heat-weekdays" aria-hidden="true"><span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span>日</span></div>
+          <div class="heat-scroll" id="heat-scroll" tabindex="0" aria-label="每日用量，左右滑动查看历史">
+            <div class="heat-months" id="heat-months" aria-hidden="true"></div>
+            <div class="heat-grid" id="heat-grid" role="group" aria-label="每日已记录用量"></div>
+          </div>
+        </div>
+        <div class="heat-footer"><span id="heat-total">正在读取账本…</span><span class="heat-legend" aria-label="颜色越深用量越多">少 <i class="heat-swatch"></i><i class="heat-swatch" data-level="1"></i><i class="heat-swatch" data-level="2"></i><i class="heat-swatch" data-level="3"></i><i class="heat-swatch" data-level="4"></i> 多</span></div>
+        <div class="heat-detail" id="heat-detail" aria-live="polite"></div>
+        <div class="heat-footer"><span id="heat-status">点选格子查看当天明细</span><button class="heat-refresh" onclick="loadHeatmap()">刷新</button></div>
+        <div class="heat-note" id="heat-note">按手机本地日期汇总已记录用量；未上报的 Token 不估算。</div>
+      </div>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin:18px 0 10px;">
           <div style="font-size:13px;color:var(--text-muted);font-weight:600;">拆分维度</div>
           <div style="display:flex;gap:6px;">
@@ -1561,8 +1628,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
           <div class="card-title" style="margin:0;">🎯 模型白名单</div>
           <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);cursor:pointer;">
-            <input type="checkbox" id="exposed-enabled" onchange="onExposedToggle()"
-              style="width:auto;margin:0;transform:scale(1.15);accent-color:var(--primary);">
+            <input type="checkbox" role="switch" id="exposed-enabled" onchange="onExposedToggle()">
             只暴露勾选的模型
           </label>
         </div>
@@ -1613,7 +1679,7 @@
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">
             <b style="font-size:0.84rem;color:#fff;">think-tags</b>
             <label style="display:flex;align-items:center;gap:6px;font-size:0.74rem;color:var(--text-muted);">
-              <input type="checkbox" id="mw-think-on" style="width:auto;margin:0;"> 启用
+              <input type="checkbox" role="switch" id="mw-think-on"> 启用
             </label>
           </div>
           <div style="font-size:0.72rem;color:var(--text-muted);line-height:1.6;margin-bottom:9px;">
@@ -1632,7 +1698,7 @@
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">
             <b style="font-size:0.84rem;color:#fff;">word-guard 敏感词</b>
             <label style="display:flex;align-items:center;gap:6px;font-size:0.74rem;color:var(--text-muted);">
-              <input type="checkbox" id="mw-guard-on" style="width:auto;margin:0;"> 启用
+              <input type="checkbox" role="switch" id="mw-guard-on"> 启用
             </label>
           </div>
           <div style="font-size:0.72rem;color:var(--text-muted);line-height:1.6;margin-bottom:9px;">
@@ -1706,7 +1772,7 @@
         </p>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
           <label style="font-size:0.8rem;color:var(--text-muted);">启用上下文保护</label>
-          <input type="checkbox" id="guard-enabled" style="width:auto;margin:0;">
+          <input type="checkbox" role="switch" id="guard-enabled">
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
           <div>
@@ -1749,7 +1815,7 @@
         </p>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
           <label style="font-size:0.8rem;color:var(--text-muted);">启用自动回退</label>
-          <input type="checkbox" id="failover-enabled" style="width:auto;margin:0;" onchange="saveFailover()">
+          <input type="checkbox" role="switch" id="failover-enabled" onchange="saveFailover()">
         </div>
         <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:6px;">回退目标（每行一个，格式 provider/model）：</div>
         <textarea id="failover-targets" rows="3" placeholder="raccoon/raccoon-8c4485&#10;workbuddy/auto" style="font-family:var(--font-mono);font-size:0.75rem;"></textarea>
@@ -1786,19 +1852,19 @@
             <div id="privacy-state-desc" style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;line-height:1.5;"></div>
           </div>
           <label style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-            <input type="checkbox" id="privacy-enabled" style="width:auto;margin:0;transform:scale(1.3);" onchange="togglePrivacy()">
-            <span style="font-size:0.78rem;color:var(--text-muted);">开启</span>
+            <input type="checkbox" role="switch" id="privacy-enabled" aria-label="脱敏总开关" onchange="togglePrivacy()">
+            <span class="switch-state" aria-hidden="true"></span>
           </label>
         </div>
         <div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;margin-top:4px;">
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px;">分类开关（总开关关闭时不生效）</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:0.8rem;">
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="pm-apikeys" style="width:auto;margin:0;" onchange="togglePrivacy()"> API Key / Token</label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="pm-emails" style="width:auto;margin:0;" onchange="togglePrivacy()"> 邮箱地址</label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="pm-phones" style="width:auto;margin:0;" onchange="togglePrivacy()"> 手机号</label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="pm-ids" style="width:auto;margin:0;" onchange="togglePrivacy()"> 身份证</label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="pm-bank" style="width:auto;margin:0;" onchange="togglePrivacy()"> 银行卡(16-19位)</label>
-            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="pm-tel" style="width:auto;margin:0;" onchange="togglePrivacy()"> 座机</label>
+          <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px 10px;font-size:0.8rem;">
+            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" role="switch" id="pm-apikeys" onchange="togglePrivacy()"> API Key / Token</label>
+            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" role="switch" id="pm-emails" onchange="togglePrivacy()"> 邮箱地址</label>
+            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" role="switch" id="pm-phones" onchange="togglePrivacy()"> 手机号</label>
+            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" role="switch" id="pm-ids" onchange="togglePrivacy()"> 身份证</label>
+            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" role="switch" id="pm-bank" onchange="togglePrivacy()"> 银行卡(16-19位)</label>
+            <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" role="switch" id="pm-tel" onchange="togglePrivacy()"> 座机</label>
           </div>
           <div style="margin-top:12px;">
             <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:5px;">
@@ -2796,9 +2862,9 @@
     }
 
     // 只读信息行（没有跳转按钮），用于展示实测状态
-    function infoRow(tone, title, desc) {
+    function infoRow(tone, title, desc, statusLabel) {
       const color = tone === 'ok' ? 'var(--accent)' : (tone === 'warn' ? '#f59e0b' : 'var(--text-muted)');
-      const badge = tone === 'ok' ? '✅ 正常' : (tone === 'warn' ? '⚠️ 异常' : '· 未知');
+      const badge = statusLabel || (tone === 'ok' ? '✅ 正常' : (tone === 'warn' ? '⚠️ 异常' : '· 未知'));
       return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
         + '<div style="flex:1;min-width:0;">'
         + '<div style="color:#fff;font-size:0.82rem;">' + title + '</div>'
@@ -2871,15 +2937,15 @@
         html += ackRow('省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0, '');
         const wd = d.watchdog || {};
         const wi = watchdogInfo(wd);
-        html += infoRow(wi.tone, '防冻结守护进程', wi.desc);
-        const frAge = wd.unfreezeAgeSeconds;
-        const recorded = wd.verifiedTarget === true && typeof frAge === 'number' && frAge >= 0;
-        html += infoRow(recorded && frAge < 7200 ? 'warn' : 'unknown', '最近一次冻结记录', recorded ? fmtAgo(frAge) + '有守护进程解冻记录；无法据此判断之后是否冻结' : '未知：没有可验证的本应用冻结记录');
+        html += infoRow(wi.tone, '防冻结守护进程', wi.desc, wi.badge);
+        const fi = freezeRecordInfo(wd);
+        html += infoRow(fi.tone, '最近一次冻结记录', fi.desc, fi.badge);
         const ki = keepaliveInfo(p.keepalive || d.keepalive);
-        html += infoRow(ki.tone, '定时自检（无 root 保活）', ki.desc);
+        html += infoRow(ki.tone, '定时自检（无 root 保活）', ki.desc, ki.badge);
         html += '<div style="display:flex;gap:8px;margin:2px 0 6px;"><button class="btn btn-outline" onclick="keepalivePing()">立即自检</button><button class="btn btn-outline" onclick="loadPermissions()">刷新</button></div>';
         html += '<div style="margin-top:12px;font-size:0.74rem;line-height:1.75;color:var(--text-muted);">' + backgroundBrandHint(p.rom) + '</div>';
-        html += infoRow('unknown', '服务状态', serviceHealthInfo(d.service));
+        const si = serviceHealthState(d.service);
+        html += infoRow(si.tone, '服务状态', serviceHealthInfo(d.service), si.badge);
         box.innerHTML = html;
       } catch (e) {
         if (box) box.innerHTML = '<div style="color:var(--text-muted);">读取权限状态失败：' + e.message + '</div>';
@@ -3293,7 +3359,122 @@
       }
     } catch (e) { }
 
+    // ==================== 每日用量热力图 ====================
+    let heatData = null;
+    let heatMetric = 'tokens';
+    let heatSelected = '';
+    let heatRevision = 0;
+    let heatSignature = '';
+
+    // 日期标签只做纯日历运算，不经浏览器本地时区二次偏移。
+    function heatDateOffset(date, offset) {
+      const parts = date.split('-').map(Number);
+      const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + offset));
+      return d.toISOString().slice(0, 10);
+    }
+    function heatExact(n) {
+      if (!Number.isSafeInteger(n) || n < 0) throw new Error('用量超出可精确显示的范围');
+      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+    function heatLevel(value, max) {
+      if (value <= 0) return 0;
+      return Math.min(4, Math.max(1, Math.ceil(value / max * 4)));
+    }
+    function validateHeatmap(data) {
+      if (!data || data.ok !== true || data.weeks !== 53 || !Array.isArray(data.days)) throw new Error('热力图数据不完整');
+      const validDate = date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && heatDateOffset(date, 0) === date;
+      if (!validDate(data.start) || !validDate(data.end) || data.days.length < 365 || data.days.length > 371) throw new Error('日期范围无效');
+      const monday = new Date(data.start + 'T00:00:00Z').getUTCDay();
+      if (monday !== 1 || data.days.length !== Math.round((Date.parse(data.end + 'T00:00:00Z') - Date.parse(data.start + 'T00:00:00Z')) / 86400000) + 1) throw new Error('日期未对齐');
+      const sums = {tokens:0,input:0,output:0,requests:0,failed:0};
+      data.days.forEach((day, index) => {
+        if (day.date !== heatDateOffset(data.start, index)) throw new Error('日期缺失或重复');
+        Object.keys(sums).forEach(key => { heatExact(day[key]); sums[key] += day[key]; heatExact(sums[key]); });
+        if (day.tokens !== day.input + day.output || day.failed > day.requests) throw new Error('每日用量不一致');
+      });
+      Object.keys(sums).forEach(key => { if (!data.totals || sums[key] !== data.totals[key]) throw new Error('累计用量不一致'); });
+      return data;
+    }
+    async function loadHeatmap() {
+      const revision = ++heatRevision;
+      const status = document.getElementById('heat-status');
+      if (status) status.textContent = heatData ? '正在刷新…' : '正在读取账本…';
+      try {
+        const res = await fetch(API_BASE + '/api/usage/heatmap', {cache:'no-store'});
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = validateHeatmap(await res.json());
+        if (revision !== heatRevision) return;
+        const signature = JSON.stringify(data.days) + data.timezone + data.start;
+        const changed = signature !== heatSignature;
+        heatData = data;
+        if (changed && document.getElementById('heat-grid').getClientRects().length) { renderHeatmap(!heatSignature); heatSignature = signature; }
+        if (!heatSelected || !data.days.some(d => d.date === heatSelected)) heatSelected = data.end;
+        selectHeatDay(heatSelected);
+        const issues = (data.invalidLines || 0) + (data.readErrors || 0) + (data.persistenceErrors || 0) + (data.uncertainWrites || 0);
+        status.textContent = issues ? '部分账本异常 · 数据可能不完整' : '已更新 ' + new Date(data.generatedAt).toTimeString().slice(0,5) + ' · ' + data.timezone;
+        document.getElementById('heat-note').textContent = (data.firstRecordedDate ? '最早记录 ' + data.firstRecordedDate + '。' : '尚无调用记录。')
+          + 'Token = 成功调用的输入 + 输出；请求含失败，重试不重复计数。未上报的 Token 不估算。'
+          + (issues ? '异常：坏行 ' + (data.invalidLines || 0) + '，读取 ' + (data.readErrors || 0) + '，写入 ' + (data.persistenceErrors || 0) + '，待确认写入 ' + (data.uncertainWrites || 0) + '。' : '');
+      } catch (e) {
+        if (revision !== heatRevision) return;
+        status.textContent = (heatData ? '刷新失败，保留上次数据：' : '读取失败：') + e.message;
+        if (!heatData) document.getElementById('heat-total').textContent = '暂无可用数据';
+      }
+    }
+    function setHeatMetric(metric) {
+      if (metric !== 'tokens' && metric !== 'requests') return;
+      heatMetric = metric;
+      ['tokens','requests'].forEach(key => document.getElementById('heat-' + key).setAttribute('aria-pressed', String(key === metric)));
+      if (heatData && document.getElementById('heat-grid').getClientRects().length) { renderHeatmap(false); selectHeatDay(heatSelected || heatData.end); }
+    }
+    function renderHeatmap(scrollToLatest) {
+      const grid = document.getElementById('heat-grid');
+      const months = document.getElementById('heat-months');
+      const scroller = document.getElementById('heat-scroll');
+      const position = scroller.scrollLeft;
+      grid.replaceChildren(); months.replaceChildren();
+      const max = Math.max(1, ...heatData.days.map(day => day[heatMetric]));
+      for (let week = 0; week < 53; week++) {
+        const date = heatDateOffset(heatData.start, week * 7);
+        const label = document.createElement('span');
+        const previous = heatDateOffset(date, -7);
+        label.textContent = week === 0 || date.slice(0,7) !== previous.slice(0,7) ? Number(date.slice(5,7)) + '月' : '';
+        months.appendChild(label);
+      }
+      for (let index = 0; index < 371; index++) {
+        const day = heatData.days[index];
+        const cell = document.createElement(day ? 'button' : 'span');
+        cell.className = 'heat-cell' + (day ? '' : ' future');
+        if (day) {
+          cell.type = 'button'; cell.dataset.date = day.date;
+          cell.dataset.level = String(heatLevel(day[heatMetric], max));
+          cell.setAttribute('aria-label', day.date + '，' + heatExact(day.tokens) + ' Token，' + heatExact(day.requests) + ' 次请求，' + heatExact(day.failed) + ' 次失败');
+          cell.setAttribute('aria-pressed', String(day.date === heatSelected));
+          cell.onclick = () => selectHeatDay(day.date);
+        } else cell.setAttribute('aria-hidden','true');
+        grid.appendChild(cell);
+      }
+      const active = heatData.days.filter(day => day.requests > 0).length;
+      document.getElementById('heat-total').textContent = '已记录 ' + heatExact(heatData.totals[heatMetric]) + (heatMetric === 'tokens' ? ' Token' : ' 次请求') + ' · ' + active + ' 个活跃日';
+      scroller.scrollLeft = scrollToLatest ? scroller.scrollWidth : position;
+    }
+    function selectHeatDay(date) {
+      const day = heatData && heatData.days.find(d => d.date === date);
+      if (!day) return;
+      heatSelected = date;
+      const grid = document.getElementById('heat-grid');
+      Array.from(grid.children).forEach(cell => { if (cell.dataset.date) cell.setAttribute('aria-pressed', String(cell.dataset.date === date)); });
+      const box = document.getElementById('heat-detail'); box.replaceChildren();
+      const top = document.createElement('div'); top.className = 'heat-detail-top';
+      const label = document.createElement('span'); label.textContent = date + (date === heatData.end ? ' · 今天' : '');
+      const value = document.createElement('span'); value.textContent = heatExact(day[heatMetric]) + (heatMetric === 'tokens' ? ' Token' : ' 次请求');
+      top.appendChild(label); top.appendChild(value); box.appendChild(top);
+      const sub = document.createElement('div'); sub.className = 'heat-detail-sub';
+      sub.textContent = day.requests ? '输入 ' + heatExact(day.input) + ' · 输出 ' + heatExact(day.output) + ' · 请求 ' + heatExact(day.requests) + ' · 失败 ' + heatExact(day.failed) : '当天无已记录调用';
+      box.appendChild(sub);
+    }
     // ==================== 用量看板 ====================
+
     let usageDays = 7;
     let usageGroup = 'model';
 
@@ -3332,6 +3513,7 @@
     }
 
     async function loadUsage(days, group) {
+      loadHeatmap();
       if (days !== undefined && days !== null) usageDays = days;
       if (group) usageGroup = group;
 
@@ -3596,42 +3778,16 @@
     let authKeyVisible = false;
     let currentAuthKey = '';
 
+    let gatewayIp = '';
+
     /** 当前网关的对外地址（不含 /v1，OpenAI 兼容的完整地址另算） */
     function gatewayBaseUrl() {
       // App 内面板是 file://，请求实际发往 127.0.0.1；但用户要填进客户端的是局域网地址
-      const ip = (document.getElementById('display-ip') || {}).innerText || '';
+      const ip = gatewayIp;
       const host = (ip && ip !== '127.0.0.1') ? ip : (location.hostname || '127.0.0.1');
       const port = location.port || '3425';
       if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return 'http://' + host + ':' + port;
       return 'http://127.0.0.1:' + port;
-    }
-
-    /** 当前 IP 是不是能直接被同一 Wi-Fi 下其它设备访问的局域网地址 */
-    function isLanReachableIp(ip) {
-      if (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return false;
-      return ip.indexOf('192.168.') === 0 || ip.indexOf('10.') === 0 ||
-             /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
-    }
-
-    /** 在「服务地址」卡片下方提示：蜂窝/VPN 地址时电脑连不上，别让人白折腾 */
-    function renderAddressHint() {
-      const el = document.getElementById('addr-hint');
-      if (!el) return;
-      const ip = ((document.getElementById('display-ip') || {}).innerText || '').trim();
-      if (!ip || ip === '127.0.0.1') {
-        el.style.display = 'none';
-        return;
-      }
-      if (isLanReachableIp(ip)) {
-        el.style.display = 'none';
-        return;
-      }
-      el.style.display = 'block';
-      el.style.cssText = 'display:block;margin-top:8px;padding:8px 10px;border-radius:8px;'
-        + 'background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);'
-        + 'color:#fbbf24;font-size:0.72rem;line-height:1.6;';
-      el.innerHTML = '⚠️ 当前地址 <b>' + ip + '</b> 不是局域网 IP（可能是蜂窝网络或 VPN 出口），'
-        + '电脑/其它设备连不上它。想让同一 Wi-Fi 下的设备访问，请先连接 Wi-Fi 再回到本页刷新。';
     }
 
     /** 刷新卡片里的两项取值 */
@@ -3663,7 +3819,6 @@
           // 面板若是通过 sessionStorage 带的口令，以服务端为准
           if (currentAuthKey) AUTH_KEY = currentAuthKey;
           renderCredentials();
-          try { refreshAccessSnippets(); } catch (e) {}
         }
       } catch (e) {
         // 401 等情况：说明当前口令不对，把状态提示出来
@@ -3784,49 +3939,8 @@
         authKeyVisible = true;
         renderCredentials();
         showToast('✅ 密钥已更新，客户端需要重填');
-        // 让下方的代码片段同步成新值
-        try { refreshAccessSnippets(); } catch (e) {}
       } catch (e) {
         showToast('保存失败：' + e.message);
-      }
-    }
-
-    /** 把「快速接入」里的代码片段刷新成当前地址与密钥 */
-    function refreshAccessSnippets() {
-      const base = gatewayBaseUrl();
-      const key = currentAuthKey || 'magpie';
-      const set = (id, text) => {
-        const el = document.getElementById(id);
-        if (el) el.innerText = text;
-      };
-      set('code-claude', 'export ANTHROPIC_BASE_URL="' + base + '" ANTHROPIC_API_KEY="' + key + '"');
-      set('code-openai', 'export OPENAI_BASE_URL="' + base + '/v1" OPENAI_API_KEY="' + key + '"');
-      set('code-workbuddy', 'export WORKBUDDY_OPENAI_BASE_URL="' + base + '/v1" WORKBUDDY_OPENAI_API_KEY="' + key + '"');
-      const wbBase = document.getElementById('wb-base');
-      if (wbBase) wbBase.innerText = base + '/v1';
-      const wbKey = document.getElementById('wb-key');
-      if (wbKey) wbKey.innerText = key;
-      const pingKey = document.getElementById('ping-api-key');
-      if (pingKey) pingKey.innerText = key;
-    }
-
-    function copySnippet(id) {
-      try {
-        const text = document.getElementById(id).innerText;
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(() => showToast('已复制到剪贴板！'));
-        } else {
-          // 降级复制
-          const ta = document.createElement('textarea');
-          ta.value = text;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand('copy');
-          document.body.removeChild(ta);
-          showToast('已复制到剪贴板！');
-        }
-      } catch (err) {
-        alert('复制失败，请手动长按复制');
       }
     }
 
@@ -3840,11 +3954,8 @@
         const droppedEl = document.getElementById('stat-total-dropped');
         if (droppedEl) droppedEl.innerText = data.contextDropped || 0;
         if (data.ip) {
-          document.getElementById('display-ip').innerText = data.ip;
-          // 代码片段与凭据卡片统一由 refreshAccessSnippets() 生成，
-          // 免得这里再写一遍硬编码的 magpie 把用户改过的密钥覆盖回去。
-          try { renderCredentials(); refreshAccessSnippets(); } catch (e) {}
-          try { renderAddressHint(); } catch (e) {}
+          gatewayIp = data.ip;
+          try { renderCredentials(); } catch (e) {}
         }
         statsFailures = 0;
         if (!gatewayRunning) applyGatewayUI(true);
@@ -4017,7 +4128,7 @@
         try { renderAllProvidersCards(); } catch (e) {}
         try { refreshProviderBadges(); } catch (e) {}
         try { applyPlaceholderGuard(); } catch (e) {}
-        try { renderCredentials(); refreshAccessSnippets(); } catch (e) {}
+        try { renderCredentials(); } catch (e) {}
         try { renderMiddleware(); } catch (e) {}
         try { renderPingProviders(); } catch (e) {}
         try { renderAllModelsTags(); } catch (e) {}
@@ -4821,7 +4932,7 @@
               authKeyRevision++;
               AUTH_KEY = currentAuthKey = existingKey;
               try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
-              try { renderCredentials(); refreshAccessSnippets(); } catch (e) {}
+              try { renderCredentials(); } catch (e) {}
             } else if (revision !== authKeyRevision) existingKey = currentAuthKey;
           } catch (e) {}
         }
@@ -4935,7 +5046,7 @@
             authKeyRevision++;
             AUTH_KEY = currentAuthKey = d.authKey;
             try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
-            try { renderCredentials(); refreshAccessSnippets(); } catch (e) {}
+            try { renderCredentials(); } catch (e) {}
           } catch (e) {
             showToast('保存失败：' + e.message);
             return;
@@ -5019,20 +5130,63 @@
 
     function keepaliveInfo(k) {
       k = k || {};
-      const age = typeof k.lastCheckAgeSeconds === 'number' ? k.lastCheckAgeSeconds : -1;
-      const interval = typeof k.intervalSeconds === 'number' && k.intervalSeconds > 0 ? k.intervalSeconds : 900;
-      const overdue = k.lastCheckAt > 0 && age > interval;
+      const age = typeof k.lastCheckAgeSeconds === 'number' && Number.isFinite(k.lastCheckAgeSeconds) ? k.lastCheckAgeSeconds : -1;
+      const interval = typeof k.intervalSeconds === 'number' && Number.isFinite(k.intervalSeconds) && k.intervalSeconds > 0 ? k.intervalSeconds : 900;
+      const hasCheck = typeof k.lastCheckAt === 'number' && Number.isFinite(k.lastCheckAt) && k.lastCheckAt > 0 && age >= 0;
+      let tone = 'unknown', badge = '· 排程状态未知';
+      if (k.scheduled === false) { tone = 'warn'; badge = '⚠️ 未排程'; }
+      else if (k.scheduled === true) {
+        badge = '· 已请求排程';
+        if (hasCheck && age > interval) { tone = 'warn'; badge = '⚠️ 自检逾期'; }
+        else if (hasCheck && (k.lastAlive === false || (typeof k.lastCode === 'number' && k.lastCode !== 200))) {
+          tone = 'warn'; badge = '⚠️ 自检失败';
+        } else if (hasCheck && k.lastAlive === true && k.lastCode === 200) {
+          if (age <= 90) { tone = 'ok'; badge = '✅ 最近自检成功'; }
+          else badge = '· 自检记录较旧';
+        }
+      }
       const schedule = k.scheduled === true ? '已请求约每 ' + Math.round(interval / 60) + ' 分钟定时自检' : (k.scheduled === false ? '未请求定时自检' : '排程状态未知');
-      return {tone: overdue || k.scheduled === false ? 'warn' : 'unknown', desc: schedule + '；系统可能延迟执行'
-        + (overdue ? '，上次自检已超过请求间隔' : '') + '。上次自检：' + (k.lastCheckAt > 0 && age >= 0 ? fmtAgo(age) : '未知')
-        + '。进程内自检间隔约 30 秒，冻结期间线程也不运行；不能保证所有 ROM 永不掉线。'};
+      const result = hasCheck ? (k.lastAlive === true && k.lastCode === 200 ? ' · HTTP 200，成功' : (k.lastAlive === false ? ' · 未通过' : ' · 结果未确认')) : '';
+      return {tone, badge, desc: schedule + '；系统可能延迟执行。最近自检：' + (hasCheck ? fmtAgo(age) + result : '尚未检测')
+        + '。进程内自检间隔约 30 秒，冻结期间线程也不运行；自检成功不保证持续后台可用。'};
     }
 
     function watchdogInfo(wd) {
       wd = wd || {};
-      if (wd.verifiedTarget !== true) return {tone:'unknown', desc: wd.alive === true ? '收到守护进程心跳，但未验证目标是本应用，保护状态未知' : '未验证守护目标是本应用，保护状态未知'};
-      if (wd.alive === true) return {tone:'unknown', desc:'收到本应用目标的上报心跳，实际保护能力仍需核查 · ' + fmtAgo(wd.beatAgeSeconds)};
-      return {tone: wd.alive === false ? 'warn' : 'unknown', desc: wd.alive === false ? '已验证目标，但未收到有效心跳' : '守护进程状态未知'};
+      return {tone:'unknown', badge:'· 未验证', desc: wd.alive === true
+        ? '收到守护进程心跳，但实际保护能力未验证；不能据此确认本应用受防冻结保护'
+        : '未取得可靠的守护保护状态；无 Root 设备可使用服务自检与系统定时恢复'};
+    }
+
+    function freezeRecordInfo(wd) {
+      wd = wd || {};
+      const age = wd.unfreezeAgeSeconds;
+      const recorded = wd.verifiedTarget === true && typeof age === 'number' && Number.isFinite(age) && age >= 0;
+      return {tone: recorded && age < 7200 ? 'warn' : 'unknown', badge: recorded ? '· 有历史记录' : '· 暂无记录',
+        desc: recorded ? fmtAgo(age) + '有本应用的解冻记录；历史记录不能判断当前是否冻结'
+          : '暂无可验证的本应用冻结记录；不代表从未被冻结'};
+    }
+
+    function serviceHealthState(service) {
+      service = service || {};
+      const h = service.health || service;
+      const state = h.healthState || h.phase;
+      if (h.enabled === false || state === 'disabled') return {tone:'unknown', badge:'· 已关闭'};
+      const failed = ['unhealthy', 'checkError', 'startFailed', 'foregroundStartFailed', 'waitingForRequests'];
+      if (h.listenerAlive === false || service.running === false || h.foreground === false || failed.includes(state)
+          || (typeof h.consecutiveFailures === 'number' && h.consecutiveFailures > 0)) {
+        if (['created', 'starting', 'awaitingProbe', 'probing', 'restarting', 'waitingForStop', 'startBackoff'].includes(state))
+          return {tone:'unknown', badge:'· 检测／恢复中'};
+        return {tone:'warn', badge:'⚠️ 服务异常'};
+      }
+      const age = h.lastProbeAgeSeconds;
+      const hasProbe = typeof h.lastProbeAt === 'number' && Number.isFinite(h.lastProbeAt) && h.lastProbeAt > 0
+        && typeof age === 'number' && Number.isFinite(age) && age >= 0;
+      if (hasProbe && age > 90) return {tone:'warn', badge:'⚠️ 健康记录过期'};
+      if (state === 'healthy' && service.running === true && h.listenerAlive === true && h.foreground === true
+          && hasProbe && age <= 90 && h.lastProbeCode === 200 && h.consecutiveFailures === 0)
+        return {tone:'ok', badge:'✅ 当前正常'};
+      return {tone:'unknown', badge: state === 'probing' ? '· 检测中' : '· 尚未确认'};
     }
 
     function serviceHealthInfo(service) {
@@ -5171,7 +5325,6 @@
         if (w) w.style.display = 'none';
         setupState.data = d;
         showToast('✅ 设置完成');
-        try { refreshAccessSnippets(); } catch (e) {}
         try { renderCredentials(); } catch (e) {}
         try { loadConfig(); } catch (e) {}
         if (d.authKeyIsDefault) showWeakKeyBanner();
@@ -5208,6 +5361,10 @@
         loadStats();
         loadConfig();
       }, 3000);
+      setInterval(() => {
+        const insight = document.getElementById('tab-insight');
+        if (!document.hidden && gatewayRunning && insight && insight.classList.contains('active')) loadHeatmap();
+      }, 30000);
     });
   
     let inAppPollTimer = null;

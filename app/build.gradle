@@ -90,6 +90,7 @@ def offlineTestMains = [
         'com.gaeul.allin.AtomicConfigFileOfflineTest',
         'com.gaeul.allin.GatewayStreamReadOfflineTest',
         'com.gaeul.allin.BackgroundHealthOfflineTest',
+        'com.gaeul.allin.UsageLedgerHeatmapOfflineTest',
         'com.gaeul.allin.RecoveryPolicyTest',
         'com.gaeul.allin.ForegroundServicePolicyTest',
         'fi.iki.elonen.TrackedResponseOfflineTest',
