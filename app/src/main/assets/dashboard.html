@@ -694,7 +694,9 @@
       display: flex; justify-content: space-between; align-items: center;
       gap: 8px; margin-bottom: 8px;
     }
-    .exp-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+    .exp-name { font-size: 13.5px; font-weight: 600; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+    .exp-toggle { width: 100%; text-align: left; border: 0; background: transparent; color: inherit; font: inherit; padding: 0; cursor: pointer; }
+    .exp-unconfigured { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); font-size: 12px; }
     .exp-sub { font-size: 11.5px; color: var(--text-faint); margin-left: 6px; font-weight: 400; }
     .exp-actions { display: flex; gap: 6px; flex-shrink: 0; }
     .exp-mini {
@@ -3114,6 +3116,7 @@
     // ==================== 模型白名单 ====================
     let exposedData = null;          // GET /api/exposed 的结果
     let exposedSel = new Set();      // 已勾选的 provider/model 或 group/<id>
+    const exposedOpen = new Set();   // 当前页面的展开状态
 
     async function loadExposed() {
       const state = document.getElementById('exposed-state');
@@ -3155,52 +3158,76 @@
       renderExposed();
     }
 
+    async function configureExposedProvider(id) {
+      switchTab('providers');
+      // Commercial rows may be created asynchronously by loadConfig.
+      await loadConfig();
+      const badge = document.getElementById('badge-count-' + id);
+      const commercial = document.getElementById('commercial-keys-container');
+      const row = commercial && Array.from(commercial.children).find(el => el.dataset.providerId === id);
+      const target = (badge && badge.closest('.card')) || row;
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      else showToast('未找到该供应商的配置入口');
+    }
+
     function renderExposed() {
       const box = document.getElementById('exposed-list');
       if (!box || !exposedData) return;
       const enabled = document.getElementById('exposed-enabled');
       box.style.opacity = (enabled && !enabled.checked) ? '0.55' : '1';
+      box.replaceChildren();
 
-      const parts = [];
-      const groups = exposedData.groups || [];
-      if (groups.length) {
-        parts.push('<div class="exp-prov">'
-          + '<div class="exp-head"><div class="exp-name">路由组<span class="exp-sub">虚拟模型</span></div>'
-          + '<div class="exp-actions">'
-          + '<button class="exp-mini" onclick="setExposedGroupAll(true)">全选</button>'
-          + '<button class="exp-mini" onclick="setExposedGroupAll(false)">清空</button>'
-          + '</div></div><div class="exp-chips">'
-          + groups.map(g => {
-            const on = exposedSel.has(g.id) ? ' on' : '';
-            return '<button class="exp-chip' + on + '" onclick="toggleExposed(\'' + g.id + '\')">'
-              + escapeHtml(g.name || g.id) + '</button>';
-          }).join('')
-          + '</div></div>');
+      function element(tag, className, text) {
+        const el = document.createElement(tag);
+        el.className = className;
+        if (text !== undefined) el.textContent = text;
+        return el;
       }
-
+      function button(className, text, handler) {
+        const el = element('button', className, text);
+        el.type = 'button';
+        el.addEventListener('click', handler);
+        return el;
+      }
+      function section(key, name, entries, configured, isGroup) {
+        const open = exposedOpen.has(key);
+        const count = entries.filter(e => exposedSel.has(e.id)).length;
+        const wrap = element('div', 'exp-prov');
+        const head = element('div', 'exp-head');
+        const title = button('exp-toggle exp-name', '', () => {
+          if (!configured) return;
+          if (exposedOpen.has(key)) exposedOpen.delete(key); else exposedOpen.add(key);
+          renderExposed();
+        });
+        title.setAttribute('aria-expanded', String(configured && open));
+        title.textContent = (configured && open ? '▾ ' : '▸ ') + name;
+        title.appendChild(element('span', 'exp-sub', count + '/' + entries.length + (isGroup ? ' · 虚拟模型' : configured ? ' · 已配置' : ' · 未配置凭据')));
+        head.appendChild(title);
+        wrap.appendChild(head);
+        if (!configured) {
+          const hint = element('div', 'exp-unconfigured');
+          hint.appendChild(element('span', '', '请导入账户或添加 API Key'));
+          hint.appendChild(button('exp-mini', '去配置', () => configureExposedProvider(key.slice(2))));
+          wrap.appendChild(hint);
+        } else if (open) {
+          const actions = element('div', 'exp-actions');
+          [true, false].forEach(on => actions.appendChild(button('exp-mini', on ? '全选' : '清空', () => {
+            if (isGroup) setExposedGroupAll(on); else setExposedGroup(key.slice(2), on);
+          })));
+          wrap.appendChild(actions);
+          const chips = element('div', 'exp-chips');
+          entries.forEach(entry => chips.appendChild(button('exp-chip' + (exposedSel.has(entry.id) ? ' on' : ''), entry.name, () => toggleExposed(entry.id))));
+          wrap.appendChild(chips);
+        }
+        box.appendChild(wrap);
+      }
+      const groups = exposedData.groups || [];
+      if (groups.length) section('g:', '路由组', groups.map(g => ({ id: g.id, name: g.name || g.id })), true, true);
       visibleProviders(exposedData.providers).forEach(p => {
         const models = p.models || [];
-        if (!models.length) return;
-        const picked = models.filter(m => exposedSel.has(p.id + '/' + m)).length;
-        parts.push('<div class="exp-prov">'
-          + '<div class="exp-head"><div class="exp-name">' + escapeHtml(p.name || p.id)
-          + '<span class="exp-sub">' + picked + '/' + models.length
-          + (p.live ? ' · 可用' : ' · 未配置凭据') + '</span></div>'
-          + '<div class="exp-actions">'
-          + '<button class="exp-mini" onclick="setExposedGroup(\'' + p.id + '\', true)">全选</button>'
-          + '<button class="exp-mini" onclick="setExposedGroup(\'' + p.id + '\', false)">清空</button>'
-          + '</div></div><div class="exp-chips">'
-          + models.map(m => {
-            const full = p.id + '/' + m;
-            const on = exposedSel.has(full) ? ' on' : '';
-            const safeFull = jsAttr(full);
-            return '<button class="exp-chip' + on + '" onclick="toggleExposed(\'' + safeFull + '\')">'
-              + esc(m) + '</button>';
-          }).join('')
-          + '</div></div>');
+        if (models.length) section('p:' + p.id, p.name || p.id, models.map(m => ({ id: p.id + '/' + m, name: m })), !!p.live, false);
       });
-
-      box.innerHTML = parts.join('') || '<div class="exp-empty">还没有可选的模型，先去供应商页登录并同步模型</div>';
+      if (!box.children.length) box.appendChild(element('div', 'exp-empty', '还没有可选的模型，先去供应商页登录并同步模型'));
     }
 
     // 路由组的整组操作（groups 不带 models 列表，单独处理）
@@ -5852,6 +5879,7 @@
         const keys = Array.isArray(p.keys) ? p.keys : [];
         const row = document.createElement('div');
         row.className = 'provider-row';
+        row.dataset.providerId = p.id;
         const badge = keys.length > 0
           ? '<span class="badge badge-success">已配置 ' + keys.length + ' 个</span>'
           : '<span class="badge badge-muted">未配置</span>';
