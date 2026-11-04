@@ -31,11 +31,12 @@ public final class GatewayAuditOfflineTest {
         return rows;
     }
     static void check(boolean v,String message) { ResponsesGatewayOfflineTest.check(v,message); }
-    static InputStream nativeStream(GatewayServer g,CountingSource source,CountingConnection conn) throws Exception {
+    static InputStream nativeStream(GatewayServer g,CountingSource source,CountingConnection conn) throws Exception { return nativeStream(g,source,conn,null); }
+    static InputStream nativeStream(GatewayServer g,CountingSource source,CountingConnection conn,PrivacyMasker.Session mask) throws Exception {
         Field f=GatewayServer.class.getDeclaredField("U_ROW"); f.setAccessible(true); ((ThreadLocal)f.get(null)).set(new UsageLedger.Row());
         Field t=GatewayServer.class.getDeclaredField("U_START"); t.setAccessible(true); ((ThreadLocal)t.get(null)).set(System.currentTimeMillis());
         Method m=GatewayServer.class.getDeclaredMethod("nativeResponsesStream",InputStream.class,PrivacyMasker.Session.class,ContextGuard.Result.class,HttpURLConnection.class); m.setAccessible(true);
-        InputStream out=((NanoHTTPD.Response)m.invoke(g,source,null,null,conn)).getData();
+        InputStream out=((NanoHTTPD.Response)m.invoke(g,source,mask,null,conn)).getData();
         ((ThreadLocal)f.get(null)).remove(); ((ThreadLocal)t.get(null)).remove();
         return out;
     }
@@ -63,6 +64,58 @@ public final class GatewayAuditOfflineTest {
         check(ResponsesGatewayOfflineTest.read(in).contains("response.failed"),"oversize SSE must fail");
         check(ledgerCount()==before+1 && src.closes==1 && conn.disconnects==1,"oversize must close and record once"); in.close();
     }
+    static void pendingLiteral() throws Exception {
+        PrivacyMasker.Session mask=new PrivacyMasker.Session(); mask.placeholderToReal.put("{{MASK_PHONE_a}}","real");
+        for(String tail:new String[]{"{","{{","{{MASK_PHONE_"}) {
+            String text="literal "+tail;
+            JSONObject delta=new JSONObject().put("type","response.output_text.delta").put("sequence_number",3).put("item_id","item").put("output_index",2).put("content_index",1).put("delta",text);
+            JSONObject done=new JSONObject().put("type","response.output_text.done").put("sequence_number",4).put("item_id","item").put("output_index",2).put("content_index",1).put("text",text);
+            JSONObject completed=new JSONObject().put("type","response.completed").put("sequence_number",5).put("response",new JSONObject().put("status","completed").put("output",new JSONArray()));
+            String wire="data: "+delta+"\n\ndata: "+done+"\n\ndata: "+completed+"\n\n";
+            CountingSource src=new CountingSource(wire); CountingConnection conn=new CountingConnection();
+            String result=ResponsesGatewayOfflineTest.read(nativeStream(ResponsesGatewayOfflineTest.gateway(1,"responses"),src,conn,mask));
+            check(!result.contains("response.failed") && result.contains("response.completed"),"literal pending suffix failed: "+result);
+            StringBuilder actual=new StringBuilder(); long previous=-1; int chunks=0;
+            for(String line:result.split("\n")) if(line.startsWith("data: ")) {
+                JSONObject event=new JSONObject(line.substring(6)); long number=event.getLong("sequence_number"); check(number>previous,"non-increasing sequence"); previous=number;
+                if("response.output_text.delta".equals(event.optString("type"))) { actual.append(event.getString("delta")); chunks++; check("item".equals(event.optString("item_id")) && event.optInt("output_index")==2 && event.optInt("content_index")==1,"flush lost indices"); }
+            }
+            check(actual.toString().equals(text) && chunks==2,"pending suffix not emitted as delta: "+actual);
+        }
+    }
+    static void terminalFlushAndInterleave() throws Exception {
+        PrivacyMasker.Session mask=new PrivacyMasker.Session(); mask.placeholderToReal.put("{{MASK_PHONE_a}}","real");
+        JSONObject a=new JSONObject().put("type","response.output_text.delta").put("sequence_number",0).put("item_id","a").put("output_index",0).put("content_index",0).put("delta","A{");
+        JSONObject b=new JSONObject().put("type","response.output_text.delta").put("sequence_number",1).put("item_id","b").put("output_index",0).put("content_index",0).put("delta","B{");
+        JSONObject end=new JSONObject().put("type","response.completed").put("sequence_number",2).put("response",new JSONObject().put("status","completed").put("output",new JSONArray()));
+        String body=ResponsesGatewayOfflineTest.read(nativeStream(ResponsesGatewayOfflineTest.gateway(1,"responses"),new CountingSource("data: "+a+"\n\ndata: "+b+"\n\ndata: "+end+"\n\n"),new CountingConnection(),mask));
+        Map<String,String> values=new HashMap<>(); long seq=-1;
+        for(String line:body.split("\n")) if(line.startsWith("data: ")) { JSONObject e=new JSONObject(line.substring(6)); check(e.getLong("sequence_number")>seq,"terminal flush ordering"); seq=e.getLong("sequence_number"); if(e.optString("type").endsWith(".delta")) {String id=e.getString("item_id"); values.put(id,values.getOrDefault(id,"")+e.getString("delta"));} }
+        check("A{".equals(values.get("a")) && "B{".equals(values.get("b")) && body.contains("response.completed"),"interleaved item tails: "+body);
+    }
+    static final class LimitInput extends InputStream {
+        int remaining=65536, reads; boolean closed;
+        public int read() throws IOException { throw new AssertionError("unexpected single read"); }
+        public int read(byte[] b,int off,int len) throws IOException {
+            reads++; if(remaining==0) throw new IOException("extra blocking read");
+            int n=Math.min(len,remaining); Arrays.fill(b,off,off+n,(byte)'x');
+            if(remaining==65536) { byte[] key="test-key".getBytes(StandardCharsets.UTF_8); System.arraycopy(key,0,b,off,key.length); }
+            remaining-=n; return n;
+        }
+        public void close() { closed=true; }
+    }
+    static void boundedErrorRead() throws Exception {
+        GatewayServer g=ResponsesGatewayOfflineTest.gateway(1,"responses"); LimitInput input=new LimitInput();
+        HttpURLConnection conn=new HttpURLConnection(new URL("http://127.0.0.1/")) {
+            public InputStream getErrorStream(){return input;} public void disconnect(){} public boolean usingProxy(){return false;} public void connect(){}
+        };
+        Class<?> attemptType=Class.forName("com.gaeul.allin.GatewayServer$Attempt"); Constructor<?> ctor=attemptType.getDeclaredConstructor(); ctor.setAccessible(true); Object attempt=ctor.newInstance();
+        Method m=GatewayServer.class.getDeclaredMethod("responsesUpstreamError",attemptType,HttpURLConnection.class,int.class,PrivacyMasker.Session.class,ContextGuard.Result.class,String.class); m.setAccessible(true);
+        m.invoke(g,attempt,conn,422,null,null,"test-key");
+        Field response=attemptType.getDeclaredField("response"); response.setAccessible(true); NanoHTTPD.Response r=(NanoHTTPD.Response)response.get(attempt);
+        String body=ResponsesGatewayOfflineTest.read(r.getData()); check(r.getStatus().getRequestStatus()==422 && !body.contains("test-key") && body.contains("[REDACTED]"),"bounded error status/redaction");
+        check(input.closed && input.reads==16,"read past 65536-byte bound");
+    }
     static void codexFailureCloses() throws Exception {
         GatewayServer g=ResponsesGatewayOfflineTest.gateway(1,"responses");
         CountingSource src=new CountingSource("data: invalid-json\n\n"); CountingConnection conn=new CountingConnection();
@@ -89,7 +142,7 @@ public final class GatewayAuditOfflineTest {
     }
     public static void main(String[] args) throws Exception {
         ledgerDir=Files.createTempDirectory("gateway-audit-ledger").toFile(); UsageLedger.init(ledgerDir);
-        streamLifecycle(); codexFailureCloses(); socketCancel();
+        streamLifecycle(); boundedErrorRead(); pendingLiteral(); terminalFlushAndInterleave(); codexFailureCloses(); socketCancel();
         try (ResponsesGatewayOfflineTest.Mock mock = new ResponsesGatewayOfflineTest.Mock("{\"error\":{\"message\":\"bad input\"}}", false, 422)) {
             GatewayServer g = ResponsesGatewayOfflineTest.gateway(mock.server.getLocalPort(), "responses");
             NanoHTTPD.Response r = g.serve(ResponsesGatewayOfflineTest.session("{\"model\":\"mock/m\",\"input\":\"hello\"}", "secret"));

@@ -8185,8 +8185,27 @@ public class GatewayServer extends NanoHTTPD {
         final UsageLedger.Row row=U_ROW.get(); final Long start=U_START.get(); final String clientModel=CLIENT_MODEL.get();
         InputStream processed=new InputStream() {
             final BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
-            final java.util.Map<String,StreamUnmask> deltas=new java.util.HashMap<String,StreamUnmask>();
-            byte[] bytes=new byte[0]; int offset=0; volatile boolean ended=false; boolean terminal=false; long lastSequence=-1; JSONObject lastResponse;
+            final java.util.Map<String,StreamUnmask> deltas=new java.util.LinkedHashMap<String,StreamUnmask>();
+            final java.util.Map<String,JSONObject> deltaTemplates=new java.util.LinkedHashMap<String,JSONObject>();
+            byte[] bytes=new byte[0]; int offset=0; volatile boolean ended=false; boolean terminal=false; long lastSequence=-1, sequenceOffset=0; boolean sawSequence=false; JSONObject lastResponse;
+            String emit(String type,JSONObject event) throws Exception {
+                if(event.opt("sequence_number") instanceof Number) {
+                    long seq=event.optLong("sequence_number")+sequenceOffset;
+                    if(seq<=lastSequence) seq=lastSequence+1;
+                    event.put("sequence_number",seq); lastSequence=seq; sawSequence=true;
+                }
+                return "event: "+type+"\ndata: "+event.toString()+"\n\n";
+            }
+            String flushDelta(String key) throws Exception {
+                StreamUnmask u=deltas.remove(key); JSONObject template=deltaTemplates.remove(key);
+                if(u==null || !u.hasPending() || template==null) return "";
+                JSONObject delta=new JSONObject(template.toString()); delta.put("delta",u.flush());
+                if(sawSequence) {
+                    delta.put("sequence_number",lastSequence+1); lastSequence++;
+                    sequenceOffset++;
+                } else delta.remove("sequence_number");
+                return "event: "+delta.getString("type")+"\ndata: "+delta.toString()+"\n\n";
+            }
             final java.util.concurrent.atomic.AtomicBoolean finished=new java.util.concurrent.atomic.AtomicBoolean();
             final java.util.concurrent.atomic.AtomicBoolean released=new java.util.concurrent.atomic.AtomicBoolean();
             static final int MAX_EVENT_CHARS=1024*1024;
@@ -8244,30 +8263,27 @@ public class GatewayServer extends NanoHTTPD {
                         } else {
                             JSONObject event=new JSONObject(data.toString()); String type=event.optString("type",eventName);
                             if(type.isEmpty())throw new IOException("missing event type");
-                            if(event.opt("sequence_number") instanceof Number) lastSequence=event.optLong("sequence_number");
                             JSONObject response=event.optJSONObject("response");
                             if(response!=null && clientModel!=null && response.has("model")) response.put("model",clientModel);
                             if(response!=null) { lastResponse=response; JSONObject usage=response.optJSONObject("usage"); if(row!=null && usage!=null) absorbUsage(row,ResponsesBridge.chatUsage(usage)); }
                             if("error".equals(type)) throw new IOException("upstream Responses error");
                             if("response.completed".equals(type) || "response.incomplete".equals(type) || "response.failed".equals(type)) {
-                                if("response.completed".equals(type) || "response.incomplete".equals(type)) for(StreamUnmask u:deltas.values()) if(u.hasPending()) throw new IOException("unfinished output delta");
+                                if("response.completed".equals(type) || "response.incomplete".equals(type)) for(String key:new java.util.ArrayList<String>(deltas.keySet())) result+=flushDelta(key);
                                 if(("response.completed".equals(type) || "response.incomplete".equals(type)) && (response==null || !type.substring(9).equals(response.optString("status")))) throw new IOException("invalid terminal response status");
                                 terminal=true; ended=true;
                             }
                             if(event.opt("delta") instanceof String) {
-                                String key=type+":"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
+                                String key=type+":"+event.optString("item_id","")+":"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
                                 StreamUnmask unmask=deltas.get(key); if(unmask==null) { unmask=new StreamUnmask(mask); deltas.put(key,unmask); }
+                                deltaTemplates.put(key,new JSONObject(event.toString()));
                                 String delta=unmask.feed(event.getString("delta")); event.put("delta",delta);
                             }
                             unmaskJson(event,mask);
                             if(type.endsWith(".done")) {
-                                String prefix=type.substring(0,type.length()-5)+".delta:"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
-                                StreamUnmask u=deltas.remove(prefix);
-                                if(u!=null && u.hasPending()) {
-                                    throw new IOException("unfinished masked output fragment");
-                                }
+                                String prefix=type.substring(0,type.length()-5)+".delta:"+event.optString("item_id","")+":"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
+                                result+=flushDelta(prefix);
                             }
-                            result+="event: "+type+"\ndata: "+event.toString()+"\n\n";
+                            result+=emit(type,event);
                             if(terminal) finish("response.failed".equals(type)?502:200,"response.failed".equals(type)?"Upstream response failed":"");
                         }
                     } catch(Exception ex) {
@@ -8350,7 +8366,7 @@ public class GatewayServer extends NanoHTTPD {
             if(input==null) body="";
             else {
                 ByteArrayOutputStream buffer=new ByteArrayOutputStream(); byte[] chunk=new byte[4096]; int n;
-                while((n=input.read(chunk))!=-1 && buffer.size()<65536) buffer.write(chunk,0,Math.min(n,65536-buffer.size()));
+                while(buffer.size()<65536 && (n=input.read(chunk,0,Math.min(chunk.length,65536-buffer.size())))!=-1) buffer.write(chunk,0,n);
                 body=PrivacyMasker.unmaskText(buffer.toString("UTF-8"),mask);
             }
         }
