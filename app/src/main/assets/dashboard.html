@@ -3665,7 +3665,7 @@
     /** 从服务端拉当前口令 */
     let authKeyRevision = 0;
     async function loadAuthKey() {
-      const revision = authKeyRevision;
+      const revision = ++authKeyRevision;
       try {
         const res = await fetch(API_BASE + '/api/server-key');
         const d = await res.json();
@@ -4749,11 +4749,12 @@
 
     async function saveProviders() {
       try {
-        await fetch(API_BASE + '/api/config', {
+        const res = await fetch(API_BASE + '/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(Object.assign({}, appConfig, { server: undefined }))
         });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         showToast('配置已保存！');
       } catch (e) {
         alert('保存失败: ' + e.message);
@@ -4822,10 +4823,17 @@
         // 页面可能在系统权限页被重建：已应用的非默认口令应继续展示。
         let existingKey = '';
         if (!d.authKeyIsDefault) {
+          const revision = ++authKeyRevision;
           try {
             const keyRes = await fetch(API_BASE + '/api/server-key', { cache: 'no-store' });
             const keyData = await keyRes.json();
-            if (keyRes.ok && keyData.ok) existingKey = keyData.authKey || '';
+            if (keyRes.ok && keyData.ok && revision === authKeyRevision) {
+              existingKey = keyData.authKey || '';
+              authKeyRevision++;
+              AUTH_KEY = currentAuthKey = existingKey;
+              try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
+              try { renderCredentials(); refreshAccessSnippets(); } catch (e) {}
+            } else if (revision !== authKeyRevision) existingKey = currentAuthKey;
           } catch (e) {}
         }
         openSetupWizard(existingKey);
@@ -4863,8 +4871,11 @@
       w.style.display = 'block';
       setupState.step = 1;
       setupState.keepCurrent = false;
+      setupState.appliedKey = null;
       const inp = document.getElementById('setup-key');
       if (inp) inp.value = existingKey || setupGenKey();
+      const tip = document.getElementById('setup-key-tip');
+      if (tip) tip.innerText = existingKey ? '这是当前已应用的口令。修改后点击应用，保存成功才生效。' : '请先复制记下口令，点击应用并保存成功后才生效。';
       setupRenderStep();
     }
 
@@ -4885,11 +4896,24 @@
       const back = document.getElementById('setup-btn-back');
       const next = document.getElementById('setup-btn-next');
       if (back) back.style.visibility = (n === 1) ? 'hidden' : 'visible';
-      if (next) next.innerText = (n === 3) ? '完成，进入面板' : '下一步';
+      if (next) next.innerText = n === 1 ? '应用密钥，下一步' : (n === 3 ? '完成，进入面板' : '下一步');
       const title = document.getElementById('setup-step-title');
       if (title) title.innerText = n === 1 ? '① 设置网关口令' : (n === 2 ? '② 放行必要权限' : '③ 选择保活方式');
       if (n === 2) setupRefreshPerms();
       if (n === 3) setupRefreshKeepalive();
+    }
+
+    function setupSetBusy(busy) {
+      setupState.busy = busy;
+      ['setup-key', 'setup-btn-copy', 'setup-btn-regen', 'setup-btn-keep',
+       'setup-btn-back', 'setup-btn-next', 'setup-btn-refresh-perms', 'setup-btn-ping']
+        .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = busy; });
+    }
+
+    function setupKeyInput() {
+      const inp = document.getElementById('setup-key');
+      if (setupState.busy) { if (inp) inp.value = setupState.lockedKey; return; }
+      setupState.keepCurrent = false;
     }
 
     async function setupNext() {
@@ -4905,9 +4929,8 @@
           }
         }
         if (!setupState.keepCurrent) {
-          const next = document.getElementById('setup-btn-next');
-          setupState.busy = true;
-          if (next) next.disabled = true;
+          setupState.lockedKey = v;
+          setupSetBusy(true);
           try {
             const res = await fetch(API_BASE + '/api/server-key', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4918,6 +4941,8 @@
               showToast('保存失败：' + (d.error && d.error.message ? d.error.message : '请重试'));
               return;
             }
+            setupState.appliedKey = d.authKey;
+            if (inp) inp.value = d.authKey;
             authKeyRevision++;
             AUTH_KEY = currentAuthKey = d.authKey;
             try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
@@ -4926,10 +4951,10 @@
             showToast('保存失败：' + e.message);
             return;
           } finally {
-            setupState.busy = false;
-            if (next) next.disabled = false;
+            setupSetBusy(false);
           }
         }
+        if (setupState.keepCurrent) setupState.appliedKey = null;
         setupState.step = 2;
       } else if (setupState.step === 2) {
         setupState.step = 3;
@@ -4947,14 +4972,16 @@
     }
 
     function setupRegen() {
+      if (setupState.busy) return;
       const inp = document.getElementById('setup-key');
       if (inp) { inp.value = setupGenKey(); inp.focus(); }
       setupState.keepCurrent = false;
       const tip = document.getElementById('setup-key-tip');
-      if (tip) tip.innerHTML = '已生成新口令，<b style="color:#fff;">请先复制记下来</b>，客户端要用它。';
+      if (tip) tip.innerHTML = '已生成新口令，请先复制记下，点击应用并保存成功后才生效。';
     }
 
     function setupKeepCurrent() {
+      if (setupState.busy) return;
       setupState.keepCurrent = true;
       const inp = document.getElementById('setup-key');
       if (inp) inp.value = '';
@@ -4964,6 +4991,7 @@
     }
 
     function setupCopyKey() {
+      if (setupState.busy) return;
       const inp = document.getElementById('setup-key');
       const v = inp ? inp.value.trim() : '';
       if (!v) { showToast('没有可复制的内容'); return; }
@@ -5085,10 +5113,9 @@
 
     async function setupFinish() {
       if (setupState.busy) return;
-      setupState.busy = true;
+      setupSetBusy(true);
+      // 密钥在第一步已应用；保留操作则明确沿用服务端当前密钥。
       const body = { keepCurrent: true };
-      const next = document.getElementById('setup-btn-next');
-      if (next) next.disabled = true;
       try {
         const res = await fetch(API_BASE + '/api/setup/complete', {
           method: 'POST',
@@ -5099,13 +5126,18 @@
         if (!res.ok || !d.ok) {
           const msg = d.error && d.error.message ? d.error.message : '保存失败';
           showToast(msg);
-          if (next) next.disabled = false;
           setupState.step = 1;
           setupRenderStep();
           return;
         }
-        // 口令变了就立刻切换，否则后续请求会被自己刚设的口令挡在门外
-        if (d.authKey) {
+        if (setupState.appliedKey !== null && d.authKey !== setupState.appliedKey) {
+          showToast('当前密钥与已应用的密钥不一致，请重新检查');
+          setupState.step = 1;
+          setupRenderStep();
+          return;
+        }
+        // 服务端返回的当前密钥是最终依据，包含显式保留当前密钥的情况。
+        if (typeof d.authKey === 'string') {
           authKeyRevision++;
           AUTH_KEY = d.authKey;
           currentAuthKey = d.authKey;
@@ -5122,8 +5154,7 @@
       } catch (e) {
         showToast('保存失败：' + e.message);
       } finally {
-        setupState.busy = false;
-        if (next) next.disabled = false;
+        setupSetBusy(false);
       }
     }
 
@@ -6437,21 +6468,21 @@
             客户端（Claude Code / Cursor / Codex）要用这个口令访问你的网关。
             网关默认监听 <code>0.0.0.0:3425</code>，口令太弱等于把池子里的账号额度对同一个 WiFi 的人开放。
           </div>
-          <input id="setup-key" type="text" spellcheck="false" oninput="setupState.keepCurrent = false"
+          <input id="setup-key" type="text" spellcheck="false" oninput="setupKeyInput()"
             style="width:100%; box-sizing:border-box; padding:11px 13px; background:#0d0f17; color:#fff;
                    border:1px solid var(--card-border); border-radius:10px; font-size:0.82rem;
                    font-family:ui-monospace,SFMono-Regular,monospace;">
           <div id="setup-key-tip" style="font-size:0.72rem; color:var(--text-muted); margin-top:8px; line-height:1.6;">
-            已生成一个随机口令，<b style="color:#fff;">请先复制记下来</b>，客户端要用它。
+            请先复制记下口令，点击应用并保存成功后才生效。
           </div>
           <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
-            <button class="btn btn-outline" onclick="setupCopyKey()"
+            <button id="setup-btn-copy" class="btn btn-outline" onclick="setupCopyKey()"
               style="flex:1; min-width:104px; justify-content:center; font-size:0.74rem; padding:7px 0; border-radius:16px;
                      color:#34d399; border-color:rgba(16,185,129,0.35);">📋 复制口令</button>
-            <button class="btn btn-outline" onclick="setupRegen()"
+            <button id="setup-btn-regen" class="btn btn-outline" onclick="setupRegen()"
               style="flex:1; min-width:104px; justify-content:center; font-size:0.74rem; padding:7px 0; border-radius:16px;
                      color:#a5b4fc; border-color:rgba(99,102,241,0.35);">🎲 换一个</button>
-            <button class="btn btn-outline" onclick="setupKeepCurrent()"
+            <button id="setup-btn-keep" class="btn btn-outline" onclick="setupKeepCurrent()"
               style="flex:1; min-width:104px; justify-content:center; font-size:0.74rem; padding:7px 0; border-radius:16px;
                      color:#9ca3af; border-color:var(--card-border);">保留当前口令</button>
           </div>
@@ -6464,7 +6495,7 @@
             点「去设置」逐项放行，回来点「刷新状态」核实。
           </div>
           <div id="setup-perm-list"></div>
-          <button class="btn btn-outline" onclick="setupRefreshPerms()"
+          <button id="setup-btn-refresh-perms" class="btn btn-outline" onclick="setupRefreshPerms()"
             style="width:100%; justify-content:center; margin-top:12px; font-size:0.76rem; padding:8px 0; border-radius:16px;
                    color:#38bdf8; border-color:rgba(56,189,248,0.35);">🔄 刷新状态</button>
         </div>
@@ -6480,7 +6511,7 @@
           <div id="setup-keepalive-body"
             style="background:rgba(255,255,255,0.03); border:1px solid var(--card-border); border-radius:10px;
                    padding:11px 13px; min-height:44px;"></div>
-          <button class="btn btn-outline" onclick="setupPing()"
+          <button id="setup-btn-ping" class="btn btn-outline" onclick="setupPing()"
             style="width:100%; justify-content:center; margin-top:12px; font-size:0.76rem; padding:8px 0; border-radius:16px;
                    color:#34d399; border-color:rgba(16,185,129,0.35);">⚡ 立即自检一次</button>
         </div>
