@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 9
-        versionName '1.2.5'
+        versionCode 10
+        versionName '1.2.6'
     }
 
     signingConfigs {
@@ -81,6 +81,7 @@ def offlineTestMains = [
         'com.gaeul.allin.ResponsesBridgeOfflineTest',
         'com.gaeul.allin.ResponsesBridgeAuditTest',
         'com.gaeul.allin.ResponsesGatewayOfflineTest',
+        'com.gaeul.allin.ResponsesEmptyContentOfflineTest',
         'com.gaeul.allin.RoutingSetupOfflineTest',
         'com.gaeul.allin.GatewayAuditOfflineTest',
         'com.gaeul.allin.RoutingAuditOfflineTest',

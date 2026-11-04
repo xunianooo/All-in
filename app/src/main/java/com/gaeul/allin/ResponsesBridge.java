@@ -308,8 +308,11 @@ final class ResponsesBridge {
         String reasoning=msg.optString("reasoning_content", "");
         if (!reasoning.isEmpty()) output.put(reasoningItem(reasoning));
         Object content=msg.opt("content");
-        if (content instanceof String && !((String)content).isEmpty()) output.put(messageItem((String)content));
-        else if (content instanceof JSONArray) {
+        if (content instanceof String) {
+            // Tool-only Chat replies legitimately use content="". Skip the empty
+            // text item, then continue converting tool_calls/refusal/usage.
+            if (!((String)content).isEmpty()) output.put(messageItem((String)content));
+        } else if (content instanceof JSONArray) {
             JSONArray parts=(JSONArray)content; StringBuilder b=new StringBuilder();
             for(int i=0;i<parts.length();i++) { JSONObject p=parts.getJSONObject(i); if (!"text".equals(p.optString("type"))) throw new IllegalArgumentException("Unsupported response content"); b.append(p.optString("text")); }
             if (b.length()>0) output.put(messageItem(b.toString()));
