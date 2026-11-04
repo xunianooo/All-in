@@ -82,6 +82,7 @@ def offlineTestMains = [
         'com.gaeul.allin.ResponsesBridgeAuditTest',
         'com.gaeul.allin.ResponsesGatewayOfflineTest',
         'com.gaeul.allin.RoutingSetupOfflineTest',
+        'com.gaeul.allin.GatewayAuditOfflineTest',
 ]
 
 def mainClassesDir = provider { tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().destinationDirectory.get() }

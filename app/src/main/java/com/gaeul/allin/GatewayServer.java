@@ -5973,7 +5973,9 @@ public class GatewayServer extends NanoHTTPD {
                 try { conn.disconnect(); } catch (Throwable ignored) {}
             }
             // 流式由 streamForwardResponse 的 EOF 记账，这里只管非流式与失败
-            if (!handedOff) {
+            if (handedOff) {
+                U_ROW.remove(); U_START.remove(); U_FIRST.remove(); U_LAST.remove(); U_DONE.remove();
+            } else {
                 int st = out.status;
                 String er = out.ok ? "" : (out.body == null ? "" : out.body);
                 // 有些分支失败时没设 status，会记成 0 而看不出是失败；这里兜底
@@ -7291,10 +7293,13 @@ public class GatewayServer extends NanoHTTPD {
             err.put("error", detail);
         } catch (Exception ignored) {}
         Response.IStatus status = Status.lookup(code);
-        if (status == null && code == 502) status = new Response.IStatus() {
-            public int getRequestStatus() { return 502; }
-            public String getDescription() { return "502 Bad Gateway"; }
-        };
+        if (status == null && code >= 400 && code <= 599) {
+            final int responseCode = code;
+            status = new Response.IStatus() {
+                public int getRequestStatus() { return responseCode; }
+                public String getDescription() { return responseCode + " Upstream Error"; }
+            };
+        }
         if (status == null) status = Status.INTERNAL_ERROR;
         Response resp = newFixedLengthResponse(status, "application/json; charset=UTF-8", err.toString());
         addCorsHeaders(resp);
