@@ -2,6 +2,10 @@ package com.gaeul.allin;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import fi.iki.elonen.NanoHTTPD;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import org.json.JSONObject;
@@ -20,7 +24,63 @@ public final class SetupKeyOfflineTest {
     static int remote(GatewayServer s, String key) {
         return RoutingSetupOfflineTest.status(s,"192.0.2.1","/api/routing","GET","",key);
     }
+    // The test-only server shares the listening socket with the Unsafe gateway so
+    // NanoHTTPD's final getListeningPort() reports the real wrapper port.
+    static final class HttpFixture extends NanoHTTPD {
+        final File dir;
+        volatile GatewayServer gateway;
+        HttpFixture(File dir) { super("127.0.0.1", 0); this.dir = dir; }
+        void reload() throws Exception {
+            GatewayServer next = RoutingSetupOfflineTest.server(disk(dir));
+            RoutingAuditOfflineTest.file(next, new File(dir, "config.json"));
+            Field socket = NanoHTTPD.class.getDeclaredField("myServerSocket");
+            socket.setAccessible(true);
+            socket.set(next, socket.get(this));
+            gateway = next;
+        }
+        @Override public Response serve(IHTTPSession session) {
+            if ("/__test/reload".equals(session.getUri()) && session.getMethod() == Method.POST) {
+                try {
+                    int remaining = Integer.parseInt(session.getHeaders().getOrDefault("content-length", "0"));
+                    while (remaining-- > 0) if (session.getInputStream().read() < 0) throw new java.io.EOFException();
+                    reload(); return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
+                }
+                catch (Exception e) { return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "application/json", "{\"ok\":false}"); }
+            }
+            IHTTPSession effective = session;
+            if ("1".equals(session.getHeaders().get("x-fixture-remote"))) {
+                effective = (IHTTPSession) Proxy.newProxyInstance(IHTTPSession.class.getClassLoader(), new Class[]{IHTTPSession.class},
+                    (proxy, method, args) -> method.getName().equals("getRemoteIpAddress") ? "192.0.2.1" : method.invoke(session, args));
+            }
+            return gateway.serve(effective);
+        }
+    }
+    static void httpFixture(File dir) throws Exception {
+        // Never replace existing files, even if the caller accidentally supplies a real directory.
+        if (!dir.isDirectory() || dir.list() == null || dir.list().length != 0)
+            throw new IllegalArgumentException("fixture directory must exist and be empty");
+        File config = new File(dir, "config.json");
+        Files.write(config.toPath(), "{\"providers\":[],\"server\":{\"authKey\":\"magpie\"}}".getBytes(StandardCharsets.UTF_8),
+                java.nio.file.StandardOpenOption.CREATE_NEW);
+        GatewayAuthKeyHolder.init(dir);
+        HttpFixture fixture = new HttpFixture(dir);
+        fixture.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
+        try {
+            fixture.reload();
+            Runtime.getRuntime().addShutdownHook(new Thread(fixture::stop));
+            System.out.println("{\"port\":" + fixture.getListeningPort() + "}");
+            System.out.flush();
+            BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+            while (true) {
+                String line = input.readLine();
+                if (line == null) { new java.util.concurrent.CountDownLatch(1).await(); break; }
+                if (line.trim().equals("stop")) break;
+            }
+        } finally { fixture.stop(); }
+    }
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && "--http-fixture".equals(args[0])) { httpFixture(new File(args[1])); return; }
+        if (args.length != 0) throw new IllegalArgumentException("usage: --http-fixture <empty-dir>");
         File dir = Files.createTempDirectory("setup-key").toFile();
         File config = new File(dir,"config.json");
         String stale = "{\"server\":{\"authKey\":\"magpie\",\"maxBodyBytes\":65536},\"setup\":{\"done\":false},\"providers\":[]}";
