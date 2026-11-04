@@ -38,7 +38,7 @@ public class PermissionCenter {
      *   notifications.granted  —— 通知是否可用（false 时 FGS 通知会被吞掉）
      *   notifications.runtime  —— POST_NOTIFICATIONS 运行时权限是否授予（Android 13+）
      *   battery.ignored        —— 是否已在电池优化白名单
-     *   foregroundService.type —— 服务声明的 foregroundServiceType 位掩码，-1 表示读不到
+     *   foregroundService.type —— 服务实际使用的 foregroundServiceType 位掩码
      *   foregroundService.ok   —— 是否满足"有类型"这一前提
      *   frozen                 —— 进程当前是否被冻结（由调用方补充，这里留空）
      */
@@ -114,9 +114,13 @@ public class PermissionCenter {
         int typeMask = GatewayService.foregroundTypeMask();
         boolean typed = GatewayService.isTypedForeground();
         put(fgs, "type", typeMask);
-        put(fgs, "ok", typed);
+        put(fgs, "name", GatewayService.foregroundTypeName());
+        put(fgs, "expectedName", Build.VERSION.SDK_INT >= 34 ? "specialUse"
+                : Build.VERSION.SDK_INT >= 29 ? "dataSync" : "legacy");
+        put(fgs, "typed", typed);
+        put(fgs, "ok", Build.VERSION.SDK_INT < 29 ? GatewayService.isForegroundStarted() : typed);
         put(fgs, "source", "runtime");
-        if (!typed && GatewayService.isRunning()) {
+        if (Build.VERSION.SDK_INT >= 29 && !typed && GatewayService.isRunning()) {
             put(fgs, "error", "typed-start-foreground-failed");
         }
         put(out, "foregroundService", fgs);

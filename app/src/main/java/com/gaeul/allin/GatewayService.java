@@ -21,6 +21,7 @@ public class GatewayService extends Service {
     private static volatile int FOREGROUND_TYPE_MASK;
     private static volatile GatewayService current;
     private static volatile String startError = "";
+    private static volatile String foregroundStartError = "";
     private final Object lifecycle = new Object();
     private static final Object ENGINE_SERIAL = new Object();
     private static final java.util.concurrent.atomic.AtomicInteger PENDING_STOPS = new java.util.concurrent.atomic.AtomicInteger();
@@ -38,6 +39,11 @@ public class GatewayService extends Service {
 
     public static boolean isTypedForeground() { return TYPED_FOREGROUND_OK; }
     public static int foregroundTypeMask() { return FOREGROUND_TYPE_MASK; }
+    public static String foregroundTypeName() {
+        GatewayService s = current;
+        return s != null && s.foreground ? ForegroundServicePolicy.name(FOREGROUND_TYPE_MASK) : "unknown";
+    }
+    public static boolean isForegroundStarted() { GatewayService s = current; return s != null && s.foreground; }
     public static boolean isRunning() { return RUNNING; }
     public static boolean isGatewayEnabled(Context context) {
         try { return context.getSharedPreferences("magpie_prefs", MODE_PRIVATE)
@@ -49,16 +55,20 @@ public class GatewayService extends Service {
         if (context == null || !isGatewayEnabled(context)) return;
         GatewayService instance = current;
         if (instance != null && !instance.disposed) {
-            instance.enqueue(reason);
+            if (!instance.foreground && !foregroundStartError.isEmpty()) {
+                KeepAliveScheduler.recordOutcome(context, "foregroundStartFailed", foregroundStartError);
+            } else instance.enqueue(reason);
             return;
         }
         try {
             Intent intent = new Intent(context, GatewayService.class);
+            // Record the request before dispatch: a synchronous promotion failure
+            // must remain the newer outcome rather than being overwritten here.
+            KeepAliveScheduler.recordOutcome(context, "restartRequested", "");
             if (Build.VERSION.SDK_INT >= 26) {
                 Context.class.getMethod("startForegroundService", Intent.class).invoke(context, intent);
             } else context.startService(intent);
             startError = "";
-            KeepAliveScheduler.recordOutcome(context, "restartRequested", "");
         } catch (Throwable t) {
             Throwable cause = t.getCause() != null ? t.getCause() : t;
             startError = cause.getClass().getSimpleName();
@@ -79,6 +89,10 @@ public class GatewayService extends Service {
             o.put("foreground", s != null && s.foreground);
             o.put("typedForeground", TYPED_FOREGROUND_OK);
             o.put("foregroundTypeMask", FOREGROUND_TYPE_MASK);
+            o.put("foregroundTypeName", foregroundTypeName());
+            o.put("expectedForegroundTypeMask", ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT));
+            o.put("expectedForegroundTypeName", ForegroundServicePolicy.name(ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT)));
+            o.put("foregroundStartError", foregroundStartError);
             o.put("wakeLockHeld", s != null && s.wakeLock != null && s.wakeLock.isHeld());
             o.put("wifiLockHeld", s != null && s.wifiLock != null && s.wifiLock.isHeld());
             o.put("phase", s == null ? "stopped" : s.phase);
@@ -101,7 +115,14 @@ public class GatewayService extends Service {
         createdAt = System.currentTimeMillis();
         current = this;
         createNotificationChannel();
-        startForegroundNotification();
+        if (!startForegroundNotification()) {
+            phase = "foregroundStartFailed";
+            RUNNING = false;
+            KeepAliveScheduler.cancel(this);
+            KeepAliveScheduler.recordOutcome(this, "foregroundStartFailed", foregroundStartError);
+            stopSelf();
+            return;
+        }
         if (!isGatewayEnabled(this)) {
             phase = "disabled";
             KeepAliveScheduler.cancel(this);
@@ -264,7 +285,7 @@ public class GatewayService extends Service {
         }
     }
 
-    private void startForegroundNotification() {
+    private boolean startForegroundNotification() {
         try {
             Intent notificationIntent = new Intent(this, MainActivity.class);
             int flags = (Build.VERSION.SDK_INT >= 23) ? PendingIntent.FLAG_IMMUTABLE : 0;
@@ -307,38 +328,34 @@ public class GatewayService extends Service {
                 .build();
 
             startForegroundWithType(notification);
+            foregroundStartError = "";
+            return true;
         } catch (Throwable t) {
-            Log.w("Magpie", "startForeground failed: " + t.getMessage());
+            Throwable cause = t;
+            while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+            foregroundStartError = cause.getClass().getSimpleName();
+            errorType = foregroundStartError;
+            foreground = false;
+            TYPED_FOREGROUND_OK = false;
+            FOREGROUND_TYPE_MASK = 0;
+            Log.w("Magpie", "Foreground promotion failed: " + foregroundStartError);
+            return false;
         }
     }
 
-    /**
-     * Android 10+ 的 startForeground(int, Notification, int) 需要显式声明服务类型。
-     * 精简 android.jar 里没有这个重载，且 FOREGROUND_SERVICE_TYPE_DATA_SYNC 常量也不存在，
-     * 所以用反射调用；低版本或反射失败时退回两参版本（不会崩溃，只是少了类型声明）。
-     *
-     * 为什么要类型：Android 14+ 对 FGS 的豁免按类型授予，未声明类型的服务
-     * 在部分 ROM 上会被当作普通后台进程处理，进而被冻结（do_freezer_trap）。
-     */
-    private void startForegroundWithType(Notification notification) {
-        final int TYPE_DATA_SYNC = 0x00000001;
-        if (Build.VERSION.SDK_INT >= 29) {
-            try {
-                Method m = Service.class.getMethod("startForeground", int.class, Notification.class, int.class);
-                m.invoke(this, Integer.valueOf(NOTIFICATION_ID), notification, Integer.valueOf(TYPE_DATA_SYNC));
-                foreground = true;
-                TYPED_FOREGROUND_OK = true;
-                FOREGROUND_TYPE_MASK = TYPE_DATA_SYNC;
-                Log.i("Magpie", "startForeground with type=dataSync ok");
-                return;
-            } catch (Throwable t) {
-                TYPED_FOREGROUND_OK = false;
-                FOREGROUND_TYPE_MASK = 0;
-                Log.w("Magpie", "typed startForeground failed: " + t.getMessage());
+    /** API 34+ uses specialUse; 29-33 retains dataSync; older releases use legacy FGS. */
+    private void startForegroundWithType(final Notification notification) throws Exception {
+        int type = ForegroundServicePolicy.promote(Build.VERSION.SDK_INT, new ForegroundServicePolicy.Promoter() {
+            @Override public void typed(int type) throws Exception {
+                Method method = Service.class.getMethod("startForeground", int.class, Notification.class, int.class);
+                method.invoke(GatewayService.this, Integer.valueOf(NOTIFICATION_ID), notification, Integer.valueOf(type));
             }
-        }
-        startForeground(NOTIFICATION_ID, notification);
+            @Override public void legacy() { startForeground(NOTIFICATION_ID, notification); }
+        });
         foreground = true;
+        TYPED_FOREGROUND_OK = Build.VERSION.SDK_INT >= 29;
+        FOREGROUND_TYPE_MASK = type;
+        Log.i("Magpie", "startForeground type=" + ForegroundServicePolicy.name(type));
     }
 
     private void acquireLocks() {
@@ -361,6 +378,7 @@ public class GatewayService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!foreground) { stopSelf(); return START_NOT_STICKY; }
         if (!isGatewayEnabled(this)) {
             KeepAliveScheduler.cancel(this);
             stopSelf();

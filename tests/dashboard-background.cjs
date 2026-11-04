@@ -9,7 +9,7 @@ function extract(name) {
   assert(next >= 0);
   return html.slice(start, next + 6);
 }
-const names = ['fmtAgo','fmtClock','backgroundBrandHint','measuredPermission','keepaliveInfo','watchdogInfo','serviceHealthInfo','ackRow','setupPermRow'];
+const names = ['fmtAgo','fmtClock','backgroundBrandHint','measuredPermission','keepaliveInfo','watchdogInfo','serviceHealthInfo','fgsDescription','ackRow','setupPermRow'];
 const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(names.map(extract).join('\n'), ctx);
@@ -31,4 +31,13 @@ assert.match(ctx.serviceHealthInfo({running:true}), /监听存活：未知/);
 assert.match(ctx.serviceHealthInfo({listenerAlive:true, pid:42}), /监听存活：是/);
 assert.match(ctx.serviceHealthInfo({health:{lastProbeAt:0,lastProbeCode:0}}), /探测码：未知/);
 assert.match(ctx.serviceHealthInfo({health:{healthState:'<bad>'}}), /&lt;bad&gt;/);
+for (const name of ['specialUse', 'dataSync', 'legacy']) {
+  assert.match(ctx.fgsDescription({name, ok:true}), new RegExp('实际类型：' + name));
+  assert.match(ctx.fgsDescription({name, ok:true}), /不保证免于冻结/);
+}
+assert.match(ctx.fgsDescription({name:'none', ok:false, expectedName:'specialUse'}), /实际类型：未知/);
+assert.doesNotMatch(ctx.fgsDescription({name:'none', ok:false, expectedName:'specialUse'}), /实际类型：specialUse/);
+assert.match(ctx.fgsDescription({}), /实际类型：未知/);
+assert.match(ctx.fgsDescription({name:'<img>', ok:false}), /实际类型：未知/);
+assert.match(ctx.fgsDescription({name:'legacy',ok:true,typed:false}), /已确认旧版前台服务启动/);
 console.log('dashboard background tests passed');

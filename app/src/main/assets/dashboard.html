@@ -2865,7 +2865,7 @@
         let html = '';
         html += permRow(measuredPermission(noti), '通知权限', noti.known === true ? (noti.ok === true ? '系统报告通知可用' : '系统报告通知不可用') : '系统未能确认通知状态', 'notifications');
         html += permRow(measuredPermission(batt), '电池优化白名单', batt.known === true ? (batt.ignored === true ? '系统报告已加入白名单，仍可能受到其他后台限制' : '系统报告未加入白名单') : '系统未提供查询结果，请手动确认', 'battery');
-        html += permRow(fgs.ok === true, '前台服务类型', fgs.ok === true ? '运行时已使用前台服务类型' : '尚未确认类型化前台服务启动成功', 'app');
+        html += permRow(fgs.ok === true, '前台服务类型', fgsDescription(fgs), 'app');
         const auto = p.autostart || {}, ps = p.powersave || {};
         html += ackRow('自启动', '如系统提供此选项，请允许本应用自启动；系统未验证', 'autostart', auto.acked === true, auto.ackedAt || 0, '');
         html += ackRow('省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0, '');
@@ -4997,6 +4997,15 @@
       }
     }
 
+    function fgsDescription(fgs) {
+      fgs = fgs || {};
+      const name = fgs.name;
+      const known = name === 'specialUse' || name === 'dataSync' || name === 'legacy';
+      const actual = known ? name : '未知';
+      const status = fgs.ok === true ? (name === 'legacy' ? '已确认旧版前台服务启动' : '已确认类型化前台服务启动') : '尚未确认前台服务启动成功';
+      return '实际类型：' + actual + '；' + status + '。服务类型是系统分类，不保证免于冻结';
+    }
+
     function backgroundBrandHint(rom) {
       const names = {miui:'MIUI / HyperOS', coloros:'ColorOS / 一加 / realme', vivo:'vivo / iQOO', huawei:'华为', honor:'荣耀', samsung:'三星', other:'Android'};
       const name = names[rom] || names.other;
@@ -5088,7 +5097,7 @@
       let html = '';
       html += setupPermRow(measuredPermission(noti), '通知权限', noti.known === true ? (noti.ok ? '系统报告通知可用' : '系统报告通知不可用') : '系统未能确认通知状态', 'notifications');
       html += setupPermRow(measuredPermission(batt), '电池优化白名单', batt.known === true ? (batt.ignored ? '系统报告已加入白名单' : '系统报告未加入白名单') : '系统未提供查询结果', 'battery');
-      html += setupPermRow(fgs.ok === true, '前台服务类型', fgs.ok === true ? '运行时已使用前台服务类型' : '尚未确认类型化前台服务启动成功', 'app');
+      html += setupPermRow(fgs.ok === true, '前台服务类型', fgsDescription(fgs), 'app');
       html += setupPermRow('info', '自启动', '如系统提供此选项，请允许自启动；系统未验证', 'autostart', auto.acked === true, auto.ackedAt || 0);
       html += setupPermRow('info', '省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0);
       html += '<div style="font-size:0.74rem;color:var(--text-muted);">' + backgroundBrandHint(p.rom) + '</div>';
