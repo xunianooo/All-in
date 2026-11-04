@@ -843,7 +843,7 @@ public class MainActivity extends Activity {
         try {
             if (android.os.Build.VERSION.SDK_INT < 33) return false;
             String perm = "android.permission.POST_NOTIFICATIONS";
-            if (checkCallingOrSelfPermission(perm) == 0) return false; // 已授予
+            if (checkCallingOrSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) return false; // 已授予
             Method m = android.app.Activity.class.getMethod(
                     "requestPermissions", String[].class, int.class);
             m.invoke(this, new Object[]{new String[]{perm}, Integer.valueOf(REQ_NOTIFICATION)});

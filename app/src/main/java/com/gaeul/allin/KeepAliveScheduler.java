@@ -39,14 +39,11 @@ public class KeepAliveScheduler {
     public static final long INTERVAL_MS = 15L * 60L * 1000L;
     private static final int REQ_CODE = 3425;
 
-    private static final int FLAG_UPDATE_CURRENT = 0x08000000;
-    private static final int FLAG_IMMUTABLE = 0x04000000;
-
     private static PendingIntent buildPendingIntent(Context ctx) {
         Intent i = new Intent(ctx, KeepAliveReceiver.class);
         i.setAction(KeepAliveReceiver.ACTION_TICK);
-        int flags = FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) flags |= FLAG_IMMUTABLE;
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
         return PendingIntent.getBroadcast(ctx, REQ_CODE, i, flags);
     }
 

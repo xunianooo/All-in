@@ -8375,7 +8375,9 @@ public class GatewayServer extends NanoHTTPD {
         out.status=code; out.body=body;
         try {
             JSONObject json=new JSONObject(body);
-            if(!json.has("error")) throw new IOException("not an error envelope");
+            JSONObject detail=json.optJSONObject("error");
+            if(detail==null) throw new IOException("not an error envelope");
+            detail.put("type","gateway_error");
             Response.IStatus status=Status.lookup(code);
             if(status==null) { final int c=code; status=new Response.IStatus() { public int getRequestStatus(){return c;} public String getDescription(){return c+" Upstream Error";} }; }
             out.response=newFixedLengthResponse(status,"application/json; charset=UTF-8",json.toString());

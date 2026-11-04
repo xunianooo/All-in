@@ -162,6 +162,12 @@ public final class GatewayAuditOfflineTest {
             String body=ResponsesGatewayOfflineTest.read(r.getData());
             check(body.contains("context_length_exceeded"),"upstream error detail lost: "+body);
         }
+        try (ResponsesGatewayOfflineTest.Mock mock = new ResponsesGatewayOfflineTest.Mock("{\"error\":{\"message\":\"bad test-key\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", false, 422)) {
+            GatewayServer g = ResponsesGatewayOfflineTest.gateway(mock.server.getLocalPort(), "responses");
+            NanoHTTPD.Response r = g.serve(ResponsesGatewayOfflineTest.session("{\"model\":\"mock/m\",\"input\":\"hello\"}", "secret"));
+            JSONObject error = new JSONObject(ResponsesGatewayOfflineTest.read(r.getData())).getJSONObject("error");
+            check(r.getStatus().getRequestStatus()==422 && "gateway_error".equals(error.optString("type")) && "context_length_exceeded".equals(error.optString("code")) && !error.toString().contains("test-key"),"upstream errors must keep gateway contract: "+error);
+        }
         System.out.println("GatewayAuditOfflineTest passed");
     }
 }

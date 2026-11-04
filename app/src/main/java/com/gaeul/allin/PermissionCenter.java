@@ -71,7 +71,7 @@ public class PermissionCenter {
             // Android 13+ 的运行时权限，未授予时通知一律被丢弃
             if (Build.VERSION.SDK_INT >= 33) {
                 runtime = ctx.checkCallingOrSelfPermission("android.permission.POST_NOTIFICATIONS")
-                        == 0; // PackageManager.PERMISSION_GRANTED
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
                 if (!runtime) granted = false;
             }
         } catch (Throwable ignored) {

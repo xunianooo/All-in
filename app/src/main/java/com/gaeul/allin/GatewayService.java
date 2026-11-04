@@ -122,7 +122,7 @@ public class GatewayService extends Service {
     private void startForegroundNotification() {
         try {
             Intent notificationIntent = new Intent(this, MainActivity.class);
-            int flags = (Build.VERSION.SDK_INT >= 23) ? 67108864 : 0;
+            int flags = (Build.VERSION.SDK_INT >= 23) ? PendingIntent.FLAG_IMMUTABLE : 0;
             PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
                 0,
