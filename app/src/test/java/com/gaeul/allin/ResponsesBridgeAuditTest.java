@@ -29,7 +29,53 @@ public class ResponsesBridgeAuditTest {
         String raw=sse("{\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}");
         String out=read(ResponsesBridge.chatStreamToResponses(new ByteArrayInputStream(raw.getBytes(StandardCharsets.UTF_8)),"m"));
         check(out.contains("你好"),"utf8 corrupted");
-        check(out.contains("response.failed") && !out.contains("response.completed"),"EOF without DONE falsely completed");
+        check(out.contains("response.completed") && !out.contains("response.failed"),"finish then EOF must complete");
     }
-    public static void main(String[] args) throws Exception { int failures=0; try { invalidChat(); } catch(AssertionError e){System.err.println(e); failures++;} try {lateToolMetadata();} catch(AssertionError e){System.err.println(e);failures++;} try {fragmentedName();} catch(AssertionError e){System.err.println(e);failures++;} try {prematureDone();} catch(AssertionError e){System.err.println(e);failures++;} if(failures>0)throw new AssertionError(failures+" failures"); }
+    static void requestValidation() throws Exception {
+        String[] bad={"{\"input\":\"x\",\"stream\":\"true\"}","{\"input\":\"x\",\"max_output_tokens\":\"10\"}","{\"input\":\"x\",\"text\":null}","{\"input\":\"x\",\"max_output_tokens\":0}"};
+        for(String raw:bad) { boolean rejected=false; try { ResponsesBridge.projection(new JSONObject(raw)); } catch(Exception ex) { rejected=true; } check(rejected,"invalid Responses request accepted: "+raw); }
+    }
+    static void finalOnly() throws Exception {
+        String raw=sse("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"go\",\"arguments\":\"{}\"}]}}" );
+        String chat=read(ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(raw.getBytes(StandardCharsets.UTF_8)),"m"));
+        check(chat.contains("Hello") && chat.contains("c1") && chat.contains("{}") && chat.contains("tool_calls"),"final response output lost: "+chat);
+    }
+    static void argumentsDone() throws Exception {
+        String raw=sse("{\"type\":\"response.output_item.added\",\"output_index\":3,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"go\",\"arguments\":\"\"}}","{\"type\":\"response.function_call_arguments.done\",\"output_index\":3,\"arguments\":\"{}\"}","{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}");
+        String chat=read(ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(raw.getBytes(StandardCharsets.UTF_8)),"m"));
+        check(chat.contains("\"arguments\":\"{}\""),"done arguments lost: "+chat);
+    }
+    static void lifecycleAndInterleave() throws Exception {
+        String raw=sse("{\"choices\":[{\"delta\":{\"reasoning_content\":\"思\",\"content\":\"答\",\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"bee\",\"arguments\":\"B1\"}},{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"aye\",\"arguments\":\"A1\"}}]}}]}",
+            "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"A2\"}},{\"index\":1,\"function\":{\"arguments\":\"B2\"}}]},\"finish_reason\":\"tool_calls\"}]}","{\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}");
+        String responses=read(ResponsesBridge.chatStreamToResponses(new ByteArrayInputStream(raw.getBytes(StandardCharsets.UTF_8)),"m"));
+        java.util.Map<Integer,String> ids=new java.util.HashMap<Integer,String>(); int seq=0; JSONObject last=null;
+        for(String line:responses.split("\n")) if(line.startsWith("data: ")) {
+            JSONObject e=new JSONObject(line.substring(6)); check(e.getInt("sequence_number")==seq++,"sequence gap"); String type=e.getString("type");
+            if(type.equals("response.output_item.added")) ids.put(e.getInt("output_index"),e.getJSONObject("item").getString("id"));
+            if(e.has("item_id")) check(e.getString("item_id").equals(ids.get(e.getInt("output_index"))),"index/id mismatch "+e);
+            if(type.equals("response.output_item.done")) check(e.getJSONObject("item").getString("id").equals(ids.get(e.getInt("output_index"))),"done id mismatch");
+            if(type.equals("response.completed")) last=e.getJSONObject("response");
+        }
+        check(last!=null && last.getJSONObject("usage").getInt("total_tokens")==8,"usage/terminal missing");
+        JSONArray items=last.getJSONArray("output"); java.util.Map<String,String> args=new java.util.HashMap<String,String>();
+        for(int i=0;i<items.length();i++) {JSONObject item=items.getJSONObject(i); if(item.optString("type").equals("function_call"))args.put(item.getString("call_id"),item.getString("arguments"));}
+        check("A1A2".equals(args.get("a")) && "B1B2".equals(args.get("b")),"interleaved arguments mixed: "+args);
+        String round=read(ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(responses.getBytes(StandardCharsets.UTF_8)),"m"));
+        check(round.contains("思") && round.contains("答") && round.contains("A1") && round.contains("A2") && round.contains("B1") && round.contains("B2") && !round.contains("Invalid Responses stream"),"round trip failed: "+round);
+        String truncated=read(ResponsesBridge.chatStreamToResponses(new ByteArrayInputStream(sse("{\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}").getBytes(StandardCharsets.UTF_8)),"m"));
+        check(truncated.contains("response.failed") && !truncated.contains("response.completed"),"truncated response completed");
+    }
+    static void gatewayFixtures() throws Exception {
+        String nativeSse=sse("{\"type\":\"message_start\"}","{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}","{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}","{\"type\":\"message_stop\"}");
+        Class<?> c=Class.forName("com.gaeul.allin.GatewayServer$AnthropicSseToOpenAI"); java.lang.reflect.Constructor<?> ctor=c.getDeclaredConstructors()[0]; ctor.setAccessible(true);
+        InputStream converted=(InputStream)ctor.newInstance(new ByteArrayInputStream(nativeSse.getBytes(StandardCharsets.UTF_8)),new ZCodeAnthropic.StreamState("m"));
+        String response=read(ResponsesBridge.chatStreamToResponses(converted,"m"));
+        check(response.contains("hello") && response.contains("response.completed"),"Anthropic adapter chain failed: "+response);
+        String nativeResponse=sse("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"codex\"}]}]}}");
+        InputStream toChat=ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(nativeResponse.getBytes(StandardCharsets.UTF_8)),"m");
+        response=read(ResponsesBridge.chatStreamToResponses(toChat,"m"));
+        check(response.contains("codex") && response.contains("response.completed"),"Codex adapter chain failed: "+response);
+    }
+    public static void main(String[] args) throws Exception { int failures=0; try { invalidChat(); } catch(AssertionError e){System.err.println(e); failures++;} try {lateToolMetadata();} catch(AssertionError e){System.err.println(e);failures++;} try {fragmentedName();} catch(AssertionError e){System.err.println(e);failures++;} try {requestValidation();} catch(AssertionError e){System.err.println(e);failures++;} try {finalOnly();} catch(AssertionError e){System.err.println(e);failures++;} try {argumentsDone();} catch(AssertionError e){System.err.println(e);failures++;} try {lifecycleAndInterleave();} catch(AssertionError e){System.err.println(e);failures++;} try {gatewayFixtures();} catch(AssertionError e){System.err.println(e);failures++;} try {prematureDone();} catch(AssertionError e){System.err.println(e);failures++;} if(failures>0)throw new AssertionError(failures+" failures"); }
 }

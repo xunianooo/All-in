@@ -70,6 +70,12 @@ final class ResponsesBridge {
             String key = keys.next();
             if (!FIELDS.contains(key)) throw new IllegalArgumentException("Unsupported Responses field: " + key);
         }
+        if (request.has("stream") && !(request.opt("stream") instanceof Boolean)) throw new IllegalArgumentException("stream must be boolean");
+        if (request.has("max_output_tokens")) {
+            Object value=request.opt("max_output_tokens");
+            if (!(value instanceof Number) || ((Number)value).doubleValue() <= 0 || ((Number)value).doubleValue() != Math.floor(((Number)value).doubleValue())) throw new IllegalArgumentException("max_output_tokens must be a positive integer");
+        }
+        if (request.has("text") && request.isNull("text")) throw new IllegalArgumentException("text must be an object");
         if (request.has("truncation") && !"disabled".equals(request.optString("truncation"))) throw new IllegalArgumentException("Unsupported truncation mode");
         if (request.has("include") && (request.optJSONArray("include")==null || request.optJSONArray("include").length()>0)) throw new IllegalArgumentException("Unsupported include values");
         if (request.has("service_tier") && !"auto".equals(request.optString("service_tier")) && !"default".equals(request.optString("service_tier"))) throw new IllegalArgumentException("Unsupported service_tier");
@@ -423,7 +429,7 @@ final class ResponsesBridge {
                     if(ended)return false;
                     try {
                         start(); String line=in.readLine();
-                        if(line==null) throw new java.io.IOException("upstream stream ended before [DONE]");
+                        if(line==null) { complete(); ended=true; }
                         else if(line.trim().equals("data: [DONE]")) { complete(); ended=true; }
                         else if(line.startsWith("data:")) { String data=line.substring(5).trim(); if(!data.isEmpty()) chunk(new JSONObject(data)); }
                     } catch(Exception e) {
@@ -460,33 +466,86 @@ final class ResponsesBridge {
             final java.io.BufferedReader in=new java.io.BufferedReader(new java.io.InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
             final java.util.Map<Integer,Integer> calls=new java.util.HashMap<Integer,Integer>();
             final java.util.Map<Integer,String> callNames=new java.util.HashMap<Integer,String>();
+            final java.util.Map<Integer,String> callArgs=new java.util.HashMap<Integer,String>();
+            final java.util.Map<String,String> content=new java.util.HashMap<String,String>();
             String id="chatcmpl-"+java.util.UUID.randomUUID().toString().replace("-", ""); byte[] bytes=new byte[0]; int at=0; boolean ended=false, completed=false;
             String chunk(JSONObject delta,Object finish,JSONObject usage) throws Exception { JSONObject choice=new JSONObject().put("index",0).put("delta",delta).put("finish_reason",finish==null?JSONObject.NULL:finish); JSONObject o=new JSONObject().put("id",id).put("object","chat.completion.chunk").put("created",System.currentTimeMillis()/1000).put("model",model).put("choices",new JSONArray().put(choice)); if(usage!=null)o.put("usage",usage); return "data: "+o.toString()+"\n\n"; }
+            String key(String kind,int output,int part) { return kind+":"+output+":"+part; }
+            String appendContent(String kind,int output,int part,String value) throws Exception {
+                String k=key(kind,output,part), old=content.containsKey(k)?content.get(k):"";
+                content.put(k,old+value);
+                return value.isEmpty()?"":chunk(new JSONObject().put(kind,value),null,null);
+            }
+            String reconcileContent(String kind,int output,int part,String value) throws Exception {
+                String k=key(kind,output,part), old=content.containsKey(k)?content.get(k):"";
+                if(!value.startsWith(old)) throw new java.io.IOException("content changed in final response");
+                return appendContent(kind,output,part,value.substring(old.length()));
+            }
+            String addCall(int output,JSONObject item) throws Exception {
+                if(calls.containsKey(output)) return "";
+                int idx=calls.size(); calls.put(output,idx);
+                String name=item.optString("name"), args=item.optString("arguments"), callId=item.optString("call_id");
+                callNames.put(output,name); callArgs.put(output,args);
+                JSONObject fn=new JSONObject().put("name",name).put("arguments",args);
+                JSONObject call=new JSONObject().put("index",idx).put("id",callId).put("type","function").put("function",fn);
+                return chunk(new JSONObject().put("tool_calls",new JSONArray().put(call)),null,null);
+            }
+            String reconcileCall(int output,JSONObject item) throws Exception {
+                String result=addCall(output,item); Integer idx=calls.get(output);
+                String oldName=callNames.get(output), name=item.optString("name",oldName);
+                String oldArgs=callArgs.get(output), args=item.optString("arguments",oldArgs);
+                if(!name.startsWith(oldName) || !args.startsWith(oldArgs)) throw new java.io.IOException("function call changed in final response");
+                JSONObject fn=new JSONObject();
+                if(name.length()>oldName.length()) fn.put("name",name.substring(oldName.length()));
+                if(args.length()>oldArgs.length()) fn.put("arguments",args.substring(oldArgs.length()));
+                callNames.put(output,name); callArgs.put(output,args);
+                if(fn.length()>0) result+=chunk(new JSONObject().put("tool_calls",new JSONArray().put(new JSONObject().put("index",idx).put("function",fn))),null,null);
+                return result;
+            }
+            String reconcileItem(int output,JSONObject item) throws Exception {
+                String type=item.optString("type"), result="";
+                if("function_call".equals(type)) return reconcileCall(output,item);
+                if("message".equals(type)) {
+                    JSONArray parts=item.optJSONArray("content");
+                    for(int j=0;parts!=null && j<parts.length();j++) {
+                        JSONObject part=parts.getJSONObject(j); String partType=part.optString("type");
+                        if("output_text".equals(partType)) result+=reconcileContent("content",output,j,part.optString("text"));
+                        else if("refusal".equals(partType)) result+=reconcileContent("refusal",output,j,part.optString("refusal"));
+                        else throw new java.io.IOException("Unsupported output content");
+                    }
+                } else if("reasoning".equals(type)) {
+                    JSONArray parts=item.optJSONArray("summary");
+                    for(int j=0;parts!=null && j<parts.length();j++) result+=reconcileContent("reasoning_content",output,j,parts.getJSONObject(j).optString("text"));
+                } else throw new java.io.IOException("Unsupported output item");
+                return result;
+            }
             boolean fill() throws java.io.IOException {
                 while(at>=bytes.length) {
                     if(ended)return false; String result="";
                     try { String line=in.readLine(); if(line==null || line.trim().equals("data: [DONE]")) { ended=true; if(!completed) result="data: {\"error\":{\"message\":\"Responses stream ended before completion\"}}\n\n"; }
                         else if(line.startsWith("data:")) { String raw=line.substring(5).trim(); if(raw.isEmpty())continue; JSONObject event=new JSONObject(raw); String type=event.optString("type"); JSONObject delta=new JSONObject();
-                            if("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) { delta.put("content",event.optString("delta")); result=chunk(delta,null,null); }
-                            else if("response.refusal.delta".equals(type)) { delta.put("refusal",event.optString("delta")); result=chunk(delta,null,null); }
-                            else if("response.reasoning_summary_text.delta".equals(type) || "response.reasoning_text.delta".equals(type)) { delta.put("reasoning_content",event.optString("delta")); result=chunk(delta,null,null); }
-                            else if("response.output_item.added".equals(type)) { JSONObject item=event.optJSONObject("item"); if(item!=null && "function_call".equals(item.optString("type"))) { int outputIndex=event.optInt("output_index"), idx=calls.size(); calls.put(outputIndex,idx); callNames.put(outputIndex,item.optString("name")); JSONObject fn=new JSONObject().put("name",item.optString("name")).put("arguments",item.optString("arguments","")); JSONObject call=new JSONObject().put("index",idx).put("id",item.optString("call_id")).put("type","function").put("function",fn); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); } else if(item!=null && !"message".equals(item.optString("type")) && !"reasoning".equals(item.optString("type"))) throw new java.io.IOException("Unsupported output item"); }
-                            else if("response.output_item.done".equals(type)) {
+                            if("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) { result=appendContent("content",event.optInt("output_index"),event.optInt("content_index"),event.optString("delta")); }
+                            else if("response.refusal.delta".equals(type)) { result=appendContent("refusal",event.optInt("output_index"),event.optInt("content_index"),event.optString("delta")); }
+                            else if("response.reasoning_summary_text.delta".equals(type) || "response.reasoning_text.delta".equals(type)) { result=appendContent("reasoning_content",event.optInt("output_index"),event.optInt("summary_index"),event.optString("delta")); }
+                            else if("response.output_item.added".equals(type)) {
                                 JSONObject item=event.optJSONObject("item");
-                                if(item!=null && "function_call".equals(item.optString("type"))) {
-                                    int outputIndex=event.optInt("output_index"); Integer idx=calls.get(outputIndex);
-                                    if(idx==null) throw new java.io.IOException("function done before item");
-                                    String old=callNames.get(outputIndex), name=item.optString("name");
-                                    if(!name.startsWith(old)) throw new java.io.IOException("function name changed");
-                                    if(name.length()>old.length()) {
-                                        JSONObject call=new JSONObject().put("index",idx).put("function",new JSONObject().put("name",name.substring(old.length())));
-                                        delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null);
-                                        callNames.put(outputIndex,name);
-                                    }
-                                }
+                                if(item!=null && "function_call".equals(item.optString("type"))) result=addCall(event.optInt("output_index"),item);
+                                else if(item!=null && !"message".equals(item.optString("type")) && !"reasoning".equals(item.optString("type"))) throw new java.io.IOException("Unsupported output item");
                             }
-                            else if("response.function_call_arguments.delta".equals(type)) { Integer idx=calls.get(event.optInt("output_index")); if(idx==null)throw new java.io.IOException("function arguments before item"); JSONObject call=new JSONObject().put("index",idx).put("function",new JSONObject().put("arguments",event.optString("delta"))); delta.put("tool_calls",new JSONArray().put(call)); result=chunk(delta,null,null); }
-                            else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); if(r==null || !type.substring(9).equals(r.optString("status"))) throw new java.io.IOException("invalid Responses terminal status"); JSONObject u=r.optJSONObject("usage"); JSONObject details=r==null?null:r.optJSONObject("incomplete_details"); String reason="response.incomplete".equals(type)?(details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"):calls.isEmpty()?"stop":"tool_calls"; result=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
+                            else if("response.output_item.done".equals(type)) {
+                                JSONObject item=event.optJSONObject("item"); if(item!=null) result=reconcileItem(event.optInt("output_index"),item);
+                            }
+                            else if("response.function_call_arguments.delta".equals(type)) {
+                                int output=event.optInt("output_index"); Integer idx=calls.get(output); if(idx==null) throw new java.io.IOException("function arguments before item");
+                                String args=event.optString("delta"); callArgs.put(output,callArgs.get(output)+args);
+                                JSONObject call=new JSONObject().put("index",idx).put("function",new JSONObject().put("arguments",args));
+                                result=chunk(new JSONObject().put("tool_calls",new JSONArray().put(call)),null,null);
+                            }
+                            else if("response.function_call_arguments.done".equals(type)) {
+                                int output=event.optInt("output_index"); if(!calls.containsKey(output)) throw new java.io.IOException("function arguments before item");
+                                result=reconcileCall(output,new JSONObject().put("arguments",event.optString("arguments")));
+                            }
+                            else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); if(r==null || !type.substring(9).equals(r.optString("status"))) throw new java.io.IOException("invalid Responses terminal status"); JSONArray finalOutput=r.optJSONArray("output"); for(int i=0;finalOutput!=null && i<finalOutput.length();i++) result+=reconcileItem(i,finalOutput.getJSONObject(i)); JSONObject u=r.optJSONObject("usage"); JSONObject details=r.optJSONObject("incomplete_details"); String reason="response.incomplete".equals(type)?(details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"):calls.isEmpty()?"stop":"tool_calls"; result+=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
                             else if("response.failed".equals(type)||"error".equals(type)) { result="data: "+new JSONObject().put("error",event.opt("error") == null ? event : event.opt("error")).toString()+"\n\n"; ended=true; }
                         }
                     } catch(Exception ex) { ended=true; result="data: {\"error\":{\"message\":\"Invalid Responses stream\"}}\n\n"; }
