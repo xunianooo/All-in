@@ -6,7 +6,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -14,20 +18,37 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 37
+        shell: bash
+        run: sdkmanager --install "platforms;android-37.0"
       - name: Offline tests
-        run: ./gradlew offlineTests --no-daemon
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat offlineTests --no-daemon }
+          else { ./gradlew offlineTests --no-daemon }
       - name: Dashboard setup and routing regressions
+        shell: bash
         run: |
           node tests/dashboard-setup-key.cjs
           node tests/dashboard-routing-audit.cjs
           node tests/dashboard-exposed.cjs
       - name: Fresh setup HTTP integration
-        run: ./gradlew setupKeyHttpTests --no-daemon
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat setupKeyHttpTests --no-daemon }
+          else { ./gradlew setupKeyHttpTests --no-daemon }
       - name: Debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat assembleDebug --no-daemon }
+          else { ./gradlew assembleDebug --no-daemon }
       - uses: actions/upload-artifact@v4
         with:
-          name: all-in-debug-apk
+          name: ${{ matrix.os == 'ubuntu-latest' && 'all-in-debug-apk' || 'all-in-debug-apk-windows' }}
           path: app/build/outputs/apk/debug/*.apk
       # 正式签名包需要 secrets：MAGPIE_KEYSTORE(base64)、MAGPIE_KEYSTORE_PASS
       # 验证稳定后取消注释：

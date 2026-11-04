@@ -93,19 +93,21 @@ public final class SetupKeyOfflineTest {
         try {
             fixture = startFixture(dir.toFile());
             File script = new File(repoRoot, "tests/dashboard-setup-key-http.cjs");
-            Process node = new ProcessBuilder("node", script.getAbsolutePath(),
+            String nodeCommand = System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).startsWith("windows")
+                    ? "node.exe" : "node";
+            Process node = new ProcessBuilder(nodeCommand, script.getAbsolutePath(),
                     "http://127.0.0.1:" + fixture.getListeningPort(), dir.toString())
                     .directory(repoRoot).inheritIO().start();
             int status = node.waitFor();
             if (status != 0) throw new AssertionError("Node HTTP test exited with status " + status);
         } finally {
             if (fixture != null) fixture.stop();
+            java.util.List<java.nio.file.Path> pathsToDelete;
             try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(dir)) {
-                paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
-                    try { Files.deleteIfExists(path); }
-                    catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
-                });
+                pathsToDelete = paths.sorted(java.util.Comparator.reverseOrder())
+                        .collect(java.util.stream.Collectors.toList());
             }
+            for (java.nio.file.Path path : pathsToDelete) Files.deleteIfExists(path);
         }
     }
     public static void main(String[] args) throws Exception {
