@@ -158,6 +158,7 @@ public final class NativeAnthropicHttpTest {
             System.out.println("NativeAnthropicHttpTest OK");
         } finally {
             UsageLedger.setHooks(null); if (g != null) g.stop(); if (u != null) u.close();
+            GatewayStreamReadOfflineTest.closeLedger();
             try (java.util.stream.Stream<Path> paths = Files.walk(dir)) { for (Path p : (Iterable<Path>)paths.sorted(Comparator.reverseOrder())::iterator) Files.deleteIfExists(p); }
         }
     }
