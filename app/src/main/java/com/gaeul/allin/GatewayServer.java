@@ -6654,12 +6654,12 @@ public class GatewayServer extends NanoHTTPD {
     /** 把上游响应流读成字符串（MiniMax 非流式回包 / 错误体用） */
     private static String drainText(InputStream is) throws Exception {
         if (is == null) return "";
-        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = is.read(buf)) != -1) bo.write(buf, 0, n);
-        is.close();
-        return new String(bo.toByteArray(), "UTF-8");
+        try (InputStream source = is) {
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192]; int n;
+            while ((n = source.read(buf)) != -1) bo.write(buf, 0, n);
+            return new String(bo.toByteArray(), "UTF-8");
+        }
     }
 
     /**
@@ -8173,7 +8173,36 @@ public class GatewayServer extends NanoHTTPD {
         InputStream processed=new InputStream() {
             final BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
             final java.util.Map<String,StreamUnmask> deltas=new java.util.HashMap<String,StreamUnmask>();
-            byte[] bytes=new byte[0]; int offset=0; boolean ended=false,terminal=false; long lastSequence=-1; JSONObject lastResponse;
+            byte[] bytes=new byte[0]; int offset=0; volatile boolean ended=false; boolean terminal=false; long lastSequence=-1; JSONObject lastResponse;
+            final java.util.concurrent.atomic.AtomicBoolean finished=new java.util.concurrent.atomic.AtomicBoolean();
+            final java.util.concurrent.atomic.AtomicBoolean released=new java.util.concurrent.atomic.AtomicBoolean();
+            static final int MAX_EVENT_CHARS=1024*1024;
+            void release() {
+                if(!released.compareAndSet(false,true)) return;
+                if(conn!=null) try { conn.disconnect(); } catch(Throwable ignored) {}
+                try { reader.close(); } catch(IOException ignored) {}
+            }
+            void finish(int status, String err) {
+                if(finished.compareAndSet(false,true)) {
+                    if(row!=null) {
+                        row.status=status; row.err=err;
+                        row.ms=System.currentTimeMillis()-(start==null?System.currentTimeMillis():start.longValue());
+                        try { UsageLedger.record(row); } catch(Throwable ignored) {}
+                    }
+                }
+                release();
+            }
+            String boundedLine() throws IOException {
+                StringBuilder line=new StringBuilder(); int ch;
+                while((ch=reader.read())!=-1) {
+                    if(ch=='\n') break;
+                    if(line.length()>=MAX_EVENT_CHARS) throw new IOException("SSE line too large");
+                    line.append((char)ch);
+                }
+                if(ch==-1 && line.length()==0) return null;
+                if(line.length()>0 && line.charAt(line.length()-1)=='\r') line.setLength(line.length()-1);
+                return line.toString();
+            }
             String failure(String message) throws Exception {
                 JSONObject r=lastResponse==null?new JSONObject().put("object","response").put("output",new JSONArray()):new JSONObject(lastResponse.toString());
                 r.put("status","failed").put("error",new JSONObject().put("code","upstream_stream_error").put("message",message));
@@ -8187,8 +8216,10 @@ public class GatewayServer extends NanoHTTPD {
                     if(ended)return false;
                     String result="";
                     try {
-                        String line; StringBuilder data=new StringBuilder(); String eventName="";
-                        while((line=reader.readLine())!=null && !line.isEmpty()) {
+                        String line; StringBuilder data=new StringBuilder(); String eventName=""; int eventChars=0;
+                        while((line=boundedLine())!=null && !line.isEmpty()) {
+                            eventChars+=line.length()+1;
+                            if(eventChars>MAX_EVENT_CHARS) throw new IOException("SSE event too large");
                             if(line.startsWith("data:")) { if(data.length()>0)data.append('\n'); data.append(line.substring(5).trim()); }
                             else if(line.startsWith("event:")) eventName=line.substring(6).trim();
                         }
@@ -8209,7 +8240,6 @@ public class GatewayServer extends NanoHTTPD {
                                 if("response.completed".equals(type) || "response.incomplete".equals(type)) for(StreamUnmask u:deltas.values()) if(u.hasPending()) throw new IOException("unfinished output delta");
                                 if(("response.completed".equals(type) || "response.incomplete".equals(type)) && (response==null || !type.substring(9).equals(response.optString("status")))) throw new IOException("invalid terminal response status");
                                 terminal=true; ended=true;
-                                if(row!=null) { row.status=("response.failed".equals(type)||"error".equals(type))?502:200; row.ms=System.currentTimeMillis()-(start==null?System.currentTimeMillis():start.longValue()); try { UsageLedger.record(row); } catch(Throwable ignored) {} }
                             }
                             if(event.opt("delta") instanceof String) {
                                 String key=type+":"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
@@ -8225,17 +8255,18 @@ public class GatewayServer extends NanoHTTPD {
                                 }
                             }
                             result+="event: "+type+"\ndata: "+event.toString()+"\n\n";
+                            if(terminal) finish("response.failed".equals(type)?502:200,"response.failed".equals(type)?"Upstream response failed":"");
                         }
                     } catch(Exception ex) {
-                        ended=true; try { result=failure("Invalid or interrupted Responses stream"); } catch(Exception ignored) { throw new IOException(ex); }
+                        ended=true; terminal=false; try { result=failure("Invalid or interrupted Responses stream"); } catch(Exception ignored) { finish(502,"Invalid or interrupted Responses stream"); throw new IOException(ex); }
                         }
-                    if(ended && !terminal && row!=null) { row.status=502; try { UsageLedger.record(row); } catch(Throwable ignored) {} }
+                    if(ended && !terminal) finish(502,"Invalid or interrupted Responses stream");
                     if(!result.isEmpty()) { bytes=result.getBytes(java.nio.charset.StandardCharsets.UTF_8); offset=0; return true; }
                 } return true;
             }
             public int read() throws IOException {return fill()?bytes[offset++]&255:-1;}
             public int read(byte[] b,int off,int len) throws IOException {if(len==0)return 0;if(!fill())return -1;int n=Math.min(len,bytes.length-offset);System.arraycopy(bytes,offset,b,off,n);offset+=n;return n;}
-            public void close() throws IOException {try {reader.close();} finally {if(conn!=null)conn.disconnect();}}
+            public void close() throws IOException { ended=true; finish(499,"Client cancelled Responses stream"); }
         };
         Response resp=newChunkedResponse(Status.OK,"text/event-stream; charset=UTF-8",processed);
         addCorsHeaders(resp); applyGuardHeaders(resp,guard); return resp;
@@ -8246,7 +8277,7 @@ public class GatewayServer extends NanoHTTPD {
         if(stream) return nativeResponsesStream(source,mask,guard,conn);
         BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
         JSONObject result=null; String line;
-        while((line=reader.readLine())!=null) {
+        try { while((line=reader.readLine())!=null) {
             if(!line.startsWith("data:"))continue; String data=line.substring(5).trim();
             if(data.isEmpty() || "[DONE]".equals(data))continue;
             JSONObject event=new JSONObject(data); String type=event.optString("type");
@@ -8257,7 +8288,7 @@ public class GatewayServer extends NanoHTTPD {
                 break;
             }
         }
-        reader.close(); if(conn!=null)conn.disconnect();
+        } finally { try { reader.close(); } finally { if(conn!=null)conn.disconnect(); } }
         if(result==null)throw new IOException("Codex stream ended before completion");
         UsageLedger.Row row=U_ROW.get(); if(row!=null && result.optJSONObject("usage")!=null) absorbUsage(row,ResponsesBridge.chatUsage(result.getJSONObject("usage")));
         unmaskJson(result,mask);
@@ -8299,6 +8330,30 @@ public class GatewayServer extends NanoHTTPD {
         if(CopilotAuth.isVisionRequest(body)) conn.setRequestProperty("Copilot-Vision-Request","true");
     }
 
+    private void responsesUpstreamError(Attempt out, HttpURLConnection conn, int code,
+                                        PrivacyMasker.Session mask, ContextGuard.Result guard, String apiKey) throws Exception {
+        String body;
+        try (InputStream input=conn.getErrorStream()) {
+            if(input==null) body="";
+            else {
+                ByteArrayOutputStream buffer=new ByteArrayOutputStream(); byte[] chunk=new byte[4096]; int n;
+                while((n=input.read(chunk))!=-1 && buffer.size()<65536) buffer.write(chunk,0,Math.min(n,65536-buffer.size()));
+                body=PrivacyMasker.unmaskText(buffer.toString("UTF-8"),mask);
+            }
+        }
+        if(apiKey!=null && !apiKey.isEmpty()) body=body.replace(apiKey,"[REDACTED]");
+        if(body.isEmpty()) body="Responses upstream returned HTTP "+code;
+        out.status=code; out.body=body;
+        try {
+            JSONObject json=new JSONObject(body);
+            if(!json.has("error")) throw new IOException("not an error envelope");
+            Response.IStatus status=Status.lookup(code);
+            if(status==null) { final int c=code; status=new Response.IStatus() { public int getRequestStatus(){return c;} public String getDescription(){return c+" Upstream Error";} }; }
+            out.response=newFixedLengthResponse(status,"application/json; charset=UTF-8",json.toString());
+            addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
+        } catch(Exception invalid) { out.response=errorResponse(code,body); }
+    }
+
     private Attempt forwardTranslatedResponses(RouteTarget target, JSONObject request, boolean stream,
                                                 String requestedModel, PrivacyMasker.Session mask,
                                                 ContextGuard.Result guard, ContextGuard.Config cfg) {
@@ -8310,7 +8365,7 @@ public class GatewayServer extends NanoHTTPD {
             conn.setRequestProperty("Accept",stream?"text/event-stream":"application/json"); addResponsesProviderHeaders(conn,target,request);
             OutputStream os=conn.getOutputStream(); os.write(request.toString().getBytes("UTF-8")); os.close();
             int code=conn.getResponseCode(); out.status=code;
-            if(code<200 || code>=300) { out.body="Responses upstream returned HTTP "+code; out.response=errorResponse(code,out.body); conn.disconnect(); return out; }
+            if(code<200 || code>=300) { responsesUpstreamError(out,conn,code,mask,guard,target.apiKey); conn.disconnect(); return out; }
             InputStream source=conn.getInputStream();
             if(stream) {
                 InputStream converted=ResponsesBridge.responsesStreamToChat(source,requestedModel);
@@ -8352,7 +8407,7 @@ public class GatewayServer extends NanoHTTPD {
             addResponsesProviderHeaders(conn,target,request);
             OutputStream output=conn.getOutputStream(); output.write(request.toString().getBytes("UTF-8")); output.close();
             int code=conn.getResponseCode(); out.status=code;
-            if(code<200 || code>=300) { out.body="Responses upstream returned HTTP "+code; out.response=errorResponse(code,out.body); conn.disconnect(); return out; }
+            if(code<200 || code>=300) { responsesUpstreamError(out,conn,code,mask,guard,target.apiKey); conn.disconnect(); return out; }
             InputStream in=conn.getInputStream();
             if(stream) out.response=nativeResponsesStream(in,mask,guard,conn);
             else {
@@ -8378,6 +8433,7 @@ public class GatewayServer extends NanoHTTPD {
         out.providerId = target.providerId;
         out.modelRef = target.providerId + "/" + target.upstreamModel;
         HttpURLConnection conn = null;
+        boolean streamHandedOff = false;
         try {
             JSONObject acc = target.account;
             CodexAuth.SignInInfo info = new CodexAuth.SignInInfo();
@@ -8497,13 +8553,14 @@ public class GatewayServer extends NanoHTTPD {
 
             if (nativeResponses) {
                 Response nativeResp=codexNativeResponse(is,clientWantsStream,maskSession,guardResult,conn);
-                RESP_NATIVE_RESULT.set(Boolean.TRUE); out.response=nativeResp; return out;
+                RESP_NATIVE_RESULT.set(Boolean.TRUE); out.response=nativeResp; streamHandedOff=clientWantsStream; return out;
             }
             if (clientWantsStream) {
                 InputStream openAiStream = convertResponsesToOpenAiStream(is, requestedModel);
                 out.response = wantsAnthropicOut()
                         ? streamForwardAnthropicResponse(openAiStream, requestedModel, maskSession, guardResult, conn)
                         : streamForwardResponse(openAiStream, maskSession, guardResult, conn, target.providerId);
+                streamHandedOff=true;
                 return out;
             } else {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(is, java.nio.charset.StandardCharsets.UTF_8));
@@ -8550,6 +8607,8 @@ public class GatewayServer extends NanoHTTPD {
             out.body = "Codex upstream failed: " + e.getMessage();
             out.response = errorResponse(502, out.body);
             return out;
+        } finally {
+            if(!streamHandedOff && conn!=null) try { conn.disconnect(); } catch(Throwable ignored) {}
         }
     }
 
