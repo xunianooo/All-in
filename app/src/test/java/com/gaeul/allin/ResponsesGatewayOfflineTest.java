@@ -62,7 +62,7 @@ public final class ResponsesGatewayOfflineTest {
         }
         GatewayServer modified=gateway(1,"responses");config(modified).put("middleware",new JSONObject().put("systemPrompt","injected"));
         NanoHTTPD.Response rejection=modified.serve(session(request,"secret"));check(rejection.getStatus().getRequestStatus()==400 && read(rejection.getData()).contains("cannot be converted"),"native-only middleware rejection");
-        GatewayServer chat=gateway(1,"openai"); NanoHTTPD.Response unsupported=chat.serve(session(request,"secret"));check(unsupported.getStatus().getRequestStatus()==400 && read(unsupported.getData()).contains("include"),"cross protocol rejection");
+        GatewayServer chat=gateway(1,"openai"); NanoHTTPD.Response unsupported=chat.serve(session(request,"secret"));check(unsupported.getStatus().getRequestStatus()==400 && read(unsupported.getData()).contains("encrypted reasoning"),"cross protocol rejection");
         JSONObject orig=new JSONObject(request); JSONObject baseline=ResponsesBridge.projection(orig); JSONObject current=new JSONObject(baseline.toString()).put("model","m").put("max_tokens",12);
         ContextGuard.Config guard=ContextGuard.Config.fromJson(new JSONObject().put("enabled",true).put("maxOutputTokens",12));
         check(GatewayServer.nativeResponsesRequest(orig,baseline,current,"m",false,guard,null)!=null,"native guard cap");

@@ -11,11 +11,41 @@ import java.util.Set;
 final class ResponsesBridge {
     private static final Set<String> FIELDS = new HashSet<String>(Arrays.asList(
             "model", "input", "instructions", "stream", "max_output_tokens", "temperature", "top_p",
-            "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "store", "metadata", "include", "prompt_cache_key", "service_tier", "truncation"));
+            "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "store", "metadata", "include", "prompt_cache_key", "service_tier", "truncation", "user", "stream_options", "background", "previous_response_id", "conversation", "prompt", "max_tool_calls"));
+
+    /** Validate and copy before either native forwarding or Chat projection. */
+    static JSONObject normalize(JSONObject request) throws Exception {
+        JSONObject copy = new JSONObject(request.toString());
+        java.util.List<String> unknown = new java.util.ArrayList<String>();
+        for (Iterator<String> it=copy.keys(); it.hasNext();) { String key=it.next(); if(!FIELDS.contains(key)) unknown.add(key); }
+        for(String key:unknown) copy.remove(key);
+        for(String key:new String[]{"user"}) if(copy.has(key) && !copy.isNull(key) && !(copy.opt(key) instanceof String)) throw new IllegalArgumentException(key+" must be a string or null");
+        if(copy.has("metadata") && !copy.isNull("metadata") && !(copy.opt("metadata") instanceof JSONObject)) throw new IllegalArgumentException("metadata must be an object or null");
+        if(copy.has("stream_options") && !copy.isNull("stream_options")) {
+            JSONObject options=copy.optJSONObject("stream_options"); if(options==null) throw new IllegalArgumentException("stream_options must be an object or null");
+            checkKeys(options,new String[]{"include_usage","include_obfuscation"});
+            for(String key:new String[]{"include_usage","include_obfuscation"}) if(options.has(key) && !(options.opt(key) instanceof Boolean)) throw new IllegalArgumentException("stream_options."+key+" must be boolean");
+        }
+        if(copy.has("background") && !copy.isNull("background") && !(copy.opt("background") instanceof Boolean)) throw new IllegalArgumentException("background must be boolean or null");
+        if(copy.has("previous_response_id") && !copy.isNull("previous_response_id") && !(copy.opt("previous_response_id") instanceof String)) throw new IllegalArgumentException("previous_response_id must be a string or null");
+        if(copy.has("conversation") && !copy.isNull("conversation") && !(copy.opt("conversation") instanceof String) && !(copy.opt("conversation") instanceof JSONObject)) throw new IllegalArgumentException("conversation must be a string, object or null");
+        if(copy.has("prompt") && !copy.isNull("prompt") && !(copy.opt("prompt") instanceof JSONObject)) throw new IllegalArgumentException("prompt must be an object or null");
+        if(copy.has("max_tool_calls") && !copy.isNull("max_tool_calls")) { Object v=copy.opt("max_tool_calls"); if(!(v instanceof Number) || !Double.isFinite(((Number)v).doubleValue()) || ((Number)v).doubleValue()<=0 || ((Number)v).doubleValue()>Integer.MAX_VALUE || ((Number)v).doubleValue()!=Math.floor(((Number)v).doubleValue())) throw new IllegalArgumentException("max_tool_calls must be a positive integer or null"); }
+        if(copy.has("previous_response_id") && !copy.isNull("previous_response_id") && !copy.optString("previous_response_id").isEmpty()) throw new IllegalArgumentException("previous_response_id requires complete input");
+        if(copy.has("conversation") && !copy.isNull("conversation")) throw new IllegalArgumentException("conversation requires complete input");
+        if(copy.has("prompt") && !copy.isNull("prompt")) throw new IllegalArgumentException("prompt requires complete input");
+        if(copy.optBoolean("background",false)) throw new IllegalArgumentException("background=true is unsupported; use a synchronous call");
+        JSONObject text=copy.optJSONObject("text");
+        if(text!=null && text.has("verbosity") && !text.isNull("verbosity") && (!(text.opt("verbosity") instanceof String) || !Arrays.asList("low","medium","high").contains(text.opt("verbosity")))) throw new IllegalArgumentException("text.verbosity must be low, medium, high or null");
+        JSONObject reasoning=copy.optJSONObject("reasoning");
+        if(reasoning!=null && reasoning.has("summary") && !reasoning.isNull("summary") && (!(reasoning.opt("summary") instanceof String) || !Arrays.asList("auto","concise","detailed").contains(reasoning.opt("summary")))) throw new IllegalArgumentException("reasoning.summary must be auto, concise, detailed or null");
+        return copy;
+    }
 
     /** A conservative projection: native-only fields are never sent through Chat. */
     static JSONObject projection(JSONObject request) throws Exception {
-        JSONObject copy = new JSONObject(request.toString());
+        JSONObject copy = normalize(request);
+        for(String key:new String[]{"previous_response_id","conversation","prompt","background","max_tool_calls"}) copy.remove(key);
         if(copy.has("include") && !copy.isNull("include") && copy.optJSONArray("include")==null) throw new IllegalArgumentException("include must be an array");
         JSONArray includes=copy.optJSONArray("include");
         for(int i=0;includes!=null && i<includes.length();i++) if(!(includes.opt(i) instanceof String)) throw new IllegalArgumentException("include entries must be strings");
@@ -38,7 +68,8 @@ final class ResponsesBridge {
                     if("reasoning".equals(item.optString("type"))) {
                         checkKeys(item,new String[]{"type","id","summary","content","encrypted_content","status"});
                         if(item.has("encrypted_content") && !item.isNull("encrypted_content") && !(item.opt("encrypted_content") instanceof String)) throw new IllegalArgumentException("encrypted_content must be a string");
-                        continue;
+                        for(String field:new String[]{"summary","content"}) if(item.has(field) && !item.isNull(field)) { JSONArray parts=item.optJSONArray(field); if(parts==null) throw new IllegalArgumentException("reasoning "+field+" must be an array"); for(int j=0;j<parts.length();j++) { JSONObject part=parts.optJSONObject(j); if(part==null || !(part.opt("text") instanceof String) || !("summary_text".equals(part.optString("type")) || "reasoning_text".equals(part.optString("type")))) throw new IllegalArgumentException("Unsupported reasoning part"); checkKeys(part,new String[]{"type","text"}); } }
+                        item.remove("id"); item.remove("status"); item.remove("encrypted_content");
                     }
                     JSONArray content=item.optJSONArray("content");
                     if(content!=null) {
@@ -59,14 +90,33 @@ final class ResponsesBridge {
             }
             copy.put("input",projected);
         }
-        return toChat(copy);
+        return toChatInternal(copy);
     }
 
     static String nativeOnlyReason(JSONObject request) {
-        try { toChat(request); return null; } catch (Exception e) { return e.getMessage(); }
+        try {
+            JSONObject r=normalize(request);
+            if(!r.optString("previous_response_id", "").isEmpty() && !r.isNull("previous_response_id")) return "previous_response_id requires full input for this route";
+            if(r.has("conversation") && !r.isNull("conversation")) return "conversation requires full input for this route";
+            if(r.has("prompt") && !r.isNull("prompt")) return "prompt requires full input for this route";
+            if(r.optBoolean("background",false)) return "background=true requires a synchronous call (background=false)";
+            if(r.has("max_tool_calls") && !r.isNull("max_tool_calls")) return "max_tool_calls requires a native Responses route";
+            JSONArray items=r.optJSONArray("input"); for(int i=0;items!=null && i<items.length();i++) { JSONObject item=items.optJSONObject(i); if(item!=null && "reasoning".equals(item.optString("type")) && !item.isNull("encrypted_content") && !item.optString("encrypted_content", "").isEmpty()) return "encrypted reasoning cannot be represented by Chat; use a native Responses route"; }
+            for(int i=0;items!=null && i<items.length();i++) { JSONObject item=items.optJSONObject(i); JSONArray parts=item==null?null:item.optJSONArray("content"); for(int j=0;parts!=null && j<parts.length();j++) { JSONObject part=parts.optJSONObject(j); if(part!=null && "refusal".equals(part.optString("type"))) return "refusal history requires a native Responses route"; } }
+            if(r.has("store") && r.optBoolean("store",false)) return "store=true requires a native Responses route";
+            JSONArray includes=r.optJSONArray("include"); for(int i=0;includes!=null && i<includes.length();i++) if(!Arrays.asList("reasoning.encrypted_content", "message.output_text.logprobs", "message.input_image.image_url", "file_search_call.results", "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url").contains(includes.optString(i))) return "Unsupported include value: "+includes.optString(i);
+            projection(r); return null;
+        } catch (Exception e) { return e.getMessage(); }
     }
 
     static JSONObject toChat(JSONObject request) throws Exception {
+        String unsupported=nativeOnlyReason(request);
+        if(unsupported!=null) throw new IllegalArgumentException(unsupported);
+        return projection(request);
+    }
+
+    static JSONObject toChatInternal(JSONObject request) throws Exception {
+        request=normalize(request);
         for (Iterator<String> keys = request.keys(); keys.hasNext();) {
             String key = keys.next();
             if (!FIELDS.contains(key)) throw new IllegalArgumentException("Unsupported Responses field: " + key);
@@ -81,7 +131,7 @@ final class ResponsesBridge {
         for (String key : new String[]{"temperature", "top_p"}) {
             if (request.has(key) && !request.isNull(key)) {
                 Object value=request.opt(key);
-                if (!(value instanceof Number) || !Double.isFinite(((Number)value).doubleValue())) throw new IllegalArgumentException(key+" must be a finite number");
+                if (!(value instanceof Number) || !Double.isFinite(((Number)value).doubleValue()) || ((Number)value).doubleValue()<0 || ((Number)value).doubleValue()>("temperature".equals(key)?2:1)) throw new IllegalArgumentException(key+" must be a finite number in range");
             }
         }
         if (request.has("text") && request.isNull("text")) throw new IllegalArgumentException("text must be an object");
@@ -94,6 +144,7 @@ final class ResponsesBridge {
         copy(request, out, "model", "model"); copy(request, out, "stream", "stream");
         copy(request, out, "max_output_tokens", "max_tokens"); copy(request, out, "temperature", "temperature");
         copy(request, out, "top_p", "top_p"); copy(request, out, "parallel_tool_calls", "parallel_tool_calls");
+        copy(request, out, "user", "user"); copy(request, out, "stream_options", "stream_options");
         copy(request, out, "metadata", "metadata"); copy(request, out, "prompt_cache_key", "prompt_cache_key"); copy(request, out, "service_tier", "service_tier");
         JSONObject reasoning = request.optJSONObject("reasoning");
         if (reasoning != null) {
@@ -101,16 +152,18 @@ final class ResponsesBridge {
                 String key = it.next();
                 if (!"effort".equals(key)) throw new IllegalArgumentException("Unsupported reasoning field: " + key);
             }
+            if(reasoning.has("effort") && !reasoning.isNull("effort") && (!(reasoning.opt("effort") instanceof String) || !Arrays.asList("none","minimal","low","medium","high","xhigh").contains(reasoning.opt("effort")))) throw new IllegalArgumentException("Unsupported reasoning.effort");
             copy(reasoning, out, "effort", "reasoning_effort");
         } else if (request.has("reasoning") && !request.isNull("reasoning")) throw new IllegalArgumentException("reasoning must be an object");
         JSONObject text = request.optJSONObject("text");
         if (text != null) {
             for (Iterator<String> it = text.keys(); it.hasNext();) {
                 String key = it.next();
-                if (!"format".equals(key)) throw new IllegalArgumentException("Unsupported text field: " + key);
+                if (!"format".equals(key) && !"verbosity".equals(key)) throw new IllegalArgumentException("Unsupported text field: " + key);
             }
             JSONObject format = text.optJSONObject("format");
-            if (format == null) throw new IllegalArgumentException("text.format must be an object");
+            if (format == null && text.has("format") && !text.isNull("format")) throw new IllegalArgumentException("text.format must be an object");
+            if (format != null) {
             String type = format.optString("type");
             if ("json_schema".equals(type)) {
                 checkKeys(format,new String[]{"type","name","description","schema","strict"});
@@ -118,6 +171,7 @@ final class ResponsesBridge {
                 out.put("response_format", new JSONObject().put("type", type).put("json_schema", schema));
             } else if ("text".equals(type) || "json_object".equals(type)) { checkKeys(format,new String[]{"type"}); out.put("response_format", format); }
             else throw new IllegalArgumentException("Unsupported text.format type: " + type);
+            }
         } else if (request.has("text") && !request.isNull("text")) throw new IllegalArgumentException("text must be an object");
         JSONArray messages = new JSONArray();
         if (request.has("instructions") && !request.isNull("instructions")) {
@@ -134,11 +188,13 @@ final class ResponsesBridge {
                 String type = item.optString("type", "message");
                 if ("reasoning".equals(type)) {
                     checkKeys(item, new String[]{"type", "id", "summary", "content"});
-                    Object rawSummary=item.has("content")?item.opt("content"):item.opt("summary");
+                    Object rawSummary=item.optJSONArray("content") != null && item.optJSONArray("content").length()>0 ? item.opt("content") : item.opt("summary");
+                    if (rawSummary==null || rawSummary==JSONObject.NULL) rawSummary=new JSONArray();
                     if (!(rawSummary instanceof JSONArray)) throw new IllegalArgumentException("reasoning summary must be an array");
                     JSONArray summary=(JSONArray)rawSummary; StringBuilder thought=new StringBuilder();
                     for(int j=0;j<summary.length();j++) { JSONObject part=summary.optJSONObject(j); if(part==null || !(part.opt("text") instanceof String) || !("summary_text".equals(part.optString("type")) || "reasoning_text".equals(part.optString("type")))) throw new IllegalArgumentException("Unsupported reasoning part"); checkKeys(part,new String[]{"type","text"}); thought.append(part.getString("text")); }
-                    throw new IllegalArgumentException("reasoning input cannot be represented by Chat");
+                    if(thought.length()>0) { JSONObject last=messages.length()==0?null:messages.optJSONObject(messages.length()-1); if(last==null || !"assistant".equals(last.optString("role")) || last.has("tool_calls")) { last=new JSONObject().put("role","assistant").put("content",JSONObject.NULL); messages.put(last); } last.put("reasoning_content",last.optString("reasoning_content", "")+thought.toString()); }
+                    continue;
                 }
                 checkKeys(item, "message".equals(type) ? new String[]{"type", "role", "content", "id", "status"} : "function_call".equals(type) ? new String[]{"type", "id", "call_id", "name", "arguments", "status"} : new String[]{"type", "id", "call_id", "output", "status"});
                 if ("message".equals(type)) {
@@ -151,9 +207,10 @@ final class ResponsesBridge {
                     JSONObject fn = new JSONObject().put("name", name).put("arguments", item.getString("arguments"));
                     JSONObject call = new JSONObject().put("id", id).put("type", "function").put("function", fn);
                     JSONObject last = messages.length() == 0 ? null : messages.optJSONObject(messages.length()-1);
-                    if (last == null || !"assistant".equals(last.optString("role")) || !last.has("tool_calls")) {
-                        last = new JSONObject().put("role", "assistant").put("content", JSONObject.NULL).put("tool_calls", new JSONArray()); messages.put(last);
+                    if (last == null || !"assistant".equals(last.optString("role"))) {
+                        last = new JSONObject().put("role", "assistant").put("content", JSONObject.NULL); messages.put(last);
                     }
+                    if (!last.has("tool_calls")) last.put("tool_calls",new JSONArray());
                     last.getJSONArray("tool_calls").put(call);
                 } else if ("function_call_output".equals(type)) {
                     String id = item.optString("call_id");
@@ -226,15 +283,15 @@ final class ResponsesBridge {
         catch (org.json.JSONException e) { throw new IllegalArgumentException("Invalid Chat request: " + e.getMessage(), e); }
     }
     private static JSONObject chatToResponsesChecked(JSONObject chat, String model) throws Exception {
-        checkKeys(chat,new String[]{"model","messages","stream","stream_options","max_tokens","max_completion_tokens","temperature","top_p","parallel_tool_calls","metadata","prompt_cache_key","service_tier","reasoning_effort","tools","tool_choice","response_format","n"});
+        checkKeys(chat,new String[]{"model","messages","stream","stream_options","user","max_tokens","max_completion_tokens","temperature","top_p","parallel_tool_calls","metadata","prompt_cache_key","service_tier","reasoning_effort","tools","tool_choice","response_format","n"});
         if(chat.has("n") && chat.optInt("n",1)!=1) throw new IllegalArgumentException("Responses supports one choice");
         if(chat.has("stream_options") && !chat.isNull("stream_options")) {
             JSONObject options=chat.optJSONObject("stream_options");
             if(options==null) throw new IllegalArgumentException("invalid stream_options");
-            checkKeys(options,new String[]{"include_usage"});
+            checkKeys(options,new String[]{"include_usage","include_obfuscation"});
         }
         JSONObject out = new JSONObject().put("model", model);
-        copy(chat, out, "stream", "stream"); copy(chat, out, "max_tokens", "max_output_tokens");
+        copy(chat, out, "stream", "stream"); copy(chat, out, "user", "user"); copy(chat, out, "stream_options", "stream_options"); copy(chat, out, "max_tokens", "max_output_tokens");
         int completion=chat.optInt("max_completion_tokens",0), max=chat.optInt("max_tokens",0);
         if(completion>0 && (max<=0 || completion<max)) out.put("max_output_tokens",completion);
         copy(chat, out, "temperature", "temperature"); copy(chat, out, "top_p", "top_p");
@@ -246,7 +303,8 @@ final class ResponsesBridge {
         if (messages == null) throw new IllegalArgumentException("messages required");
         for (int i=0;i<messages.length();i++) {
             JSONObject m = messages.getJSONObject(i); String role=m.optString("role");
-            checkKeys(m,new String[]{"role","content","tool_calls","tool_call_id"});
+            checkKeys(m,new String[]{"role","content","tool_calls","tool_call_id","reasoning_content"});
+            if(m.has("reasoning_content") && !m.isNull("reasoning_content")) { if(!"assistant".equals(role) || !(m.opt("reasoning_content") instanceof String)) throw new IllegalArgumentException("Invalid reasoning_content"); input.put(new JSONObject().put("type","reasoning").put("summary",new JSONArray().put(new JSONObject().put("type","summary_text").put("text",m.getString("reasoning_content"))))); }
             if(!Arrays.asList("system","developer","user","assistant","tool").contains(role)) throw new IllegalArgumentException("Unsupported Chat role: "+role);
             if (("system".equals(role) || "developer".equals(role)) && input.length()==0 && m.opt("content") instanceof String) {
                 if (instructions.length()>0) instructions.append("\n\n"); instructions.append(m.optString("content")); continue;

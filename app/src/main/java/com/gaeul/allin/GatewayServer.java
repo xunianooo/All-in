@@ -723,7 +723,7 @@ public class GatewayServer extends NanoHTTPD {
         NATIVE_REQUEST.remove();
         NATIVE_BASELINE.remove();
         NATIVE_DIRECT_ALLOWED.remove();
-        RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove();
+        RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); RESP_WARNING.remove();
         try {
             Response response = serveRequest(session);
             if ("/v1/responses".equals(session.getUri()) && session.getMethod() == Method.POST && response != null
@@ -745,9 +745,10 @@ public class GatewayServer extends NanoHTTPD {
                 }
                 response.setChunkedTransfer(true);
             }
+            if(response!=null && RESP_WARNING.get()!=null) response.addHeader("X-AllIn-Compatibility-Warning",RESP_WARNING.get());
             return response;
         }
-        finally { NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); }
+        finally { RESP_WARNING.remove(); NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); }
     }
 
     private Response serveRequest(IHTTPSession session) {
@@ -3403,8 +3404,9 @@ public class GatewayServer extends NanoHTTPD {
                 String requestedModel = payload.optString("model", "deepseek-chat");
                 if ("/v1/responses".equals(uri)) {
                     try {
-                        JSONObject originalResponses = new JSONObject(payload.toString());
-                        payload = ResponsesBridge.projection(payload);
+                        JSONObject originalResponses = ResponsesBridge.normalize(payload);
+                        if(originalResponses.length()!=payload.length()) RESP_WARNING.set("unknown-fields-ignored");
+                        payload = ResponsesBridge.projection(originalResponses);
                         RESP_REQUEST.set(originalResponses); RESP_BASELINE.set(new JSONObject(payload.toString()));
                         CLIENT_MODEL.set(requestedModel);
                     }
@@ -4175,6 +4177,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     /** 当前请求的客户端要 Anthropic 格式回复（/v1/messages 且请求体是 Anthropic 形状） */
+    private static final ThreadLocal<String> RESP_WARNING = new ThreadLocal<String>();
     private static final ThreadLocal<JSONObject> RESP_REQUEST = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<JSONObject> RESP_NATIVE_CANDIDATE = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<JSONObject> RESP_BASELINE = new ThreadLocal<JSONObject>();
@@ -5405,6 +5408,7 @@ public class GatewayServer extends NanoHTTPD {
                 if (candidate != null && "codex".equals(target.providerId)) RESP_NATIVE_CANDIDATE.set(candidate);
                 else RESP_NATIVE_CANDIDATE.remove();
                 if (candidate == null) {
+                    if(responseOriginal.has("reasoning") || responseOriginal.has("include") || responseOriginal.has("text") || responseOriginal.optJSONArray("input")!=null) RESP_WARNING.set((RESP_WARNING.get()==null?"":RESP_WARNING.get()+", ")+"responses-display-fields-may-be-omitted");
                     String unsupported=ResponsesBridge.nativeOnlyReason(responseOriginal);
                     if (unsupported!=null) { out.status=400; out.body="Responses cannot be converted for selected route: "+unsupported; out.response=errorResponse(400,out.body); return out; }
                     if ("responses".equalsIgnoreCase(target.protocol) && !"codex".equals(target.providerId)) {
@@ -8123,7 +8127,7 @@ public class GatewayServer extends NanoHTTPD {
         int currentLimit=current.optInt("max_tokens",0), currentCompletion=current.optInt("max_completion_tokens",0);
         if(currentCompletion>0 && (currentLimit<=0 || currentCompletion<currentLimit)) currentLimit=currentCompletion;
         if(originalLimit>0 && (currentLimit<=0 || currentLimit>originalLimit)) return null;
-        JSONObject candidate=new JSONObject(original.toString());
+        JSONObject candidate=ResponsesBridge.normalize(original);
         candidate.put("model",model); candidate.put("stream",stream);
         int limit=current.optInt("max_tokens",0), completion=current.optInt("max_completion_tokens",0);
         if(completion>0 && (limit<=0 || completion<limit)) limit=completion;

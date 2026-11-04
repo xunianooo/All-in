@@ -1,0 +1,5 @@
+# Responses agent request compatibility
+
+Compared against Magpie `c7bbd3faf6de7c59ff65848450b0640a7ee2ecb1` (`internal/gateway/responses.go`, `ir.go`, `chat.go`): unknown top-level fields are ignored on a copied request; reasoning text or its summary becomes assistant reasoning history for Chat. Responses routes retain native fields only when guard, privacy and middleware permit the original semantic payload. Existing validation remains in effect.
+
+Chat routes preserve tool calls and results, image content, structured output format and reasoning effort. Text verbosity, reasoning summary presentation and supported `include` output options can be omitted in conversion; the gateway supplies `X-AllIn-Compatibility-Warning`. Native encrypted reasoning and positive `max_tool_calls` require a native Responses route. Server-side conversation state, nonempty previous response IDs or prompts, and background execution are rejected with a 400: provide complete input and use a synchronous request. Storage on Chat routes and refusal history require native Responses. Unknown include values are rejected for cross-protocol conversion.
