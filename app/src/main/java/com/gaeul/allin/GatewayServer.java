@@ -467,57 +467,18 @@ public class GatewayServer extends NanoHTTPD {
         return out;
     }
 
-    /**
-     * 写配置：先写 config.json.tmp 并 fsync，再 rename 覆盖。
-     * 原实现直接写目标文件，进程写一半被杀就留半截 JSON，下次启动解析失败退化成空配置，
-     * 再随便一写就把账号全丢了。rename 在同一目录内是原子的（要么旧文件，要么新文件）。
-     */
+    /** Write and fsync a sibling temporary file; publish only after replacement succeeds. */
     private synchronized boolean saveConfig(JSONObject newConfig) {
         if (newConfig == null) return false;
-        this.configJson = newConfig;
-        File tmp = new File(configFile.getParentFile(), "config.json.tmp");
-        FileOutputStream fos = null;
         try {
-            byte[] data = newConfig.toString(2).getBytes("UTF-8");
-            fos = new FileOutputStream(tmp, false);
-            fos.write(data);
-            fos.flush();
-            try {
-                fos.getFD().sync();
-            } catch (Throwable ignored) {
-            }
-            fos.close();
-            fos = null;
-            if (!tmp.renameTo(configFile)) {
-                // 个别文件系统不允许 rename 覆盖：退化成流式复制
-                FileInputStream fis = new FileInputStream(tmp);
-                FileOutputStream out = new FileOutputStream(configFile, false);
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = fis.read(buf)) != -1) out.write(buf, 0, n);
-                fis.close();
-                out.flush();
-                try {
-                    out.getFD().sync();
-                } catch (Throwable ignored) {
-                }
-                out.close();
-                //noinspection ResultOfMethodCallIgnored
-                tmp.delete();
-            }
+            AtomicConfigFile.write(configFile, newConfig.toString(2));
+            configJson = newConfig;
+            GatewayAuthKeyHolder.invalidate();
+            return true;
         } catch (Exception e) {
             try { android.util.Log.e("Magpie", "保存配置失败: " + e.getMessage()); } catch (Throwable ignored) {}
             return false;
-        } finally {
-            if (fos != null) {
-                try {
-                    fos.close();
-                } catch (Throwable ignored) {
-                }
-            }
         }
-        GatewayAuthKeyHolder.invalidate();
-        return true;
     }
 
     private String readFileToString(File file) throws Exception {
@@ -5089,13 +5050,13 @@ public class GatewayServer extends NanoHTTPD {
 
     private static final class DeepSeekConfigFailure extends IOException {}
     private synchronized void persistConfigStrict(JSONObject value) throws IOException {
-        File tmp=new File(configFile.getParentFile(),"config.deepseek.tmp");
         try {
-            try (FileOutputStream f=new FileOutputStream(tmp,false)) { f.write(value.toString(2).getBytes("UTF-8")); f.flush(); f.getFD().sync(); }
-            if (!tmp.renameTo(configFile)) throw new IOException("rename failed");
-            configJson=value;
+            AtomicConfigFile.write(configFile, value.toString(2));
+            configJson = value;
             GatewayAuthKeyHolder.invalidate();
-        } catch(Exception e) { tmp.delete(); throw new IOException("config persistence failed",e); }
+        } catch (Exception e) {
+            throw new IOException("config persistence failed", e);
+        }
     }
     static void preserveDeepSeekAccounts(JSONObject current,JSONObject incoming) throws Exception {
         JSONObject old=null, fresh=null;
