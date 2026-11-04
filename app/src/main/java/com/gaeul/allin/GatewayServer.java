@@ -470,8 +470,8 @@ public class GatewayServer extends NanoHTTPD {
      * 原实现直接写目标文件，进程写一半被杀就留半截 JSON，下次启动解析失败退化成空配置，
      * 再随便一写就把账号全丢了。rename 在同一目录内是原子的（要么旧文件，要么新文件）。
      */
-    private synchronized void saveConfig(JSONObject newConfig) {
-        if (newConfig == null) return;
+    private synchronized boolean saveConfig(JSONObject newConfig) {
+        if (newConfig == null) return false;
         this.configJson = newConfig;
         File tmp = new File(configFile.getParentFile(), "config.json.tmp");
         FileOutputStream fos = null;
@@ -504,8 +504,8 @@ public class GatewayServer extends NanoHTTPD {
                 tmp.delete();
             }
         } catch (Exception e) {
-            android.util.Log.e("Magpie", "保存配置失败: " + e.getMessage());
-            e.printStackTrace();
+            try { android.util.Log.e("Magpie", "保存配置失败: " + e.getMessage()); } catch (Throwable ignored) {}
+            return false;
         } finally {
             if (fos != null) {
                 try {
@@ -514,6 +514,7 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
         }
+        return true;
     }
 
     private String readFileToString(File file) throws Exception {
@@ -1432,12 +1433,18 @@ public class GatewayServer extends NanoHTTPD {
                     } catch (Exception e) {
                         return errorResponse(400, "请求体不是合法 JSON");
                     }
-                    JSONObject routing = configJson.optJSONObject("routing");
-                    if (routing == null) routing = new JSONObject();
-                    if (req.has("enabled")) routing.put("groupsEnabled", req.optBoolean("enabled", false));
-                    if (req.has("bareModelFallback")) routing.put("bareModelFallback", req.optBoolean("bareModelFallback", false));
-                    configJson.put("routing", routing);
-                    saveConfig(configJson);
+                    synchronized (this) {
+                        Object previous = configJson.opt("routing");
+                        JSONObject oldRouting = configJson.optJSONObject("routing");
+                        JSONObject routing = oldRouting == null ? new JSONObject() : new JSONObject(oldRouting.toString());
+                        if (req.has("enabled")) routing.put("groupsEnabled", req.optBoolean("enabled", false));
+                        if (req.has("bareModelFallback")) routing.put("bareModelFallback", req.optBoolean("bareModelFallback", false));
+                        configJson.put("routing", routing);
+                        if (!saveConfig(configJson)) {
+                            if (previous == null) configJson.remove("routing"); else configJson.put("routing", previous);
+                            return errorResponse(500, "保存路由配置失败");
+                        }
+                    }
                 }
                 JSONObject out = new JSONObject();
                 out.put("ok", true);
@@ -1543,11 +1550,11 @@ public class GatewayServer extends NanoHTTPD {
                 }
                 String nextKey = req.optString("authKey", "").trim();
                 boolean keepCurrent = req.optBoolean("keepCurrent", false);
-                JSONObject server = configJson.optJSONObject("server");
-                if (server == null) {
-                    server = new JSONObject();
-                    configJson.put("server", server);
-                }
+                synchronized (this) {
+                Object previousServer = configJson.opt("server");
+                Object previousSetup = configJson.opt("setup");
+                JSONObject oldServer = configJson.optJSONObject("server");
+                JSONObject server = oldServer == null ? new JSONObject() : new JSONObject(oldServer.toString());
                 if (!nextKey.isEmpty()) {
                     if (nextKey.length() < 4) {
                         return errorResponse(400, "口令至少 4 个字符（太短等于没有）");
@@ -1567,8 +1574,14 @@ public class GatewayServer extends NanoHTTPD {
                 setup.put("doneAt", System.currentTimeMillis());
                 setup.put("version", 1);
                 setup.put("keptCurrentKey", nextKey.isEmpty());
+                configJson.put("server", server);
                 configJson.put("setup", setup);
-                saveConfig(configJson);
+                if (!saveConfig(configJson)) {
+                    if (previousServer == null) configJson.remove("server"); else configJson.put("server", previousServer);
+                    if (previousSetup == null) configJson.remove("setup"); else configJson.put("setup", previousSetup);
+                    return errorResponse(500, "保存首次设置失败");
+                }
+                }
 
                 JSONObject ret = buildSetupStatus();
                 ret.put("authKey", configuredAuthKey());

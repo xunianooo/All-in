@@ -3126,8 +3126,6 @@
         exposedSel = new Set(Array.isArray(d.items) ? d.items : []);
         const cb = document.getElementById('exposed-enabled');
         if (cb) cb.checked = !!d.enabled;
-        const bare = document.getElementById('bare-fallback');
-        if (bare) bare.checked = !!d.bareModelFallback;
         renderExposed();
         if (state) state.innerText = '共 ' + exposedSel.size + ' 个已勾选 · 数据来自当前配置';
       } catch (e) {
@@ -3953,10 +3951,14 @@
     }
 
     /** 路由组开关状态：默认关闭时客户端应该直接挑具体模型 */
+    let routingRevision = 0;
+    let routingWrites = 0;
     async function loadRoutingState() {
+      const revision = routingRevision;
       try {
         const res = await fetch(API_BASE + '/api/routing');
         const d = await res.json();
+        if (revision !== routingRevision || routingWrites > 0) return;
         const cb = document.getElementById('groups-enabled');
         if (cb) cb.checked = !!d.enabled;
         const bare = document.getElementById('bare-fallback');
@@ -3971,6 +3973,8 @@
     }
 
     async function setBareFallback(on) {
+      routingRevision++;
+      routingWrites++;
       try {
         const res = await fetch(API_BASE + '/api/routing', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3979,10 +3983,13 @@
         const d = await res.json();
         showToast(d.ok ? ('裸模型兜底已' + (d.bareModelFallback ? '启用' : '关闭')) : ('设置失败: ' + errText(d.error)));
       } catch (e) { showToast('设置失败: ' + e.message); }
-      await loadRoutingState();
+      finally { routingWrites--; routingRevision++; }
+      if (!routingWrites) await loadRoutingState();
     }
 
     async function setGroupsEnabled(on) {
+      routingRevision++;
+      routingWrites++;
       try {
         const res = await fetch(API_BASE + '/api/routing', {
           method: 'POST',
@@ -3991,11 +3998,11 @@
         });
         const d = await res.json();
         showToast(d.ok ? ('路由组已' + (d.enabled ? '启用' : '关闭')) : ('设置失败: ' + errText(d.error)));
-        await loadRoutingState();
         await loadConfig();
       } catch (e) {
         showToast('设置失败: ' + e.message);
-      }
+      } finally { routingWrites--; routingRevision++; }
+      if (!routingWrites) await loadRoutingState();
     }
 
     async function loadConfig() {
