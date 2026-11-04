@@ -55,7 +55,7 @@ public final class SetupKeyOfflineTest {
             return gateway.serve(effective);
         }
     }
-    static void httpFixture(File dir) throws Exception {
+    static HttpFixture startFixture(File dir) throws Exception {
         // Never replace existing files, even if the caller accidentally supplies a real directory.
         if (!dir.isDirectory() || dir.list() == null || dir.list().length != 0)
             throw new IllegalArgumentException("fixture directory must exist and be empty");
@@ -64,9 +64,18 @@ public final class SetupKeyOfflineTest {
                 java.nio.file.StandardOpenOption.CREATE_NEW);
         GatewayAuthKeyHolder.init(dir);
         HttpFixture fixture = new HttpFixture(dir);
-        fixture.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
         try {
+            fixture.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
             fixture.reload();
+            return fixture;
+        } catch (Exception e) {
+            fixture.stop();
+            throw e;
+        }
+    }
+    static void httpFixture(File dir) throws Exception {
+        HttpFixture fixture = startFixture(dir);
+        try {
             Runtime.getRuntime().addShutdownHook(new Thread(fixture::stop));
             System.out.println("{\"port\":" + fixture.getListeningPort() + "}");
             System.out.flush();
@@ -78,9 +87,31 @@ public final class SetupKeyOfflineTest {
             }
         } finally { fixture.stop(); }
     }
+    static void httpTest(File repoRoot) throws Exception {
+        java.nio.file.Path dir = Files.createTempDirectory("setup-key-http-");
+        HttpFixture fixture = null;
+        try {
+            fixture = startFixture(dir.toFile());
+            File script = new File(repoRoot, "tests/dashboard-setup-key-http.cjs");
+            Process node = new ProcessBuilder("node", script.getAbsolutePath(),
+                    "http://127.0.0.1:" + fixture.getListeningPort(), dir.toString())
+                    .directory(repoRoot).inheritIO().start();
+            int status = node.waitFor();
+            if (status != 0) throw new AssertionError("Node HTTP test exited with status " + status);
+        } finally {
+            if (fixture != null) fixture.stop();
+            try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(dir)) {
+                paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                    try { Files.deleteIfExists(path); }
+                    catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+                });
+            }
+        }
+    }
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && "--http-fixture".equals(args[0])) { httpFixture(new File(args[1])); return; }
-        if (args.length != 0) throw new IllegalArgumentException("usage: --http-fixture <empty-dir>");
+        if (args.length == 2 && "--http-test".equals(args[0])) { httpTest(new File(args[1])); return; }
+        if (args.length != 0) throw new IllegalArgumentException("usage: --http-fixture <empty-dir> | --http-test <repoRoot>");
         File dir = Files.createTempDirectory("setup-key").toFile();
         File config = new File(dir,"config.json");
         String stale = "{\"server\":{\"authKey\":\"magpie\",\"maxBodyBytes\":65536},\"setup\":{\"done\":false},\"providers\":[]}";

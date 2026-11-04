@@ -116,3 +116,13 @@ tasks.register('offlineTests') {
     description = '依次运行原有 main() 风格离线测试（不改测试代码）'
     dependsOn offlineTestTasks
 }
+
+
+tasks.register('setupKeyHttpTests', JavaExec) {
+    group = 'verification'
+    description = '运行真实网关 HTTP 首次设置测试'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.SetupKeyOfflineTest'
+    args '--http-test', rootProject.projectDir.absolutePath
+}
