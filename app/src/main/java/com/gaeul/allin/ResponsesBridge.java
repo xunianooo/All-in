@@ -20,6 +20,7 @@ final class ResponsesBridge {
         JSONArray includes=copy.optJSONArray("include");
         for(int i=0;includes!=null && i<includes.length();i++) if(!(includes.opt(i) instanceof String)) throw new IllegalArgumentException("include entries must be strings");
         copy.remove("include");
+        if(copy.has("store") && !(copy.opt("store") instanceof Boolean)) throw new IllegalArgumentException("store must be boolean");
         if(copy.optBoolean("store",false)) copy.remove("store");
         JSONObject reasoning=copy.optJSONObject("reasoning");
         if(reasoning!=null && reasoning.has("summary")) {
@@ -73,7 +74,15 @@ final class ResponsesBridge {
         if (request.has("stream") && !(request.opt("stream") instanceof Boolean)) throw new IllegalArgumentException("stream must be boolean");
         if (request.has("max_output_tokens")) {
             Object value=request.opt("max_output_tokens");
-            if (!(value instanceof Number) || ((Number)value).doubleValue() <= 0 || ((Number)value).doubleValue() != Math.floor(((Number)value).doubleValue())) throw new IllegalArgumentException("max_output_tokens must be a positive integer");
+            if (!(value instanceof Number) || !Double.isFinite(((Number)value).doubleValue()) || ((Number)value).doubleValue() <= 0 || ((Number)value).doubleValue() > Integer.MAX_VALUE || ((Number)value).doubleValue() != Math.floor(((Number)value).doubleValue())) throw new IllegalArgumentException("max_output_tokens must be a positive integer");
+        }
+        if (request.has("model") && !request.isNull("model") && !(request.opt("model") instanceof String)) throw new IllegalArgumentException("model must be a string");
+        if (request.has("parallel_tool_calls") && !request.isNull("parallel_tool_calls") && !(request.opt("parallel_tool_calls") instanceof Boolean)) throw new IllegalArgumentException("parallel_tool_calls must be boolean");
+        for (String key : new String[]{"temperature", "top_p"}) {
+            if (request.has(key) && !request.isNull(key)) {
+                Object value=request.opt(key);
+                if (!(value instanceof Number) || !Double.isFinite(((Number)value).doubleValue())) throw new IllegalArgumentException(key+" must be a finite number");
+            }
         }
         if (request.has("text") && request.isNull("text")) throw new IllegalArgumentException("text must be an object");
         if (request.has("truncation") && !"disabled".equals(request.optString("truncation"))) throw new IllegalArgumentException("Unsupported truncation mode");
@@ -504,7 +513,10 @@ final class ResponsesBridge {
             }
             String reconcileItem(int output,JSONObject item) throws Exception {
                 String type=item.optString("type"), result="";
-                if("function_call".equals(type)) return reconcileCall(output,item);
+                if("function_call".equals(type)) {
+                    if (!(item.opt("call_id") instanceof String) || item.optString("call_id").isEmpty() || !(item.opt("name") instanceof String) || item.optString("name").isEmpty()) throw new java.io.IOException("function call missing id or name");
+                    return reconcileCall(output,item);
+                }
                 if("message".equals(type)) {
                     JSONArray parts=item.optJSONArray("content");
                     for(int j=0;parts!=null && j<parts.length();j++) {

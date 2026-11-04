@@ -77,5 +77,22 @@ public class ResponsesBridgeAuditTest {
         response=read(ResponsesBridge.chatStreamToResponses(toChat,"m"));
         check(response.contains("codex") && response.contains("response.completed"),"Codex adapter chain failed: "+response);
     }
-    public static void main(String[] args) throws Exception { int failures=0; try { invalidChat(); } catch(AssertionError e){System.err.println(e); failures++;} try {lateToolMetadata();} catch(AssertionError e){System.err.println(e);failures++;} try {fragmentedName();} catch(AssertionError e){System.err.println(e);failures++;} try {requestValidation();} catch(AssertionError e){System.err.println(e);failures++;} try {finalOnly();} catch(AssertionError e){System.err.println(e);failures++;} try {argumentsDone();} catch(AssertionError e){System.err.println(e);failures++;} try {lifecycleAndInterleave();} catch(AssertionError e){System.err.println(e);failures++;} try {gatewayFixtures();} catch(AssertionError e){System.err.println(e);failures++;} try {prematureDone();} catch(AssertionError e){System.err.println(e);failures++;} if(failures>0)throw new AssertionError(failures+" failures"); }
+    static void projectionBoundaries() throws Exception {
+        String[] bad={"\"store\":\"true\"", "\"store\":1", "\"max_output_tokens\":2147483648", "\"max_output_tokens\":9223372036854775808", "\"max_output_tokens\":1e999", "\"max_output_tokens\":1.5", "\"parallel_tool_calls\":\"false\"", "\"temperature\":\"0.5\"", "\"top_p\":{}", "\"model\":42"};
+        for(String entry:bad) {
+            boolean rejected=false; try {ResponsesBridge.projection(new JSONObject("{\"input\":\"x\","+entry+"}"));} catch(Exception ex) {rejected=true;}
+            check(rejected,"projection accepted "+entry);
+        }
+        JSONObject valid=ResponsesBridge.projection(new JSONObject("{\"input\":\"x\",\"store\":true,\"max_output_tokens\":2147483647,\"parallel_tool_calls\":true,\"temperature\":null,\"top_p\":null}"));
+        check(!valid.has("store") && valid.getInt("max_tokens")==Integer.MAX_VALUE && valid.isNull("temperature"),"valid projection changed");
+    }
+    static void invalidFinalCalls() throws Exception {
+        String[] items={"{\"type\":\"function_call\",\"name\":\"f\",\"arguments\":\"{}\"}","{\"type\":\"function_call\",\"call_id\":\"c\",\"arguments\":\"{}\"}"};
+        for(String item:items) {
+            String raw=sse("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":["+item+"]}}");
+            String out=read(ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(raw.getBytes(StandardCharsets.UTF_8)),"m"));
+            check(out.contains("\"error\"") && !out.contains("[DONE]"),"missing call id/name accepted: "+out);
+        }
+    }
+    public static void main(String[] args) throws Exception { int failures=0; try { invalidChat(); } catch(AssertionError e){System.err.println(e); failures++;} try {lateToolMetadata();} catch(AssertionError e){System.err.println(e);failures++;} try {fragmentedName();} catch(AssertionError e){System.err.println(e);failures++;} try {requestValidation();} catch(AssertionError e){System.err.println(e);failures++;} try {finalOnly();} catch(AssertionError e){System.err.println(e);failures++;} try {argumentsDone();} catch(AssertionError e){System.err.println(e);failures++;} try {lifecycleAndInterleave();} catch(AssertionError e){System.err.println(e);failures++;} try {gatewayFixtures();} catch(AssertionError e){System.err.println(e);failures++;} try {projectionBoundaries();} catch(AssertionError e){System.err.println(e);failures++;} try {invalidFinalCalls();} catch(AssertionError e){System.err.println(e);failures++;} try {prematureDone();} catch(AssertionError e){System.err.println(e);failures++;} if(failures>0)throw new AssertionError(failures+" failures"); }
 }
