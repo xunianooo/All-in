@@ -20,7 +20,8 @@ final class GatewayAuthKeyHolder {
     private GatewayAuthKeyHolder() {
     }
 
-    static void init(File dir) {
+    static synchronized void init(File dir) {
+        if (filesDir == null ? dir != null : !filesDir.equals(dir)) cached = null;
         filesDir = dir;
     }
 

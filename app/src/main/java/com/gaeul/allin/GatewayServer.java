@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class GatewayServer extends NanoHTTPD {
     private final Context context;
-    private JSONObject configJson;
+    private volatile JSONObject configJson;
     private DeepSeekWeb.Transport deepSeekTransport = new DeepSeekWeb.HttpTransport();
     void setDeepSeekTransportForTests(DeepSeekWeb.Transport transport) { deepSeekTransport=transport; }
     private final File configFile;
@@ -74,6 +74,7 @@ public class GatewayServer extends NanoHTTPD {
         this.context = context;
         this.configFile = new File(context.getFilesDir(), "config.json");
         this.watchdogFile = new File(context.getFilesDir(), "watchdog.json");
+        GatewayAuthKeyHolder.init(context.getFilesDir());
         loadWatchdogState();
         loadConfig();
         restoreAntigravityBases();
@@ -200,6 +201,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private void loadConfig() {
+        GatewayAuthKeyHolder.invalidate();
         try {
             if (configFile.exists()) {
                 String str = readFileToString(configFile);
@@ -514,6 +516,7 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
         }
+        GatewayAuthKeyHolder.invalidate();
         return true;
     }
 
@@ -1303,16 +1306,19 @@ public class GatewayServer extends NanoHTTPD {
                     // Full config snapshots can be stale. DeepSeek accounts are managed by
                     // auth/add and auth/remove; retain the current authoritative pool.
                     preserveDeepSeekAccounts(configJson,newConf);
-                    // 顺手保护口令：前端只提交自己知道的部分时，保留原来的 server / guard / privacy
+                    // Security state belongs to its dedicated endpoints, even for stale snapshots.
                     JSONObject oldServer = configJson.optJSONObject("server");
                     JSONObject newServer = newConf.optJSONObject("server");
                     if (newServer == null) {
                         if (oldServer != null) newConf.put("server", new JSONObject(oldServer.toString()));
-                    } else if (oldServer != null) {
-                        String oldKey = oldServer.optString("authKey", "").trim();
-                        String newKey = newServer.optString("authKey", "").trim();
-                        if (newKey.isEmpty() && !oldKey.isEmpty()) newServer.put("authKey", oldKey);
+                    } else {
+                        if (oldServer != null && oldServer.has("authKey"))
+                            newServer.put("authKey", oldServer.opt("authKey"));
+                        else newServer.remove("authKey");
                     }
+                    if (configJson.has("setup"))
+                        newConf.put("setup", configJson.opt("setup"));
+                    else newConf.remove("setup");
                     if (newConf.optJSONObject("guard") == null && configJson.optJSONObject("guard") != null) {
                         newConf.put("guard", new JSONObject(configJson.optJSONObject("guard").toString()));
                     }
@@ -1551,8 +1557,7 @@ public class GatewayServer extends NanoHTTPD {
                 String nextKey = req.optString("authKey", "").trim();
                 boolean keepCurrent = req.optBoolean("keepCurrent", false);
                 synchronized (this) {
-                Object previousServer = configJson.opt("server");
-                Object previousSetup = configJson.opt("setup");
+                JSONObject updated = new JSONObject(configJson.toString());
                 JSONObject oldServer = configJson.optJSONObject("server");
                 JSONObject server = oldServer == null ? new JSONObject() : new JSONObject(oldServer.toString());
                 if (!nextKey.isEmpty()) {
@@ -1574,13 +1579,10 @@ public class GatewayServer extends NanoHTTPD {
                 setup.put("doneAt", System.currentTimeMillis());
                 setup.put("version", 1);
                 setup.put("keptCurrentKey", nextKey.isEmpty());
-                configJson.put("server", server);
-                configJson.put("setup", setup);
-                if (!saveConfig(configJson)) {
-                    if (previousServer == null) configJson.remove("server"); else configJson.put("server", previousServer);
-                    if (previousSetup == null) configJson.remove("setup"); else configJson.put("setup", previousSetup);
-                    return errorResponse(500, "保存首次设置失败");
-                }
+                updated.put("server", server);
+                updated.put("setup", setup);
+                try { persistConfigStrict(updated); }
+                catch (IOException e) { return errorResponse(500, "保存首次设置失败"); }
                 }
 
                 JSONObject ret = buildSetupStatus();
@@ -1620,13 +1622,17 @@ public class GatewayServer extends NanoHTTPD {
                     if (!newKey.matches("[A-Za-z0-9._~!@#$%^&*+=:-]+")) {
                         return errorResponse(400, "口令只能包含字母、数字和 . _ ~ ! @ # $ % ^ & * + = : - ");
                     }
-                    JSONObject server = configJson.optJSONObject("server");
-                    if (server == null) {
-                        server = new JSONObject();
-                        configJson.put("server", server);
+                    synchronized (this) {
+                        JSONObject updated = new JSONObject(configJson.toString());
+                        JSONObject server = updated.optJSONObject("server");
+                        if (server == null) {
+                            server = new JSONObject();
+                            updated.put("server", server);
+                        }
+                        server.put("authKey", newKey);
+                        try { persistConfigStrict(updated); }
+                        catch (IOException e) { return errorResponse(500, "保存网关口令失败"); }
                     }
-                    server.put("authKey", newKey);
-                    saveConfig(configJson);
                     ret.put("ok", true);
                     ret.put("authKey", newKey);
                     return jsonResponse(ret);
@@ -5088,6 +5094,7 @@ public class GatewayServer extends NanoHTTPD {
             try (FileOutputStream f=new FileOutputStream(tmp,false)) { f.write(value.toString(2).getBytes("UTF-8")); f.flush(); f.getFD().sync(); }
             if (!tmp.renameTo(configFile)) throw new IOException("rename failed");
             configJson=value;
+            GatewayAuthKeyHolder.invalidate();
         } catch(Exception e) { tmp.delete(); throw new IOException("config persistence failed",e); }
     }
     static void preserveDeepSeekAccounts(JSONObject current,JSONObject incoming) throws Exception {
