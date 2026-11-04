@@ -9,6 +9,24 @@ public class PrivacyMaskerOfflineTest {
     static void check(boolean x) { if (!x) throw new AssertionError(); }
     static void fails(Runnable r) { try { r.run(); throw new AssertionError(); } catch (PrivacyMasker.PrivacyException expected) {} }
     static String token(PrivacyMasker.Session s, String value, String type) { return PrivacyMasker.getOrCreatePlaceholder(s, value, type); }
+    static void checkPrivate(File file) throws Exception {
+        java.nio.file.Path path = file.toPath();
+        if (File.separatorChar == '\\') {
+            java.nio.file.attribute.AclFileAttributeView view = Files.getFileAttributeView(
+                    path, java.nio.file.attribute.AclFileAttributeView.class);
+            check(view != null);
+            List<java.nio.file.attribute.AclEntry> acl = view.getAcl();
+            check(acl.size() == 1);
+            java.nio.file.attribute.AclEntry entry = acl.get(0);
+            check(entry.type() == java.nio.file.attribute.AclEntryType.ALLOW
+                    && entry.principal().equals(view.getOwner()) && entry.flags().isEmpty()
+                    && entry.permissions().equals(EnumSet.allOf(java.nio.file.attribute.AclEntryPermission.class)));
+        } else {
+            check(Files.getPosixFilePermissions(path).equals(EnumSet.of(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)));
+        }
+    }
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && args[0].equals("--child")) {
             PrivacyMasker.initialize(new File(args[1]));
@@ -25,6 +43,8 @@ public class PrivacyMaskerOfflineTest {
         PrivacyMasker.initialize(a);
         PrivacyMasker.Session one = new PrivacyMasker.Session();
         String t = token(one, "abc", "A");
+        checkPrivate(new File(a, "privacy-mask.key"));
+        checkPrivate(new File(a, "privacy-mask.lock"));
         check(t.matches("\\{\\{MASK_A_[0-9a-f]{24}\\}\\}"));
         check(!t.equals(token(one, "abc", "B")));
         PrivacyMasker.initialize(a);

@@ -55,8 +55,50 @@ final class PrivacyKeyStore implements PrivacyMasker.KeyProvider {
         }
     }
     private static void privateFile(File file) throws IOException {
+        if (File.separatorChar == '\\') {
+            privateWindowsFile(file);
+            return;
+        }
         if (!file.setReadable(false, false) || !file.setWritable(false, false)
                 || !file.setExecutable(false, false) || !file.setReadable(true, true)
                 || !file.setWritable(true, true)) throw new IOException();
     }
+    // ACL types are absent from Android's API, so resolve them only on Windows.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void privateWindowsFile(File file) throws IOException {
+        try {
+            Class<?> path = Class.forName("java.nio.file.Path");
+            Class<?> files = Class.forName("java.nio.file.Files");
+            Class<?> option = Class.forName("java.nio.file.LinkOption");
+            Class<?> viewType = Class.forName("java.nio.file.attribute.AclFileAttributeView");
+            Class<?> ownerView = Class.forName("java.nio.file.attribute.FileOwnerAttributeView");
+            Class<?> principal = Class.forName("java.nio.file.attribute.UserPrincipal");
+            Class<?> entry = Class.forName("java.nio.file.attribute.AclEntry");
+            Class<?> entryType = Class.forName("java.nio.file.attribute.AclEntryType");
+            Class<?> permission = Class.forName("java.nio.file.attribute.AclEntryPermission");
+            Class<?> builder = Class.forName("java.nio.file.attribute.AclEntry$Builder");
+            Object pathValue = File.class.getMethod("toPath").invoke(file);
+            Object options = java.lang.reflect.Array.newInstance(option, 0);
+            Object view = files.getMethod("getFileAttributeView", path, Class.class, options.getClass())
+                    .invoke(null, pathValue, viewType, options);
+            if (view == null) throw new IOException();
+            Object owner = ownerView.getMethod("getOwner").invoke(view);
+            if (owner == null) throw new IOException();
+            Object allow = Enum.valueOf((Class) entryType, "ALLOW");
+            Object b = entry.getMethod("newBuilder").invoke(null);
+            builder.getMethod("setType", entryType).invoke(b, allow);
+            builder.getMethod("setPrincipal", principal).invoke(b, owner);
+            builder.getMethod("setPermissions", java.util.Set.class)
+                    .invoke(b, java.util.EnumSet.allOf((Class) permission));
+            Object ownerEntry = builder.getMethod("build").invoke(b);
+            viewType.getMethod("setAcl", java.util.List.class)
+                    .invoke(view, java.util.Collections.singletonList(ownerEntry));
+            java.util.List<?> acl = (java.util.List<?>) viewType.getMethod("getAcl").invoke(view);
+            if (acl.size() != 1 || !ownerEntry.equals(acl.get(0))
+                    || !owner.equals(ownerView.getMethod("getOwner").invoke(view))) throw new IOException();
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
+    }
+
 }
