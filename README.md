@@ -8,7 +8,7 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.2.11（versionCode 17）
+- 当前版本：1.2.12（versionCode 18）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
@@ -54,6 +54,14 @@ MAGPIE_KEY_ALIAS=gaeul \
 网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
 
 Responses 兼容完整 Agent 请求中的 `user`、`stream_options`、`text.verbosity`、常见可空默认值及普通 reasoning／工具历史。未知顶层扩展字段在副本上忽略，类型错误仍返回 400；非空服务器端会话、模板和异步执行不会静默丢弃。跨协议展示选项降级通过兼容性响应头提示，详见 [字段兼容表](docs/responses-agent-compatibility.md)。
+
+## 1.2.12 可靠性更新
+
+原生 Anthropic Messages 流直接保留 thinking、signature 和 redacted 块；已签名历史遇到不兼容的脱敏、裁剪或协议转换时明确拒绝。脱敏占位符使用安装范围的私有 HMAC 密钥，映射按请求隔离，并检查碰撞与异常。
+
+普通商业 API Key 支持目标内接力、分范围冷却和 Retry-After；流已经转发或执行状态未知时不扩大重放。用量区分逻辑请求、实际上游尝试和已知／部分已知／估算／未知来源，保留旧账本口径。智谱错误信封仅在限定来源和接口形态下适配。
+
+复验命令和兼容边界见 [本批验收说明](docs/reliability-batch-acceptance.md)；订阅多账号调度与后续可选路线图不在本版范围。
 
 ## 接入客户端
 

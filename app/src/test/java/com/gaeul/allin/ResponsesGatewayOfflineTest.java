@@ -15,6 +15,7 @@ public final class ResponsesGatewayOfflineTest {
     static void set(Object o,String name,Object v) throws Exception {Field f=GatewayServer.class.getDeclaredField(name);f.setAccessible(true);f.set(o,v);}
     static GatewayServer gateway(int port) throws Exception { return gateway(port,"openai"); }
     static GatewayServer gateway(int port,String protocol) throws Exception {
+        TestPrivacyScope.initialize();
         Field field=sun.misc.Unsafe.class.getDeclaredField("theUnsafe");field.setAccessible(true);
         GatewayServer g=(GatewayServer)((sun.misc.Unsafe)field.get(null)).allocateInstance(GatewayServer.class);
         set(g,"totalRequests",new AtomicInteger()); set(g,"totalTokens",new AtomicLong()); set(g,"totalMasked",new AtomicInteger()); set(g,"totalContextDropped",new AtomicInteger()); set(g,"wbRoundRobin",new AtomicInteger());

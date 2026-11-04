@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 17
-        versionName '1.2.11'
+        versionCode 18
+        versionName '1.2.12'
     }
 
     signingConfigs {
@@ -69,6 +69,12 @@ dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
 // 保留原有 9 个套件，并运行网关、Responses 和首次设置回归测试。
 def offlineTestMains = [
         'com.gaeul.allin.AnthropicBridgeRequestTest',
+        'com.gaeul.allin.PrivacyMaskerOfflineTest',
+        'com.gaeul.allin.CommercialKeyPoolOfflineTest',
+        'com.gaeul.allin.UsageLedgerAttemptsOfflineTest',
+        'com.gaeul.allin.ZhipuEnvelopeOfflineTest',
+        'com.gaeul.allin.NativeAnthropicPolicyOfflineTest',
+        'com.gaeul.allin.NativeAnthropicStreamOfflineTest',
         'com.gaeul.allin.AnthropicBridgeStreamOfflineTest',
         'com.gaeul.allin.ContextGuardOfflineTest',
         'com.gaeul.allin.ContextGuardProtectionTest',
@@ -143,3 +149,32 @@ tasks.register('setupKeyHttpTests', JavaExec) {
     mainClass = 'com.gaeul.allin.SetupKeyOfflineTest'
     args '--http-test', rootProject.projectDir.absolutePath
 }
+
+// Native Messages -> Anthropic -> Messages signatures and HTTP lifecycle.
+tasks.register('nativeAnthropicHttpTests', JavaExec) {
+    group = 'verification'
+    description = '运行原生 Anthropic 签名、隐私与流生命周期 HTTP 测试'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.NativeAnthropicHttpTest'
+}
+tasks.named('streamingHttpTests') { dependsOn 'nativeAnthropicHttpTests' }
+
+// Every JavaExec uses the real lazy on-disk privacy scope, isolated from user data.
+tasks.withType(JavaExec).configureEach {
+    doFirst {
+        def privateScope = java.nio.file.Files.createTempDirectory('allin-privacy-test-').toFile()
+        systemProperty 'allin.test.privateDir', privateScope.absolutePath
+        extensions.extraProperties.set('privacyTestScope', privateScope)
+    }
+    doLast {
+        if (extensions.extraProperties.has('privacyTestScope')) delete extensions.extraProperties.get('privacyTestScope')
+    }
+}
+tasks.register('commercialFailoverHttpTests', JavaExec) {
+    group = 'verification'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.CommercialFailoverHttpTest'
+}
+tasks.named('streamingHttpTests') { dependsOn 'commercialFailoverHttpTests' }

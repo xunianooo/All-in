@@ -1,6 +1,9 @@
 package com.gaeul.allin;
 
-import java.security.MessageDigest;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.util.*;
 import java.util.regex.*;
 
@@ -84,32 +87,110 @@ public class PrivacyMasker {
         }
     }
 
-    public static class Session {
-        public Map<String, String> placeholderToReal = new HashMap<>();
-        public Map<String, String> realToPlaceholder = new HashMap<>();
-        public int interceptedCount = 0;
+    public static final class PrivacyException extends IllegalStateException {
+        public PrivacyException() { super("Privacy masking unavailable"); }
     }
+    interface KeyProvider { byte[] key(); }
+    interface DigestProvider { byte[] digest(byte[] key, String type, String value) throws Exception; }
+    private static volatile KeyProvider provider;
+    private static final DigestProvider HMAC = (key, type, value) -> {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(key, "HmacSHA256"));
+        mac.update(type.getBytes(StandardCharsets.UTF_8));
+        mac.update((byte) 0);
+        return mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
+    };
+    /** Configure an installation scope; disk access and key creation are lazy. */
+    private static final Map<String, KeyProvider> INSTALLATIONS = new HashMap<String, KeyProvider>();
+    public static synchronized void initialize(File privateDir) {
+        if (privateDir == null) throw new IllegalArgumentException("Invalid privacy key configuration");
+        try {
+            String path = privateDir.getCanonicalPath();
+            KeyProvider selected = INSTALLATIONS.get(path);
+            if (selected == null) {
+                selected = new PrivacyKeyStore(privateDir);
+                INSTALLATIONS.put(path, selected);
+            }
+            provider = selected;
+        } catch (java.io.IOException e) { throw new PrivacyException(); }
+    }
+    static void setProviderForTest(KeyProvider p) { provider = p; }
+
+    public static class Session {
+        public Map<String, String> placeholderToReal = Collections.synchronizedMap(new HashMap<String, String>());
+        // Composite type + NUL + value keys; retained publicly for A1's working-session copy.
+        public Map<String, String> realToPlaceholder = Collections.synchronizedMap(new HashMap<String, String>());
+        public int interceptedCount = 0;
+        private KeyProvider keyProvider;
+        private DigestProvider digestProvider;
+        private final Set<String> reserved = new HashSet<String>();
+        private final Map<String, String> fullDigests = new HashMap<String, String>();
+        public Session() { this(provider, HMAC); }
+        Session(KeyProvider keyProvider, DigestProvider digestProvider) {
+            this.keyProvider = keyProvider; this.digestProvider = digestProvider;
+        }
+        synchronized Session fork() {
+            Session copy = new Session(keyProvider, digestProvider);
+            copy.placeholderToReal.putAll(placeholderToReal);
+            copy.realToPlaceholder.putAll(realToPlaceholder);
+            copy.reserved.addAll(reserved);
+            copy.fullDigests.putAll(fullDigests);
+            copy.interceptedCount = interceptedCount;
+            return copy;
+        }
+        void replaceFrom(Session source) {
+            if (source == null) throw new IllegalArgumentException("Missing privacy session");
+            if (source == this) return;
+            Session copy = source.fork();
+            synchronized (this) {
+                keyProvider = copy.keyProvider; digestProvider = copy.digestProvider;
+                placeholderToReal.clear(); placeholderToReal.putAll(copy.placeholderToReal);
+                realToPlaceholder.clear(); realToPlaceholder.putAll(copy.realToPlaceholder);
+                reserved.clear(); reserved.addAll(copy.reserved);
+                fullDigests.clear(); fullDigests.putAll(copy.fullDigests);
+                interceptedCount = copy.interceptedCount;
+            }
+        }
+    }
+    private static final Pattern TOKEN = Pattern.compile("\\{\\{MASK_[A-Za-z0-9_]+\\}\\}");
+    private static final int MAX_ENTRIES = 16384;
+    private static final int MAX_VALUE_CHARS = 1048576;
 
     public static String getOrCreatePlaceholder(Session session, String realValue, String type) {
-        if (session.realToPlaceholder.containsKey(realValue)) {
-            return session.realToPlaceholder.get(realValue);
-        }
-        String hash = "hash";
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] digest = md.digest(realValue.getBytes("UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < 4; i++) {
-                sb.append(String.format("%02x", digest[i]));
+        synchronized (session) {
+            String composite = type + "\0" + realValue;
+            String existing = session.realToPlaceholder.get(composite);
+            if (existing != null) return existing;
+            if (session.placeholderToReal.size() >= MAX_ENTRIES || realValue.length() > MAX_VALUE_CHARS)
+                throw new PrivacyException();
+            long size = realValue.length();
+            for (String v : session.placeholderToReal.values()) size += v.length();
+            if (size > MAX_VALUE_CHARS || session.keyProvider == null) throw new PrivacyException();
+            final byte[] digest;
+            try {
+                byte[] key = session.keyProvider.key();
+                if (key == null || key.length != 32) throw new PrivacyException();
+                try { digest = session.digestProvider.digest(key, type, realValue); }
+                finally { java.util.Arrays.fill(key, (byte) 0); }
+                if (digest == null || digest.length != 32) throw new PrivacyException();
+            } catch (Exception e) { throw new PrivacyException(); }
+            StringBuilder hex = new StringBuilder(64);
+            for (byte v : digest) hex.append(Character.forDigit((v >>> 4) & 15, 16)).append(Character.forDigit(v & 15, 16));
+            String full = type + "\0" + hex.toString();
+            String prior = session.fullDigests.get(full);
+            if (prior != null && !prior.equals(composite)) throw new PrivacyException();
+            for (int length = 24; length <= 64; length += 2) {
+                String placeholder = "{{MASK_" + type + "_" + hex.substring(0, length) + "}}";
+                if (!session.placeholderToReal.containsKey(placeholder) && !session.reserved.contains(placeholder)) {
+                    session.fullDigests.put(full, composite);
+                    session.placeholderToReal.put(placeholder, realValue);
+                    session.realToPlaceholder.put(composite, placeholder);
+                    session.interceptedCount++;
+                    return placeholder;
+                }
             }
-            hash = sb.toString();
-        } catch (Exception ignored) {}
-
-        String placeholder = "{{MASK_" + type + "_" + hash + "}}";
-        session.placeholderToReal.put(placeholder, realValue);
-        session.realToPlaceholder.put(realValue, placeholder);
-        session.interceptedCount++;
-        return placeholder;
+            throw new PrivacyException();
+        }
     }
 
     /** 兼容旧调用：默认全开 */
@@ -117,82 +198,82 @@ public class PrivacyMasker {
         return maskText(input, session, new Config());
     }
 
-    /** 按配置脱敏；关闭时原样返回，且不产生占位符 */
+    private static List<Pattern> patterns(Config cfg) {
+        List<Pattern> result = new ArrayList<Pattern>();
+        if (cfg.maskApiKeys) result.add(API_KEY_PATTERN);
+        if (cfg.maskEmails) result.add(EMAIL_PATTERN);
+        if (cfg.maskPhones) result.add(PHONE_PATTERN);
+        if (cfg.maskIds) result.add(ID_PATTERN);
+        if (cfg.maskBankCards) result.add(BANK_PATTERN);
+        if (cfg.maskLandlines) result.add(LANDLINE_PATTERN);
+        for (String raw : cfg.customPatterns) {
+            if (raw.isEmpty()) continue;
+            try { result.add(Pattern.compile(raw)); }
+            catch (PatternSyntaxException invalid) { throw new PrivacyException(); }
+        }
+        return result;
+    }
+    private static String typeFor(Pattern p) {
+        if (p == API_KEY_PATTERN) return "API_KEY";
+        if (p == EMAIL_PATTERN) return "EMAIL";
+        if (p == PHONE_PATTERN) return "PHONE";
+        if (p == ID_PATTERN) return "ID";
+        if (p == BANK_PATTERN) return "BANKCARD";
+        if (p == LANDLINE_PATTERN) return "TEL";
+        return "CUSTOM";
+    }
+    private static boolean overlapsToken(int start, int end, List<int[]> tokens) {
+        for (int[] range : tokens) {
+            if (range[0] >= end) break;
+            if (range[1] > start) return true;
+        }
+        return false;
+    }
+    private static List<int[]> tokenRanges(String input) {
+        List<int[]> ranges = new ArrayList<int[]>();
+        Matcher m = TOKEN.matcher(input);
+        while (m.find()) ranges.add(new int[] { m.start(), m.end() });
+        return ranges;
+    }
+    /** Pure detection; never initializes or reads a privacy key or changes a session. */
+    public static boolean checkMatch(String input, Config cfg) {
+        if (input == null || input.isEmpty()) return false;
+        if (cfg == null) cfg = new Config();
+        if (!cfg.enabled) return false;
+        List<int[]> tokens = tokenRanges(input);
+        for (Pattern p : patterns(cfg)) {
+            Matcher m = p.matcher(input);
+            while (m.find()) {
+                if (m.start() != m.end() && !overlapsToken(m.start(), m.end(), tokens)) return true;
+            }
+        }
+        return false;
+    }
+    /** Masks text while preserving literal or previously generated placeholder-shaped tokens. */
     public static String maskText(String input, Session session, Config cfg) {
         if (input == null || input.isEmpty()) return input;
         if (cfg == null) cfg = new Config();
         if (!cfg.enabled) return input;
-
-        String result = input;
-
-        // 1. API Keys
-        if (cfg.maskApiKeys) {
-        Matcher mKey = API_KEY_PATTERN.matcher(result);
-        StringBuffer sbKey = new StringBuffer();
-        while (mKey.find()) {
-            String p = getOrCreatePlaceholder(session, mKey.group(1), "API_KEY");
-            mKey.appendReplacement(sbKey, Matcher.quoteReplacement(p));
-        }
-        mKey.appendTail(sbKey);
-        result = sbKey.toString();
-        }
-
-        // 2. Emails
-        if (cfg.maskEmails) {
-        Matcher mEmail = EMAIL_PATTERN.matcher(result);
-        StringBuffer sbEmail = new StringBuffer();
-        while (mEmail.find()) {
-            String p = getOrCreatePlaceholder(session, mEmail.group(0), "EMAIL");
-            mEmail.appendReplacement(sbEmail, Matcher.quoteReplacement(p));
-        }
-        mEmail.appendTail(sbEmail);
-        result = sbEmail.toString();
-        }
-
-        // 3. Phones
-        if (cfg.maskPhones) {
-        Matcher mPhone = PHONE_PATTERN.matcher(result);
-        StringBuffer sbPhone = new StringBuffer();
-        while (mPhone.find()) {
-            String p = getOrCreatePlaceholder(session, mPhone.group(0), "PHONE");
-            mPhone.appendReplacement(sbPhone, Matcher.quoteReplacement(p));
-        }
-        mPhone.appendTail(sbPhone);
-        result = sbPhone.toString();
-        }
-
-        // 4. 身份证
-        if (cfg.maskIds) {
-            result = maskByPattern(result, session, ID_PATTERN, "ID");
-        }
-
-        // 5. 银行卡 / 长数字
-        if (cfg.maskBankCards) {
-            result = maskByPattern(result, session, BANK_PATTERN, "BANKCARD");
-        }
-
-        // 6. 座机
-        if (cfg.maskLandlines) {
-            result = maskByPattern(result, session, LANDLINE_PATTERN, "TEL");
-        }
-
-        // 7. 用户自定义正则（一行一条）；单条写错只跳过该条，不影响其它
-        for (String raw : cfg.customPatterns) {
-            try {
-                Pattern cp = Pattern.compile(raw);
-                result = maskByPattern(result, session, cp, "CUSTOM");
-            } catch (Exception ignored) {
+        synchronized (session) {
+            Matcher tokens = TOKEN.matcher(input);
+            while (tokens.find()) {
+                String token = tokens.group();
+                // A literal indistinguishable from a live mapping cannot safely be restored.
+                if (session.placeholderToReal.containsKey(token)) throw new PrivacyException();
+                if (session.reserved.size() >= MAX_ENTRIES && !session.reserved.contains(token)) throw new PrivacyException();
+                session.reserved.add(token);
             }
+            String result = input;
+            for (Pattern p : patterns(cfg)) result = maskByPattern(result, session, p, typeFor(p));
+            return result;
         }
-
-        return result;
     }
-
-    /** 用给定正则做一次替换，统一走占位符 */
     private static String maskByPattern(String input, Session session, Pattern pattern, String type) {
         Matcher m = pattern.matcher(input);
+        List<int[]> tokens = tokenRanges(input);
         StringBuffer sb = new StringBuffer();
         while (m.find()) {
+            if (m.start() == m.end() || overlapsToken(m.start(), m.end(), tokens)) continue;
             String p = getOrCreatePlaceholder(session, m.group(), type);
             m.appendReplacement(sb, Matcher.quoteReplacement(p));
         }
@@ -201,11 +282,23 @@ public class PrivacyMasker {
     }
 
     public static String unmaskText(String input, Session session) {
-        if (input == null || session == null || session.placeholderToReal.isEmpty()) return input;
-        String res = input;
-        for (Map.Entry<String, String> entry : session.placeholderToReal.entrySet()) {
-            res = res.replace(entry.getKey(), entry.getValue());
+        if (input == null || session == null) return input;
+        synchronized (session) {
+            StringBuilder out = new StringBuilder();
+            int pos = 0;
+            List<String> keys = new ArrayList<String>(session.placeholderToReal.keySet());
+            keys.remove(null);
+            keys.remove("");
+            keys.sort((a, b) -> Integer.compare(b.length(), a.length()));
+            while (pos < input.length()) {
+                String found = null;
+                for (String key : keys) {
+                    if (input.startsWith(key, pos)) { found = key; break; }
+                }
+                if (found == null) out.append(input.charAt(pos++));
+                else { out.append(session.placeholderToReal.get(found)); pos += found.length(); }
+            }
+            return out.toString();
         }
-        return res;
     }
 }

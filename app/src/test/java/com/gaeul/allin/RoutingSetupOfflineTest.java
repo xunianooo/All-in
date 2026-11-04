@@ -12,6 +12,7 @@ import sun.misc.Unsafe;
 public final class RoutingSetupOfflineTest {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
     static GatewayServer server(JSONObject config) throws Exception {
+        TestPrivacyScope.initialize();
         Field u = Unsafe.class.getDeclaredField("theUnsafe"); u.setAccessible(true);
         GatewayServer s = (GatewayServer)((Unsafe)u.get(null)).allocateInstance(GatewayServer.class);
         Field f = GatewayServer.class.getDeclaredField("configJson"); f.setAccessible(true); f.set(s, config);

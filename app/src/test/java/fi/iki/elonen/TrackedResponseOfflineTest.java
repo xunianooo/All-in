@@ -39,6 +39,82 @@ public final class TrackedResponseOfflineTest {
         }
     }
 
+    static final class CompletionBody extends ByteArrayInputStream implements AllInTrackedResponse.WriteCompletion {
+        final AtomicInteger gate;
+        int callbacks;
+        int closes;
+        boolean eof;
+        boolean result;
+
+        CompletionBody(AtomicInteger gate) throws IOException {
+            super("completion body".getBytes("UTF-8"));
+            this.gate = gate;
+        }
+        @Override public synchronized int read(byte[] b, int off, int len) {
+            int n = super.read(b, off, len);
+            if (n == -1) eof = true;
+            return n;
+        }
+        @Override public synchronized int read() {
+            int n = super.read();
+            if (n == -1) eof = true;
+            return n;
+        }
+        @Override public void onWriteComplete(boolean success) {
+            check(gate.get() == 1, "completion callback holds gate");
+            check(eof, "body fully read before callback");
+            callbacks++;
+            result = success;
+        }
+        @Override public void close() throws IOException {
+            if (closes == 0) check(gate.get() == 1, "body closes before gate release");
+            closes++;
+            super.close();
+        }
+    }
+
+    static void checkWriteCompletion(final String failure) throws Exception {
+        AtomicInteger gate = new AtomicInteger(1);
+        CompletionBody body = new CompletionBody(gate);
+        final boolean[] finalChunkAttempted = {false};
+        final boolean[] finalFlushAttempted = {false};
+        AllInTrackedResponse response = new AllInTrackedResponse(NanoHTTPD.newChunkedResponse(
+                NanoHTTPD.Response.Status.OK, "text/plain", body), () -> {
+                    check(body.callbacks == 1, "callback precedes gate release");
+                    check(body.closes > 0, "body closes before gate release");
+                    gate.decrementAndGet();
+                });
+        response.setRequestMethod(NanoHTTPD.Method.GET);
+        response.setKeepAlive(false);
+        response.setGzipEncoding(false);
+        OutputStream sink = new OutputStream() {
+            @Override public void write(int b) throws IOException { }
+            @Override public void write(byte[] b, int off, int len) throws IOException {
+                byte[] terminator = { '0', '\r', '\n', '\r', '\n' };
+                if (body.eof && len == terminator.length &&
+                        Arrays.equals(Arrays.copyOfRange(b, off, off + len), terminator)) {
+                    finalChunkAttempted[0] = true;
+                    if ("chunk".equals(failure)) throw new IOException("injected final chunk failure");
+                }
+            }
+            @Override public void flush() throws IOException {
+                if (finalChunkAttempted[0]) {
+                    finalFlushAttempted[0] = true;
+                    if ("flush".equals(failure)) throw new IOException("injected final flush failure");
+                }
+            }
+        };
+        response.send(sink);
+        check(body.eof, "body reached EOF");
+        check(finalChunkAttempted[0], "final chunk attempted after body read");
+        check("chunk".equals(failure) || finalFlushAttempted[0], "final flush attempted after final chunk");
+        check(body.callbacks == 1, "completion callback exactly once");
+        check(body.result == "none".equals(failure), "completion reports write outcome");
+        check(body.closes > 0 && gate.get() == 0, "body closed and gate released");
+        response.close();
+        check(body.callbacks == 1 && gate.get() == 0, "close does not repeat callback or release");
+    }
+
     public static void main(String[] args) throws Exception {
         final AtomicInteger active = new AtomicInteger(1);
         NanoHTTPD.Response source = NanoHTTPD.newChunkedResponse(NanoHTTPD.Response.Status.OK,
@@ -144,6 +220,9 @@ public final class TrackedResponseOfflineTest {
         check(upstreamClosed.get() >= 1, "client write failure closes upstream");
         disconnected.close();
         check(disconnectedActive.get() == 0, "disconnect close idempotent");
+        checkWriteCompletion("none");
+        checkWriteCompletion("chunk");
+        checkWriteCompletion("flush");
         System.out.println("TrackedResponseOfflineTest OK");
     }
 }

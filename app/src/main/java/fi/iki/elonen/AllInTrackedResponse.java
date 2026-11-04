@@ -16,11 +16,36 @@ public final class AllInTrackedResponse extends NanoHTTPD.Response {
         this.completed = completed;
     }
     private void release() { if (released.compareAndSet(false, true)) completed.run(); }
-    @Override protected void send(OutputStream output) {
-        try { delegate.send(output); }
-        finally { try { delegate.close(); } catch (IOException ignored) { } finally { release(); } }
+    /** Optional body notification after HTTP framing and the final flush. */
+    public interface WriteCompletion { void onWriteComplete(boolean success); }
+    @Override protected void send(final OutputStream output) {
+        final boolean[] writeFailed = {false};
+        boolean returned = false;
+        OutputStream checked = new OutputStream() {
+            @Override public void write(int b) throws IOException {
+                try { output.write(b); } catch (IOException e) { writeFailed[0] = true; throw e; }
+            }
+            @Override public void write(byte[] b, int off, int len) throws IOException {
+                try { output.write(b, off, len); } catch (IOException e) { writeFailed[0] = true; throw e; }
+            }
+            @Override public void flush() throws IOException {
+                try { output.flush(); } catch (IOException e) { writeFailed[0] = true; throw e; }
+            }
+        };
+        try { delegate.send(checked); returned = true; }
+        finally {
+            try {
+                InputStream body = delegate.getData();
+                if (body instanceof WriteCompletion) ((WriteCompletion) body).onWriteComplete(returned && !writeFailed[0]);
+            } finally { try { delegate.close(); } catch (IOException ignored) { } finally { release(); } }
+        }
     }
-    @Override public void close() throws IOException { try { delegate.close(); } finally { release(); } }
+    @Override public void close() throws IOException {
+        try {
+            if (!released.get() && delegate.getData() instanceof WriteCompletion)
+                ((WriteCompletion) delegate.getData()).onWriteComplete(false);
+        } finally { try { delegate.close(); } finally { release(); } }
+    }
     @Override public void addHeader(String name, String value) { delegate.addHeader(name, value); }
     @Override public void closeConnection(boolean close) { delegate.closeConnection(close); }
     @Override public boolean isCloseConnection() { return delegate.isCloseConnection(); }

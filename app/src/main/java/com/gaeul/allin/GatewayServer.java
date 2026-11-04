@@ -72,6 +72,7 @@ public class GatewayServer extends NanoHTTPD {
     public GatewayServer(Context context, int port) {
         super(port);
         this.context = context;
+        initializePrivacy(context.getFilesDir());
         this.configFile = new File(context.getFilesDir(), "config.json");
         this.watchdogFile = new File(context.getFilesDir(), "watchdog.json");
         GatewayAuthKeyHolder.init(context.getFilesDir());
@@ -94,6 +95,10 @@ public class GatewayServer extends NanoHTTPD {
             }, "minimax-checkin").start();
         } catch (Throwable ignored) {
         }
+    }
+
+    static void initializePrivacy(File privateDir) {
+        PrivacyMasker.initialize(privateDir);
     }
 
     /**
@@ -785,6 +790,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private Response serveTrackedRequest(IHTTPSession session) {
+        NATIVE_HEADERS.remove();
         NATIVE_REQUEST.remove();
         NATIVE_BASELINE.remove();
         NATIVE_DIRECT_ALLOWED.remove();
@@ -811,6 +817,9 @@ public class GatewayServer extends NanoHTTPD {
                 response.setChunkedTransfer(true);
             }
             if(response!=null && RESP_WARNING.get()!=null) response.addHeader("X-AllIn-Compatibility-Warning",RESP_WARNING.get());
+            if (response != null && wantsAnthropicOut() && response.getHeader("X-AllIn-Compatibility-Warning") == null
+                    && response.getHeader("X-AllIn-Native-Anthropic") == null)
+                response.addHeader("X-AllIn-Compatibility-Warning", "thinking-signature-unavailable");
             if (isEventStream(response)) {
                 response.setMimeType("text/event-stream; charset=UTF-8");
                 response.addHeader("Cache-Control", "no-cache, no-transform");
@@ -818,7 +827,7 @@ public class GatewayServer extends NanoHTTPD {
             }
             return response;
         }
-        finally { RESP_WARNING.remove(); NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); }
+        finally { LOGICAL.remove(); RESP_WARNING.remove(); NATIVE_HEADERS.remove(); NATIVE_REQUEST.remove(); NATIVE_BASELINE.remove(); NATIVE_DIRECT_ALLOWED.remove(); RESP_REQUEST.remove(); RESP_BASELINE.remove(); RESP_NATIVE_RESULT.remove(); RESP_NATIVE_CANDIDATE.remove(); }
     }
 
     private Response serveRequest(IHTTPSession session) {
@@ -3286,6 +3295,13 @@ public class GatewayServer extends NanoHTTPD {
                     return jsonResponse(errRet);
                 }
                 RouteTarget target = cands.get(0);
+                if (target.commercialCandidates != null) {
+                    target.commercialCredential = commercialPool().choose(commercialScope(target), target.upstreamModel,
+                            target.commercialCandidates, new java.util.HashSet<String>());
+                    if (target.commercialCredential == null)
+                        return jsonResponse(new JSONObject().put("ok", false).put("model", testModel).put("error", "All credentials are cooling down"));
+                    target.apiKey = target.commercialCredential.secret();
+                }
 
                 JSONObject payload = new JSONObject();
                 payload.put("model", testModel);
@@ -3467,7 +3483,18 @@ public class GatewayServer extends NanoHTTPD {
 
                 PrivacyMasker.Session maskSession = new PrivacyMasker.Session();
                 PrivacyMasker.Config privCfg = PrivacyMasker.Config.fromJson(configJson.optJSONObject("privacy"));
-                String maskedPayloadStr = PrivacyMasker.maskText(postData, maskSession, privCfg);
+                String maskedPayloadStr;
+                JSONObject unmaskedInput = new JSONObject(postData);
+                if ("/v1/messages".equals(uri) && !looksOpenAIPayload(unmaskedInput)) {
+                    try {
+                        maskedPayloadStr = NativeAnthropicPolicy.maskRequest(postData, maskSession, privCfg,
+                                configJson.optJSONObject("middleware"));
+                    } catch (IllegalArgumentException unsafeNative) {
+                        return errorResponse(400, unsafeNative.getMessage());
+                    }
+                } else {
+                    maskedPayloadStr = PrivacyMasker.maskText(postData, maskSession, privCfg);
+                }
                 totalMasked.addAndGet(maskSession.interceptedCount);
                 lastMaskedCount = maskSession.interceptedCount;
                 lastMaskEnabled = privCfg.enabled;
@@ -3502,6 +3529,16 @@ public class GatewayServer extends NanoHTTPD {
                     try {
                         JSONObject nativeRequest = new JSONObject(payload.toString());
                         payload = AnthropicBridge.requestToOpenAI(payload);
+                        java.util.Map<String, String> nativeHeaders = new java.util.HashMap<>();
+                        for (String header : new String[]{"anthropic-version", "anthropic-beta"}) {
+                            String value = session.getHeaders().get(header);
+                            if (value != null) {
+                                if (value.length() > 2048 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0)
+                                    return errorResponse(400, "Invalid Anthropic protocol header");
+                                nativeHeaders.put(header, value);
+                            }
+                        }
+                        NATIVE_HEADERS.set(nativeHeaders);
                         NATIVE_REQUEST.set(nativeRequest);
                         NATIVE_BASELINE.set(new JSONObject(payload.toString()));
                         NATIVE_DIRECT_ALLOWED.set(Boolean.TRUE);
@@ -3576,6 +3613,13 @@ public class GatewayServer extends NanoHTTPD {
                     return errorResponse(500, "上下文保护处理失败");
                 }
 
+                try {
+                    NativeAnthropicPolicy.checkNativeRequired(NATIVE_REQUEST.get(), NATIVE_BASELINE.get(), payload,
+                            Boolean.TRUE.equals(NATIVE_DIRECT_ALLOWED.get()));
+                } catch (IllegalArgumentException unsafeNative) {
+                    return errorResponse(400, unsafeNative.getMessage());
+                }
+
                 // 记录客户端真实意图：WorkBuddy 上游强制流式，不能因此把非流式客户端也变成 SSE。
                 //
                 // 判定要同时看 body 和 Accept：
@@ -3587,7 +3631,8 @@ public class GatewayServer extends NanoHTTPD {
 
                 // ===== OpenAI 形态的 zcode 请求优先走 gift：赠送额度只认 session，Key 花不到。
                 // 模型不在赠送额度支持范围内时返回 null，继续走原来的 Coding Plan 路径。
-                if (RESP_REQUEST.get()==null && "zcode".equals(providerIdOf(requestedModel))) {
+                if (RESP_REQUEST.get()==null && !NativeAnthropicPolicy.requiresNative(NATIVE_REQUEST.get())
+                        && "zcode".equals(providerIdOf(requestedModel))) {
                     Response gift = tryZCodeGiftOpenAI(payload, requestedModel, clientWantsStream,
                             maskSession, guardResult);
                     if (gift != null) return gift;
@@ -3617,26 +3662,12 @@ public class GatewayServer extends NanoHTTPD {
                     return errorResponse(400, "No available API Key or active account for model: " + requestedModel);
                 }
 
-                JSONObject foCfg = failoverJson();
-                int maxTries = foCfg.optBoolean("enabled", true)
-                        ? Math.max(1, foCfg.optInt("maxTargets", 3)) : 1;
-                maxTries = Math.min(maxTries, candidates.size());
-
-                Attempt last = null;
-                for (int ci = 0; ci < maxTries; ci++) {
-                    RouteTarget target = candidates.get(ci);
-                    last = forwardAttempt(target, payload, clientWantsStream, requestedModel,
-                            maskSession, guardCfg, guardResult);
-                    if (last.ok) return last.response;
-                    // 换谁都一样（如上下文超长）：不再换，直接把上游的话还给 agent 让它 compact
-                    if (!retryable(last.status, last.body)) return last.response;
-                    // 失败只让这个候选休息一会并排到队尾，不永久拉黑
-                    rest(target, last.status);
-                }
-                if (last != null) return last.response;
-                return errorResponse(502, "all candidates failed for model: " + requestedModel);
+                return dispatchCandidates(candidates, payload, clientWantsStream, requestedModel,
+                        maskSession, guardCfg, guardResult);
             }
 
+        } catch (PrivacyMasker.PrivacyException privacyFailure) {
+            return errorResponse(503, "Privacy masking unavailable");
         } catch (org.json.JSONException je) {
             // 空 body / 非法 JSON 是调用方的问题，不该报 500，也不该把 Java 异常信息回给客户端
             return errorResponse(400, "请求体不是合法 JSON: " + je.getMessage());
@@ -4255,6 +4286,7 @@ public class GatewayServer extends NanoHTTPD {
     private static final ThreadLocal<JSONObject> RESP_NATIVE_CANDIDATE = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<JSONObject> RESP_BASELINE = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<Boolean> RESP_NATIVE_RESULT = new ThreadLocal<Boolean>();
+    private static final ThreadLocal<java.util.Map<String, String>> NATIVE_HEADERS = new ThreadLocal<>();
     private static final ThreadLocal<JSONObject> NATIVE_REQUEST = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<JSONObject> NATIVE_BASELINE = new ThreadLocal<JSONObject>();
     private static final ThreadLocal<Boolean> NATIVE_DIRECT_ALLOWED = new ThreadLocal<Boolean>();
@@ -4582,10 +4614,47 @@ public class GatewayServer extends NanoHTTPD {
                                                     final HttpURLConnection conn) {
         InputStream converted = openAiToAnthropicStream(upstreamIs, model, maskSession, conn);
         Response resp = newFixedLengthResponse(Status.OK, "text/event-stream", converted, -1);
+        resp.addHeader("X-AllIn-Compatibility-Warning", "thinking-signature-unavailable");
         resp.addHeader("Cache-Control", "no-cache");
         addCorsHeaders(resp);
         applyGuardHeaders(resp, guardResult);
         return resp;
+    }
+
+    private Response nativeAnthropicResponse(InputStream upstream, PrivacyMasker.Session session,
+                                              ContextGuard.Result guard, final HttpURLConnection connection) {
+        final UsageLedger.Row row = U_ROW.get();
+        final Long startBox = U_START.get();
+        final long start = startBox == null ? System.currentTimeMillis() : startBox.longValue();
+        NativeAnthropicStream stream = new NativeAnthropicStream(upstream, session, new NativeAnthropicStream.Listener() {
+            long first = -1, last = -1;
+            @Override public void onEvent(JSONObject event) {
+                if (row == null) return;
+                JSONObject message = event.optJSONObject("message");
+                if (message != null) absorbUsage(row, message.optJSONObject("usage"));
+                absorbUsage(row, event.optJSONObject("usage"));
+                if ("content_block_start".equals(event.optString("type"))
+                        || "content_block_delta".equals(event.optString("type"))) {
+                    last = System.currentTimeMillis();
+                    if (first < 0) first = last;
+                }
+            }
+            @Override public void onComplete(boolean success) {
+                if (row == null) return;
+                row.status = success ? 200 : 502;
+                row.err = success ? "" : "Native Anthropic stream incomplete or cancelled";
+                row.ms = System.currentTimeMillis() - start;
+                if (first >= 0) { row.ttft = first - start; row.decMs = last - first; row.decOut = row.out; }
+                try { UsageLedger.record(row); } catch (Throwable ignored) { }
+            }
+        }, new Runnable() {
+            @Override public void run() { if (connection != null) connection.disconnect(); }
+        });
+        stream.requireDeliveryConfirmation();
+        Response response = newFixedLengthResponse(Status.OK, "text/event-stream; charset=UTF-8", stream, -1);
+        addCorsHeaders(response);
+        applyGuardHeaders(response, guard);
+        return response;
     }
 
     static InputStream openAiToAnthropicStream(final InputStream upstreamIs, String model,
@@ -4705,6 +4774,7 @@ public class GatewayServer extends NanoHTTPD {
             private boolean sawDone = false;
             private boolean sawFinish = false;
             private boolean sawError = false;
+            private boolean closed = false;
             // 占位符可能被切成两半，content / reasoning / 工具参数各自一个缓冲，别互相串
             private final OpenAiUnmask unmask = new OpenAiUnmask(maskSession);
             private boolean emittedTerminalError = false;
@@ -4712,6 +4782,7 @@ public class GatewayServer extends NanoHTTPD {
             private void recordUsage() {
                 if (uRow == null || uCommitted[0]) return;
                 uCommitted[0]=true; uRow.ms=System.currentTimeMillis()-uStart; uRow.status=sawError?502:200;
+                if (sawError) uRow.err = "Upstream stream incomplete or cancelled";
                 if(uFirst[0]>0) { uRow.ttft=uFirst[0]-uStart; if(uLast[0]>=uFirst[0]) { uRow.decMs=uLast[0]-uFirst[0]; uRow.decOut=uRow.out; } }
                 try { UsageLedger.record(uRow); } catch(Throwable ignored) {}
             }
@@ -4756,6 +4827,7 @@ public class GatewayServer extends NanoHTTPD {
                     if ("[DONE]".equals(eventData)) {
                         if (sawError) { emittedTerminalError = true; return -1; }
                         if (!sawFinish) {
+                            sawError = true;
                             emittedTerminalError = true;
                             currentChunkIs = new ByteArrayInputStream(openAiStreamError("Upstream stream ended before a finish reason").getBytes("UTF-8"));
                             return currentChunkIs.read();
@@ -4842,6 +4914,11 @@ public class GatewayServer extends NanoHTTPD {
                                 touched = true;
                             }
                             if (touched) restored = "data: " + chunk.toString();
+                        } catch (PrivacyMasker.PrivacyException failure) {
+                            sawError = true;
+                            emittedTerminalError = true;
+                            currentChunkIs = new ByteArrayInputStream(openAiStreamError("Privacy masking unavailable").getBytes("UTF-8"));
+                            return currentChunkIs.read();
                         } catch (Throwable ignored) {
                             // 解析不了就按原样发，别把流弄断
                         }
@@ -4870,8 +4947,13 @@ public class GatewayServer extends NanoHTTPD {
 
             @Override
             public void close() throws IOException {
+                if (closed) return;
+                closed = true;
+                if (!sawDone && !sawFinish) sawError = true;
                 try { upstreamIs.close(); } finally {
-                    if (upstreamConn != null) upstreamConn.disconnect();
+                    try { recordUsage(); } finally {
+                        if (upstreamConn != null) upstreamConn.disconnect();
+                    }
                 }
             }
         };
@@ -4975,6 +5057,23 @@ public class GatewayServer extends NanoHTTPD {
     // 用量账本挂钩：每次转发在同一线程里记一行（口径见 UsageLedger 注释）
     // 用 ThreadLocal，避免改所有 streamForwardResponse 的调用点。
     // ==================================================================================
+    private static final class LogicalRequest {
+        final String id = java.util.UUID.randomUUID().toString();
+        int attempts;
+        String credentialId = "";
+        List<CommercialKeyPool.Credential> credentials;
+    }
+    private static final ThreadLocal<LogicalRequest> LOGICAL = new ThreadLocal<LogicalRequest>();
+    private volatile CommercialKeyPool commercialPool;
+    private CommercialKeyPool commercialPool() {
+        CommercialKeyPool pool = commercialPool;
+        if (pool == null) synchronized (this) {
+            pool = commercialPool;
+            if (pool == null) commercialPool = pool = new CommercialKeyPool();
+        }
+        return pool;
+    }
+
     private static final ThreadLocal<UsageLedger.Row> U_ROW = new ThreadLocal<UsageLedger.Row>();
     private static final ThreadLocal<Long> U_START = new ThreadLocal<Long>();
     private static final ThreadLocal<Long> U_FIRST = new ThreadLocal<Long>();
@@ -5001,6 +5100,13 @@ public class GatewayServer extends NanoHTTPD {
 
     private static void beginUsage(String prov, String reqModel, String upModel) {
         UsageLedger.Row r = new UsageLedger.Row();
+        LogicalRequest logical = LOGICAL.get();
+        if (logical != null) {
+            r.requestId = logical.id;
+            r.attempt = logical.attempts;
+            r.tries = logical.attempts;
+            r.credentialId = logical.credentialId;
+        }
         r.prov = prov == null ? "" : prov;
         r.req = reqModel == null ? "" : reqModel;
         r.model = upModel == null ? "" : upModel;
@@ -5016,13 +5122,32 @@ public class GatewayServer extends NanoHTTPD {
     /** 各种上游的 usage 形状：OpenAI / Anthropic / Gemini(Code Assist) */
     private static void absorbUsage(UsageLedger.Row r, JSONObject u) {
         if (r == null || u == null) return;
+        String source = u.optBoolean("estimated", false) ? "estimated" : "known";
+        boolean hasInput = u.has("prompt_tokens") || u.has("input_tokens") || u.has("promptTokenCount");
+        boolean hasOutput = u.has("completion_tokens") || u.has("output_tokens") || u.has("candidatesTokenCount");
+        if (hasInput) r.inputKnown = true;
+        if (hasOutput) r.outputKnown = true;
+        if (hasInput || hasOutput) r.usageSource = "estimated".equals(source) || "estimated".equals(r.usageSource)
+                ? "estimated" : (r.inputKnown && r.outputKnown ? "known" : "partial");
+        JSONObject promptDetails = u.optJSONObject("prompt_tokens_details");
+        JSONObject completionDetails = u.optJSONObject("completion_tokens_details");
+        if (promptDetails == null) promptDetails = u.optJSONObject("input_tokens_details");
+        if (completionDetails == null) completionDetails = u.optJSONObject("output_tokens_details");
+        if ((promptDetails != null && promptDetails.has("cached_tokens"))
+                || u.has("cache_read_input_tokens") || u.has("cache_creation_input_tokens")
+                || u.has("cachedContentTokenCount")) r.cacheSource = source;
+        if (u.has("thoughtsTokenCount") || (completionDetails != null && completionDetails.has("reasoning_tokens"))) {
+            r.reasoningSource = source;
+            if (completionDetails != null && completionDetails.has("reasoning_tokens"))
+                r.reasoning = completionDetails.optInt("reasoning_tokens", r.reasoning);
+        }
         if (u.has("prompt_tokens") || u.has("completion_tokens")) {
             r.in = u.optInt("prompt_tokens", r.in);
             r.out = u.optInt("completion_tokens", r.out);
-            JSONObject det = u.optJSONObject("prompt_tokens_details");
-            if (det != null && det.has("cached_tokens")) r.cacheRead = det.optInt("cached_tokens", 0);
+            if (promptDetails != null && promptDetails.has("cached_tokens")) r.cacheRead = promptDetails.optInt("cached_tokens", 0);
         }
         if (u.has("input_tokens") || u.has("output_tokens")) {
+            if (promptDetails != null && promptDetails.has("cached_tokens")) r.cacheRead = promptDetails.optInt("cached_tokens", 0);
             r.in = u.optInt("input_tokens", r.in);
             r.out = u.optInt("output_tokens", r.out);
             if (u.has("cache_read_input_tokens")) r.cacheRead = u.optInt("cache_read_input_tokens", 0);
@@ -5033,6 +5158,11 @@ public class GatewayServer extends NanoHTTPD {
             r.out = u.optInt("candidatesTokenCount", r.out);
             if (u.has("cachedContentTokenCount")) r.cacheRead = u.optInt("cachedContentTokenCount", 0);
             if (u.has("thoughtsTokenCount")) r.reasoning = u.optInt("thoughtsTokenCount", 0);
+        }
+        if (r.inputKnown && !"unknown".equals(r.cacheSource) && !r.cacheSource.isEmpty()) {
+            boolean anthropicCache = u.has("cache_read_input_tokens") || u.has("cache_creation_input_tokens");
+            if (anthropicCache) r.cacheInputTokens = (long) r.in + r.cacheRead + r.cacheWrite;
+            else if (hasInput && (promptDetails != null || r.cacheInputTokens < 0)) r.cacheInputTokens = r.in;
         }
     }
 
@@ -5091,6 +5221,18 @@ public class GatewayServer extends NanoHTTPD {
         r.ms = System.currentTimeMillis() - t0.longValue();
         r.status = status;
         r.err = err == null ? "" : err;
+        LogicalRequest logical = LOGICAL.get();
+        if (logical != null && status >= 400) {
+            r.terminal = false;
+            if (logical.credentials != null) for (CommercialKeyPool.Credential credential : logical.credentials)
+                r.err = r.err.replace(credential.secret(), "[REDACTED]");
+            try {
+                JSONObject error = new JSONObject(r.err);
+                absorbUsage(r, error.optJSONObject("usage"));
+                JSONObject detail = error.optJSONObject("error");
+                if (detail != null) absorbUsage(r, detail.optJSONObject("usage"));
+            } catch (Exception ignored) { }
+        }
         Long first = U_FIRST.get();
         Long last = U_LAST.get();
         if (first != null && first.longValue() > 0) {
@@ -5249,6 +5391,149 @@ public class GatewayServer extends NanoHTTPD {
         boolean isAnthropic;
         String protocol;      // "openai" / "anthropic" / "qoder"
         JSONObject account;   // qoder 等账号池供应商的完整账号
+        List<CommercialKeyPool.Credential> commercialCandidates;
+        CommercialKeyPool.Credential commercialCredential;
+    }
+
+    private static boolean isCommercialProvider(JSONObject provider) {
+        if (provider == null || !provider.optBoolean("enabled", true)
+                || "placeholder".equalsIgnoreCase(provider.optString("status", ""))) return false;
+        JSONArray accounts = provider.optJSONArray("accounts");
+        if (accounts != null && accounts.length() > 0) return false;
+        String id = provider.optString("id", "").toLowerCase(java.util.Locale.ROOT);
+        String protocol = provider.optString("protocol", "openai").toLowerCase(java.util.Locale.ROOT);
+        if (!java.util.Arrays.asList("openai", "anthropic", "responses").contains(protocol)) return false;
+        if (java.util.Arrays.asList("workbuddy", "workbuddy-ai", "raccoon", "loomy", "zcode", "cline",
+                "codex", "github-copilot", "minimax-code", "antigravity", "qoder_cn", "catpaw",
+                "deepseek-web").contains(id)) return false;
+        String kind = provider.optString("type", "").toLowerCase(java.util.Locale.ROOT);
+        return !kind.contains("subscription") && !kind.contains("gift");
+    }
+
+    private static String commercialScope(RouteTarget target) {
+        // Include origin/path to avoid carrying cooldown across unrelated provider endpoints.
+        return target.providerId + "\n" + (target.baseUrl == null ? "" : target.baseUrl.trim().toLowerCase(java.util.Locale.ROOT));
+    }
+
+    private static void terminalMarker(LogicalRequest logical, String requestedModel, RouteTarget target,
+                                       int status, String error) {
+        UsageLedger.Row row = new UsageLedger.Row();
+        row.requestId = logical.id; row.attempt = 0; row.terminal = true; row.tries = logical.attempts;
+        row.req = requestedModel == null ? "" : requestedModel;
+        row.session = U_SESSION.get() == null ? "" : U_SESSION.get();
+        if (target != null) { row.prov = target.providerId; row.model = target.upstreamModel; }
+        row.status = status < 400 ? 502 : status;
+        row.err = error == null ? "" : error;
+        if (logical.credentials != null) for (CommercialKeyPool.Credential c : logical.credentials)
+            row.err = row.err.replace(c.secret(), "[REDACTED]");
+        try { UsageLedger.record(row); } catch (Throwable ignored) { }
+    }
+
+    private Response dispatchCandidates(List<RouteTarget> candidates, JSONObject payload, boolean stream,
+                                        String requestedModel, PrivacyMasker.Session mask,
+                                        ContextGuard.Config guardCfg, ContextGuard.Result guardResult) {
+        JSONObject config = failoverJson();
+        boolean enabled = config.optBoolean("enabled", true);
+        int maxTargets = enabled ? Math.max(1, Math.min(100, config.optInt("maxTargets", 3))) : 1;
+        int maxAttempts = enabled ? Math.max(1, Math.min(64, config.optInt("maxAttempts", 8))) : 1;
+        long duration = Math.max(1000L, Math.min(300000L, config.optLong("attemptBudgetMs", 60000L)));
+        CommercialKeyPool.Budget budget = new CommercialKeyPool.Budget(System::currentTimeMillis, maxAttempts, duration);
+        CommercialKeyPool pool = commercialPool();
+        LogicalRequest logical = new LogicalRequest();
+        LOGICAL.set(logical);
+        Attempt last = null;
+        RouteTarget lastTarget = null;
+        long earliest = Long.MAX_VALUE;
+        boolean cooled = false, exhausted = false, success = false;
+        java.util.Map<String, java.util.Set<String>> attemptedByTarget = new java.util.HashMap<String, java.util.Set<String>>();
+        int terminalStatus = 502;
+        String terminalError = "all candidates failed";
+        try {
+            for (int ci = 0; ci < Math.min(maxTargets, candidates.size()); ci++) {
+                RouteTarget target = candidates.get(ci);
+                lastTarget = target;
+                boolean commercial = target.commercialCandidates != null;
+                String scope = commercial ? commercialScope(target) : "";
+                String attemptKey = scope + "\n" + target.upstreamModel;
+                java.util.Set<String> attempted = attemptedByTarget.get(attemptKey);
+                if (attempted == null) {
+                    attempted = new java.util.HashSet<String>();
+                    attemptedByTarget.put(attemptKey, attempted);
+                }
+                while (true) {
+                    if (budget.attempts() >= maxAttempts || System.currentTimeMillis() >= budget.deadline()) {
+                        exhausted = true; break;
+                    }
+                    if (commercial) {
+                        CommercialKeyPool.Credential credential = pool.choose(scope, target.upstreamModel,
+                                target.commercialCandidates, attempted);
+                        if (credential == null) {
+                            for (CommercialKeyPool.Credential c : target.commercialCandidates) {
+                                long when = pool.availableAt(scope, target.upstreamModel, c);
+                                if (when > System.currentTimeMillis()) { cooled = true; earliest = Math.min(earliest, when); }
+                            }
+                            break;
+                        }
+                        // Another request may cool the selection while we were choosing.
+                        if (!pool.available(scope, target.upstreamModel, credential)) continue;
+                        target.commercialCredential = credential;
+                        target.apiKey = credential.secret();
+                        logical.credentialId = credential.credentialId;
+                        logical.credentials = target.commercialCandidates;
+                    } else {
+                        logical.credentialId = "";
+                        logical.credentials = null;
+                    }
+                    if (!budget.tryStart()) { exhausted = true; break; }
+                    logical.attempts = budget.attempts();
+                    last = forwardAttempt(target, payload, stream, requestedModel, mask, guardCfg, guardResult);
+                    if (last.ok) { success = true; return last.response; }
+                    terminalStatus = last.status > 0 ? last.status : 502;
+                    terminalError = last.body == null ? "upstream failed" : last.body;
+                    if (!enabled) return last.response;
+                    if (commercial) {
+                        if (last.status >= 300 && last.status < 400) return last.response;
+                        CommercialKeyPool.Decision decision = CommercialKeyPool.classify(last.status, null, last.body, false);
+                        if (decision.scope != CommercialKeyPool.Scope.NONE) {
+                            long now = System.currentTimeMillis();
+                            long deadline = CommercialKeyPool.retryAfterDeadline(last.retryAfter, now,
+                                    (last.status == 429 || last.status == 402) ? REST_QUOTA_MS : REST_FAIL_MS);
+                            pool.cool(decision.scope, scope, target.commercialCredential.credentialId,
+                                    target.upstreamModel, deadline);
+                        }
+                        if (decision.retryKey) continue;
+                        if (!decision.routeFallback) return last.response;
+                        break;
+                    }
+                    if (!retryable(last.status, last.body)) return last.response;
+                    rest(target, last.status);
+                    break;
+                }
+                if (exhausted) break;
+            }
+            if (exhausted) {
+                terminalStatus = 503; terminalError = "Upstream attempt budget exhausted";
+                return errorResponse(503, terminalError);
+            }
+            if (cooled && (last == null
+                    || (lastTarget != null && lastTarget.commercialCandidates != null))) {
+                terminalStatus = 429; terminalError = "All available credentials are cooling down";
+                Response response = errorResponse(429, terminalError);
+                long wait = earliest - System.currentTimeMillis();
+                long seconds = wait <= 0 ? 0 : 1 + (wait - 1) / 1000;
+                response.addHeader("Retry-After", Long.toString(seconds));
+                return response;
+            }
+            if (last != null) return last.response;
+            terminalError = "No available credential for model: " + requestedModel;
+            return errorResponse(502, terminalError);
+        } catch (PrivacyMasker.PrivacyException e) {
+            terminalStatus = 503; terminalError = "Privacy masking unavailable";
+            throw e;
+        } finally {
+            if (!success) terminalMarker(logical, requestedModel, lastTarget, terminalStatus, terminalError);
+            LOGICAL.remove();
+        }
     }
 
     /** 供应商是否至少有 1 个可用凭据（账号或 key）；没有则它的模型一定调不通 */
@@ -5269,6 +5554,7 @@ public class GatewayServer extends NanoHTTPD {
             }
         }
         JSONArray keys = p.optJSONArray("keys");
+        if (isCommercialProvider(p)) return !CommercialKeyPool.list(keys).isEmpty();
         if (keys != null) {
             for (int i = 0; i < keys.length(); i++) {
                 if (!keys.optString(i, "").trim().isEmpty()) return true;
@@ -5363,19 +5649,25 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private boolean isResting(RouteTarget t) {
-        long[] r = RESTS.get(restKeyOf(t));
-        if (r == null) return false;
-        if (System.currentTimeMillis() >= r[0]) {
-            RESTS.remove(restKeyOf(t));
-            return false;
+        String key = restKeyOf(t);
+        while (true) {
+            long[] r = RESTS.get(key);
+            if (r == null) return false;
+            if (System.currentTimeMillis() < r[0]) return true;
+            if (RESTS.remove(key, r)) return false;
         }
-        return true;
     }
 
     private void rest(RouteTarget t, int status) {
         if (t == null) return;
         long ms = (status == 429 || status == 402) ? REST_QUOTA_MS : REST_FAIL_MS;
-        RESTS.put(restKeyOf(t), new long[]{System.currentTimeMillis() + ms, status});
+        String key = restKeyOf(t);
+        long[] next = new long[]{System.currentTimeMillis() + ms, status};
+        while (true) {
+            long[] old = RESTS.putIfAbsent(key, next);
+            if (old == null || old[0] >= next[0]) return;
+            if (RESTS.replace(key, old, next)) return;
+        }
     }
 
     /**
@@ -5436,6 +5728,7 @@ public class GatewayServer extends NanoHTTPD {
         out.ok = r.ok;
         out.status = r.status;
         out.body = r.body;
+        out.retryAfter = r.retryAfter;
         // 子方法成功时不一定写 status（它们只 set ok/response），这里补正，
         // 否则账本里会出现「成功但状态码 0」这种既不像失败也查不出来的记录
         if (r.ok && (out.status < 200 || out.status >= 400)) out.status = 200;
@@ -5473,6 +5766,14 @@ public class GatewayServer extends NanoHTTPD {
             // 每个候选独立一份请求体，避免改动互相污染
             JSONObject payload = new JSONObject(payloadIn.toString());
             payload.put("model", target.upstreamModel);
+
+            if (NativeAnthropicPolicy.requiresNative(NATIVE_REQUEST.get())
+                    && !(target.isAnthropic || "minimax".equals(target.protocol) || "minimax-code".equals(target.providerId))) {
+                out.status = 400;
+                out.body = "Protected Anthropic history requires a native Anthropic target; cross-protocol conversion is unavailable";
+                out.response = errorResponse(400, out.body);
+                return out;
+            }
 
             JSONObject responseOriginal=RESP_REQUEST.get();
             if (responseOriginal!=null) {
@@ -5563,11 +5864,15 @@ public class GatewayServer extends NanoHTTPD {
 
             // ===== MiniMax Code：上游是 Anthropic messages，要做双向转换 =====
             if ("minimax".equals(target.protocol) || "minimax-code".equals(target.providerId)) {
-                return adopt(out, forwardMiniMax(target, payload, clientWantsStream, requestedModel, maskSession, guardResult, guardCfg));
+                Attempt nativeAttempt = forwardMiniMax(target, payload, clientWantsStream, requestedModel, maskSession, guardResult, guardCfg);
+                if (nativeAttempt.ok && clientWantsStream) handedOff = true;
+                return adopt(out, nativeAttempt);
             }
 
             if (target.isAnthropic) {
-                return adopt(out, forwardMiniMax(target, payload, clientWantsStream, requestedModel, maskSession, guardResult, guardCfg));
+                Attempt nativeAttempt = forwardMiniMax(target, payload, clientWantsStream, requestedModel, maskSession, guardResult, guardCfg);
+                if (nativeAttempt.ok && clientWantsStream) handedOff = true;
+                return adopt(out, nativeAttempt);
             }
 
             if ("codex".equals(target.providerId)) {
@@ -5598,6 +5903,7 @@ public class GatewayServer extends NanoHTTPD {
             } else {
                 conn = (HttpURLConnection) new URL(targetUrl).openConnection();
             }
+            if (target.commercialCandidates != null) conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setConnectTimeout(guardCfg.connectTimeoutSeconds * 1000);
@@ -5672,26 +5978,22 @@ public class GatewayServer extends NanoHTTPD {
                 conn.setRequestProperty("Accept", "text/event-stream, application/json");
             }
 
+            byte[] requestBytes = payload.toString().getBytes("UTF-8");
+            if (target.commercialCandidates != null) conn.setFixedLengthStreamingMode(requestBytes.length);
             OutputStream os = conn.getOutputStream();
-            os.write(payload.toString().getBytes("UTF-8"));
+            os.write(requestBytes);
             os.flush();
             os.close();
 
             int statusCode = conn.getResponseCode();
-            boolean okStatus = statusCode >= 200 && statusCode < 400;
-            InputStream is = okStatus ? conn.getInputStream() : conn.getErrorStream();
-            if (is == null) is = new ByteArrayInputStream(new byte[0]);
+            boolean okStatus = statusCode >= 200 && statusCode < (target.commercialCandidates != null ? 300 : 400);
+            InputStream is = okStatus ? conn.getInputStream() : null;
 
             out.status = statusCode;
 
             // ---------- 失败：把上游错误体读全，交给 retryable 判定 ----------
             if (!okStatus) {
-                ByteArrayOutputStream eb = new ByteArrayOutputStream();
-                byte[] buf = new byte[4096];
-                int n;
-                while ((n = is.read(buf)) != -1) eb.write(buf, 0, n);
-                is.close();
-                String errBody = PrivacyMasker.unmaskText(eb.toString("UTF-8"), maskSession);
+                String errBody = readUpstreamError(conn, target, out, maskSession, statusCode);
                 if ("cline".equals(target.providerId)) {
                     try {
                         JSONObject ej = new JSONObject(errBody);
@@ -5749,11 +6051,22 @@ public class GatewayServer extends NanoHTTPD {
                 out.ok = false;
                 out.body = errBody;
                 Status st = Status.lookup(statusCode);
-                if (st == null) st = Status.INTERNAL_ERROR;
-                Response resp = newFixedLengthResponse(st, "application/json; charset=UTF-8", errBody);
+                Response.IStatus responseStatus = st;
+                if (responseStatus == null) { final int c = statusCode; responseStatus = new Response.IStatus() { public int getRequestStatus() { return c; } public String getDescription() { return c + " Upstream Error"; } }; }
+                Response resp = newFixedLengthResponse(responseStatus, "application/json; charset=UTF-8", errBody);
                 addCorsHeaders(resp);
                 applyGuardHeaders(resp, guardResult);
                 out.response = resp;
+                addUpstreamRetryAfter(out, target);
+                return out;
+            }
+
+            ZhipuEnvelope.Result envelope = ZhipuEnvelope.inspect(conn, is, targetUrl);
+            is = envelope.body;
+            if (envelope.adapted) {
+                is.close();
+                out.retryAfter = conn.getHeaderField("Retry-After");
+                setEnvelopeError(out, target, envelope, maskSession, guardResult);
                 return out;
             }
 
@@ -6033,14 +6346,21 @@ public class GatewayServer extends NanoHTTPD {
             out.response = resp;
             return out;
 
+        } catch (PrivacyMasker.PrivacyException e) {
+            throw e;
         } catch (Exception e) {
             // 连接/DNS/TLS/超时：状态记 0，让 retryable 认为"换一家可能就通了"
-            e.printStackTrace();
             out.ok = false;
             out.status = 0;
-            out.body = String.valueOf(e.getMessage());
-            String msg = e.getMessage() == null ? "connection failed" : e.getMessage();
-            out.response = errorResponse(502, "upstream " + target.providerId + " failed: " + msg);
+            if (target.commercialCandidates != null) {
+                out.body = "Commercial upstream connection failed; execution outcome unknown";
+                out.response = errorResponse(502, out.body);
+            } else {
+                e.printStackTrace();
+                out.body = scrubUpstreamSecrets(String.valueOf(e.getMessage()), target);
+                String msg = e.getMessage() == null ? "connection failed" : e.getMessage();
+                out.response = errorResponse(502, "upstream " + target.providerId + " failed: " + msg);
+            }
             return out;
         } finally {
             if (conn != null && !handedOff) {
@@ -6767,6 +7087,19 @@ public class GatewayServer extends NanoHTTPD {
                 return out;
             }
 
+            NativeAnthropicPolicy.checkNativeRequired(NATIVE_REQUEST.get(), NATIVE_BASELINE.get(), payload,
+                    Boolean.TRUE.equals(NATIVE_DIRECT_ALLOWED.get()));
+            JSONObject nativeMiddleware = configJson.optJSONObject("middleware");
+            // Response transforms cannot safely rewrite signed/opaque native blocks.
+            // Reject the combination before sending or charging an upstream request.
+            if (wantsAnthropicOut() && (Middleware.wordGuardEnabled(nativeMiddleware)
+                    || Middleware.thinkTagsEnabled(nativeMiddleware))) {
+                out.status = 400;
+                out.body = "Native Anthropic responses cannot safely apply word-guard or think-tags; disable these transforms or use a Chat client";
+                out.response = errorResponse(400, out.body);
+                return out;
+            }
+
             JSONObject anth = Boolean.TRUE.equals(NATIVE_DIRECT_ALLOWED.get())
                     ? nativeAnthropicRequest(NATIVE_REQUEST.get(), NATIVE_BASELINE.get(), payload,
                             target.upstreamModel, clientWantsStream) : null;
@@ -6786,6 +7119,7 @@ public class GatewayServer extends NanoHTTPD {
             String errBody = "";
             for (int attempt = 0; attempt < 2; attempt++) {
                 conn = (HttpURLConnection) new URL(url).openConnection();
+                if (genericAnthropic && target.commercialCandidates != null) conn.setInstanceFollowRedirects(false);
                 conn.setRequestMethod("POST");
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(20000);
@@ -6794,6 +7128,9 @@ public class GatewayServer extends NanoHTTPD {
                 if (genericAnthropic) {
                     conn.setRequestProperty("x-api-key", token);
                     conn.setRequestProperty("anthropic-version", "2023-06-01");
+                    java.util.Map<String, String> protocolHeaders = NATIVE_HEADERS.get();
+                    if (protocolHeaders != null) for (java.util.Map.Entry<String, String> header : protocolHeaders.entrySet())
+                        conn.setRequestProperty(header.getKey(), header.getValue());
                 } else {
                     java.util.Map<String, String> h = MiniMaxAuth.chatHeaders(sessionId);
                     for (java.util.Map.Entry<String, String> e : h.entrySet()) {
@@ -6801,8 +7138,10 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     conn.setRequestProperty("Authorization", "Bearer " + token);
                 }
+                byte[] requestBytes = anth.toString().getBytes("UTF-8");
+                if (target.commercialCandidates != null) conn.setFixedLengthStreamingMode(requestBytes.length);
                 OutputStream os = conn.getOutputStream();
-                os.write(anth.toString().getBytes("UTF-8"));
+                os.write(requestBytes);
                 os.flush();
                 os.close();
 
@@ -6824,16 +7163,14 @@ public class GatewayServer extends NanoHTTPD {
                 break;
             }
 
-            if (status < 200 || status >= 400) {
-                try {
-                    errBody = drainText(conn.getErrorStream());
-                } catch (Throwable ignored) {
-                }
+            if (status < 200 || status >= (target.commercialCandidates != null ? 300 : 400)) {
+                errBody = readUpstreamError(conn, target, out, maskSession, status);
                 out.ok = false;
                 out.status = status;
                 out.body = errBody;
                 out.response = errorResponse(status <= 0 ? 502 : status,
                         (genericAnthropic ? "Anthropic: " : "MiniMax Code: ") + (errBody.isEmpty() ? "上游没有返回响应体" : errBody));
+                addUpstreamRetryAfter(out, target);
                 try {
                     conn.disconnect();
                 } catch (Throwable ignored) {
@@ -6843,12 +7180,16 @@ public class GatewayServer extends NanoHTTPD {
 
             if (clientWantsStream) {
                 InputStream is = conn.getInputStream();
-                InputStream openAi = new AnthropicSseToOpenAI(is, new ZCodeAnthropic.StreamState(requestedModel));
-                Response resp = wantsAnthropicOut()
-                        ? streamForwardAnthropicResponse(openAi, requestedModel, maskSession, guardResult, conn)
-                        : streamForwardResponse(openAi, maskSession, guardResult, conn, target.providerId);
+                Response resp;
+                if (wantsAnthropicOut()) {
+                    resp = nativeAnthropicResponse(is, maskSession, guardResult, conn);
+                } else {
+                    InputStream openAi = new AnthropicSseToOpenAI(is, new ZCodeAnthropic.StreamState(requestedModel));
+                    resp = streamForwardResponse(openAi, maskSession, guardResult, conn, target.providerId);
+                }
                 resp.addHeader("Cache-Control", "no-cache");
                 resp.addHeader("X-Magpie-Served-By", target.providerId);
+                if (wantsAnthropicOut()) resp.addHeader("X-AllIn-Native-Anthropic", "true");
                 addCorsHeaders(resp);
                 applyGuardHeaders(resp, guardResult);
                 out.ok = true;
@@ -6857,9 +7198,10 @@ public class GatewayServer extends NanoHTTPD {
                 return out;
             }
 
-            String text = drainText(conn.getInputStream());
-            if (maskSession != null) text = PrivacyMasker.unmaskText(text, maskSession);
+            String text = NativeAnthropicPolicy.unmaskResponse(drainText(conn.getInputStream()), maskSession);
             JSONObject msg = new JSONObject(text);
+            UsageLedger.Row nativeRow = U_ROW.get();
+            if (nativeRow != null) absorbUsage(nativeRow, msg.optJSONObject("usage"));
             StringBuilder sb = new StringBuilder();
             JSONArray blocks = msg.optJSONArray("content");
             for (int i = 0; blocks != null && i < blocks.length(); i++) {
@@ -6872,6 +7214,7 @@ public class GatewayServer extends NanoHTTPD {
             if (wantsAnthropicOut()) {
                 Response resp = newFixedLengthResponse(Status.OK, "application/json; charset=UTF-8", text);
                 resp.addHeader("X-Magpie-Served-By", target.providerId);
+                resp.addHeader("X-AllIn-Native-Anthropic", "true");
                 addCorsHeaders(resp);
                 applyGuardHeaders(resp, guardResult);
                 out.response = resp;
@@ -6885,11 +7228,16 @@ public class GatewayServer extends NanoHTTPD {
             out.response = resp;
             return out;
         } catch (Throwable e) {
-            e.printStackTrace();
             out.ok = false;
             out.status = 0;
-            out.body = e.getMessage() == null ? String.valueOf(e) : e.getMessage();
-            out.response = errorResponse(502, "Anthropic 上游转发失败: " + out.body);
+            if (target.commercialCandidates != null) {
+                out.body = "Commercial upstream connection failed; execution outcome unknown";
+                out.response = errorResponse(502, out.body);
+            } else {
+                e.printStackTrace();
+                out.body = scrubUpstreamSecrets(e.getMessage() == null ? String.valueOf(e) : e.getMessage(), target);
+                out.response = errorResponse(502, "Anthropic 上游转发失败: " + out.body);
+            }
             return out;
         } finally {
             if (conn != null && !handedOff) {
@@ -7047,6 +7395,7 @@ public class GatewayServer extends NanoHTTPD {
         Response response;
         int status;
         String body;
+        String retryAfter;
         String providerId;
         String modelRef;
         /** 成功时把回复正文留一份，供 /api/test-model 显示（免得再解析一遍 Response 流） */
@@ -7135,7 +7484,8 @@ public class GatewayServer extends NanoHTTPD {
 
         String selectedKey = "";
         JSONArray keys = chosenProvider.optJSONArray("keys");
-        if (keys != null && keys.length() > 0) {
+        boolean commercial = isCommercialProvider(chosenProvider);
+        if (!commercial && keys != null && keys.length() > 0) {
             int idx = Math.abs(wbRoundRobin.getAndIncrement() % keys.length());
             selectedKey = keys.optString(idx);
         }
@@ -7147,6 +7497,11 @@ public class GatewayServer extends NanoHTTPD {
         route.upstreamModel = mName;
         route.isAnthropic = "anthropic".equalsIgnoreCase(chosenProvider.optString("protocol"));
         route.protocol = chosenProvider.optString("protocol", route.isAnthropic ? "anthropic" : "openai");
+        if (commercial) {
+            route.commercialCandidates = CommercialKeyPool.list(keys);
+            if (route.commercialCandidates.isEmpty()) return null;
+            return route;
+        }
         if ("deepseek-web".equals(route.protocol)) {
             if (!java.util.Arrays.asList(DeepSeekWeb.MODELS).contains(mName)) return null;
             JSONArray accounts=chosenProvider.optJSONArray("accounts"); ArrayList<JSONObject> valid=new ArrayList<JSONObject>();
@@ -7340,7 +7695,7 @@ public class GatewayServer extends NanoHTTPD {
         for (int i = 0; i < refs.size(); i++) {
             RouteTarget t = buildTarget(refs.get(i));
             if (t == null) continue;
-            if (isResting(t)) resting.add(t);
+            if (t.commercialCandidates == null && isResting(t)) resting.add(t);
             else awake.add(t);
         }
         awake.addAll(resting);          // 休息的排后面，但仍作为兜底
@@ -8328,7 +8683,7 @@ public class GatewayServer extends NanoHTTPD {
                             if(type.isEmpty())throw new IOException("missing event type");
                             JSONObject response=event.optJSONObject("response");
                             if(response!=null && clientModel!=null && response.has("model")) response.put("model",clientModel);
-                            if(response!=null) { lastResponse=response; JSONObject usage=response.optJSONObject("usage"); if(row!=null && usage!=null) absorbUsage(row,ResponsesBridge.chatUsage(usage)); }
+                            if(response!=null) { lastResponse=response; JSONObject usage=response.optJSONObject("usage"); if(row!=null && usage!=null) absorbUsage(row,usage); }
                             if("error".equals(type)) throw new IOException("upstream Responses error");
                             if("response.completed".equals(type) || "response.incomplete".equals(type) || "response.failed".equals(type)) {
                                 if("response.completed".equals(type) || "response.incomplete".equals(type)) for(String key:new java.util.ArrayList<String>(deltas.keySet())) result+=flushDelta(key);
@@ -8382,7 +8737,7 @@ public class GatewayServer extends NanoHTTPD {
         }
         } finally { try { reader.close(); } finally { if(conn!=null)conn.disconnect(); } }
         if(result==null)throw new IOException("Codex stream ended before completion");
-        UsageLedger.Row row=U_ROW.get(); if(row!=null && result.optJSONObject("usage")!=null) absorbUsage(row,ResponsesBridge.chatUsage(result.getJSONObject("usage")));
+        UsageLedger.Row row=U_ROW.get(); if(row!=null) absorbUsage(row,result.optJSONObject("usage"));
         unmaskJson(result,mask);
         if(CLIENT_MODEL.get()!=null && result.has("model")) result.put("model",CLIENT_MODEL.get());
         Response resp=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",result.toString()); addCorsHeaders(resp); applyGuardHeaders(resp,guard); return resp;
@@ -8422,18 +8777,106 @@ public class GatewayServer extends NanoHTTPD {
         if(CopilotAuth.isVisionRequest(body)) conn.setRequestProperty("Copilot-Vision-Request","true");
     }
 
-    private void responsesUpstreamError(Attempt out, HttpURLConnection conn, int code,
-                                        PrivacyMasker.Session mask, ContextGuard.Result guard, String apiKey) throws Exception {
-        String body;
-        try (InputStream input=conn.getErrorStream()) {
-            if(input==null) body="";
-            else {
-                ByteArrayOutputStream buffer=new ByteArrayOutputStream(); byte[] chunk=new byte[4096]; int n;
-                while(buffer.size()<65536 && (n=input.read(chunk,0,Math.min(chunk.length,65536-buffer.size())))!=-1) buffer.write(chunk,0,n);
-                body=PrivacyMasker.unmaskText(buffer.toString("UTF-8"),mask);
-            }
+    private static String scrubUpstreamSecrets(String text, RouteTarget target) {
+        if (text == null) return "";
+        if (target.apiKey != null && !target.apiKey.isEmpty()) text = text.replace(target.apiKey, "[REDACTED]");
+        if (target.commercialCandidates != null) for (CommercialKeyPool.Credential credential : target.commercialCandidates) {
+            String secret = credential.secret();
+            if (secret != null && !secret.isEmpty()) text = text.replace(secret, "[REDACTED]");
         }
-        if(apiKey!=null && !apiKey.isEmpty()) body=body.replace(apiKey,"[REDACTED]");
+        return text;
+    }
+
+    private static void addUpstreamRetryAfter(Attempt out, RouteTarget target) {
+        String value = out.retryAfter;
+        if (out.response != null && value != null && value.length() <= 128
+                && value.indexOf('\r') < 0 && value.indexOf('\n') < 0
+                && value.equals(scrubUpstreamSecrets(value, target))) out.response.addHeader("Retry-After", value);
+    }
+
+    private static Object scrubErrorJson(Object value, RouteTarget target, int depth) throws Exception {
+        if (depth > 64) throw new IOException("error nesting exceeds limit");
+        if (value instanceof String) return scrubUpstreamSecrets((String) value, target);
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            JSONObject safe = new JSONObject();
+            java.util.Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!key.equals(scrubUpstreamSecrets(key, target))) throw new IOException("sensitive JSON key");
+                safe.put(key, scrubErrorJson(object.get(key), target, depth + 1));
+            }
+            return safe;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            JSONArray safe = new JSONArray();
+            for (int i = 0; i < array.length(); i++) safe.put(scrubErrorJson(array.get(i), target, depth + 1));
+            return safe;
+        }
+        return value;
+    }
+
+    private static String safeUpstreamErrorJson(String body, RouteTarget target) {
+        try {
+            org.json.JSONTokener parser = new org.json.JSONTokener(body);
+            Object parsed = parser.nextValue();
+            if (!(parsed instanceof JSONObject) || parser.nextClean() != 0) throw new IOException("invalid JSON");
+            return ((JSONObject) scrubErrorJson(parsed, target, 0)).toString();
+        } catch (Exception ignored) {
+            return "{\"error\":{\"message\":\"Unstructured upstream error [REDACTED]\"}}";
+        }
+    }
+
+    private String readUpstreamError(HttpURLConnection conn, RouteTarget target, Attempt out,
+                                     PrivacyMasker.Session mask, int status) {
+        out.retryAfter = conn.getHeaderField("Retry-After");
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        boolean failed = false;
+        try {
+            InputStream stream = conn.getErrorStream();
+            if (stream == null && status >= 300 && status < 400) stream = conn.getInputStream();
+            if (stream != null) try (InputStream input = stream) {
+                byte[] chunk = new byte[4096];
+                while (buffer.size() < 65536) {
+                    int n = input.read(chunk, 0, Math.min(chunk.length, 65536 - buffer.size()));
+                    if (n < 0) break;
+                    if (n == 0) { int one = input.read(); if (one < 0) break; buffer.write(one); }
+                    else buffer.write(chunk, 0, n);
+                }
+            }
+        } catch (Exception ignored) { failed = true; }
+        if (failed || buffer.size() >= 65536)
+            return "{\"error\":{\"message\":\"Upstream error unavailable or truncated [REDACTED]\"}}";
+        String body;
+        try { body = buffer.toString("UTF-8"); } catch (Exception ignored) { body = ""; }
+        try {
+            JSONObject json = new JSONObject(body);
+            UsageLedger.Row row = U_ROW.get();
+            if (row != null) {
+                absorbUsage(row, json.optJSONObject("usage"));
+                JSONObject error = json.optJSONObject("error");
+                if (error != null) absorbUsage(row, error.optJSONObject("usage"));
+            }
+        } catch (Exception ignored) { }
+        return safeUpstreamErrorJson(body, target);
+    }
+
+    private void setEnvelopeError(Attempt out, RouteTarget target, ZhipuEnvelope.Result envelope,
+                                  PrivacyMasker.Session mask, ContextGuard.Result guard) {
+        out.status = envelope.status;
+        out.body = safeUpstreamErrorJson(envelope.errorBody, target);
+        Response.IStatus status = Status.lookup(out.status);
+        if (status == null) status = Status.INTERNAL_ERROR;
+        out.response = newFixedLengthResponse(status, "application/json; charset=UTF-8", out.body);
+        addCorsHeaders(out.response);
+        applyGuardHeaders(out.response, guard);
+        addUpstreamRetryAfter(out, target);
+    }
+
+    private void responsesUpstreamError(Attempt out, HttpURLConnection conn, int code,
+                                        PrivacyMasker.Session mask, ContextGuard.Result guard, RouteTarget target) throws Exception {
+        String body = readUpstreamError(conn, target, out, mask, code);
         if(body.isEmpty()) body="Responses upstream returned HTTP "+code;
         out.status=code; out.body=body;
         try {
@@ -8446,6 +8889,7 @@ public class GatewayServer extends NanoHTTPD {
             out.response=newFixedLengthResponse(status,"application/json; charset=UTF-8",json.toString());
             addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
         } catch(Exception invalid) { out.response=errorResponse(code,body); }
+        addUpstreamRetryAfter(out, target);
     }
 
     private Attempt forwardTranslatedResponses(RouteTarget target, JSONObject request, boolean stream,
@@ -8454,13 +8898,19 @@ public class GatewayServer extends NanoHTTPD {
         Attempt out=new Attempt(); HttpURLConnection conn=null;
         try {
             conn=(HttpURLConnection)new URL(target.baseUrl.replaceAll("/+$","")+"/responses").openConnection();
+            if(target.commercialCandidates!=null) conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("POST"); conn.setDoOutput(true); conn.setConnectTimeout(cfg.connectTimeoutSeconds*1000); conn.setReadTimeout(cfg.requestTimeoutSeconds*1000);
             conn.setRequestProperty("Authorization","Bearer "+target.apiKey); conn.setRequestProperty("Content-Type","application/json");
             conn.setRequestProperty("Accept",stream?"text/event-stream":"application/json"); addResponsesProviderHeaders(conn,target,request);
-            OutputStream os=conn.getOutputStream(); os.write(request.toString().getBytes("UTF-8")); os.close();
+            byte[] requestBytes=request.toString().getBytes("UTF-8");
+            if(target.commercialCandidates!=null) conn.setFixedLengthStreamingMode(requestBytes.length);
+            OutputStream os=conn.getOutputStream(); os.write(requestBytes); os.close();
             int code=conn.getResponseCode(); out.status=code;
-            if(code<200 || code>=300) { responsesUpstreamError(out,conn,code,mask,guard,target.apiKey); conn.disconnect(); return out; }
+            if(code<200 || code>=300) { responsesUpstreamError(out,conn,code,mask,guard,target); conn.disconnect(); return out; }
             InputStream source=conn.getInputStream();
+            ZhipuEnvelope.Result envelope=ZhipuEnvelope.inspect(conn,source,conn.getURL().toString());
+            source=envelope.body;
+            if(envelope.adapted) { source.close(); out.retryAfter=conn.getHeaderField("Retry-After"); setEnvelopeError(out,target,envelope,mask,guard); conn.disconnect(); return out; }
             if(stream) {
                 InputStream converted=ResponsesBridge.responsesStreamToChat(source,requestedModel);
                 // Reuse the common Chat response pipeline for middleware, privacy and accounting.
@@ -8472,7 +8922,7 @@ public class GatewayServer extends NanoHTTPD {
             } else {
                 JSONObject nativeReply=new JSONObject(drainText(source)); conn.disconnect();
                 JSONObject reply=ResponsesBridge.responsesResponseToChat(nativeReply,requestedModel);
-                UsageLedger.Row row=U_ROW.get(); if(row!=null) absorbUsage(row,reply.optJSONObject("usage"));
+                UsageLedger.Row row=U_ROW.get(); if(row!=null) absorbUsage(row,nativeReply.optJSONObject("usage"));
                 unmaskJson(reply,mask);
                 JSONObject mw=configJson.optJSONObject("middleware");
                 JSONObject message=reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
@@ -8487,7 +8937,7 @@ public class GatewayServer extends NanoHTTPD {
                 out.response=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",reply.toString()); addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
             }
             out.ok=true; out.status=200; return out;
-        } catch(Exception e) { if(conn!=null)conn.disconnect(); out.status=502; out.body="Responses upstream failed"; out.response=errorResponse(502,out.body); return out; }
+        } catch(Exception e) { if(conn!=null)conn.disconnect(); out.status=target.commercialCandidates!=null ? 0 : 502; out.body="Responses upstream failed"; out.response=errorResponse(502,out.body); return out; }
     }
 
     private Attempt forwardNativeResponses(RouteTarget target, JSONObject request, boolean stream,
@@ -8496,22 +8946,28 @@ public class GatewayServer extends NanoHTTPD {
         Attempt out=new Attempt(); HttpURLConnection conn=null;
         try {
             conn=(HttpURLConnection)new URL(target.baseUrl.replaceAll("/+$","")+"/responses").openConnection();
+            if(target.commercialCandidates!=null) conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("POST"); conn.setDoOutput(true); conn.setConnectTimeout(guardCfg.connectTimeoutSeconds*1000); conn.setReadTimeout(guardCfg.requestTimeoutSeconds*1000);
             conn.setRequestProperty("Authorization","Bearer "+target.apiKey); conn.setRequestProperty("Content-Type","application/json");
             addResponsesProviderHeaders(conn,target,request);
-            OutputStream output=conn.getOutputStream(); output.write(request.toString().getBytes("UTF-8")); output.close();
+            byte[] requestBytes=request.toString().getBytes("UTF-8");
+            if(target.commercialCandidates!=null) conn.setFixedLengthStreamingMode(requestBytes.length);
+            OutputStream output=conn.getOutputStream(); output.write(requestBytes); output.close();
             int code=conn.getResponseCode(); out.status=code;
-            if(code<200 || code>=300) { responsesUpstreamError(out,conn,code,mask,guard,target.apiKey); conn.disconnect(); return out; }
+            if(code<200 || code>=300) { responsesUpstreamError(out,conn,code,mask,guard,target); conn.disconnect(); return out; }
             InputStream in=conn.getInputStream();
+            ZhipuEnvelope.Result envelope=ZhipuEnvelope.inspect(conn,in,conn.getURL().toString());
+            in=envelope.body;
+            if(envelope.adapted) { in.close(); out.retryAfter=conn.getHeaderField("Retry-After"); setEnvelopeError(out,target,envelope,mask,guard); conn.disconnect(); return out; }
             if(stream) out.response=nativeResponsesStream(in,mask,guard,conn);
             else {
                 JSONObject response=new JSONObject(drainText(in)); conn.disconnect();
                 if(!"completed".equals(response.optString("status")) && !"incomplete".equals(response.optString("status"))) throw new IOException("invalid Responses status");
-                UsageLedger.Row row=U_ROW.get(); if(row!=null && response.optJSONObject("usage")!=null) absorbUsage(row,ResponsesBridge.chatUsage(response.getJSONObject("usage")));
+                UsageLedger.Row row=U_ROW.get(); if(row!=null) absorbUsage(row,response.optJSONObject("usage"));
                 unmaskJson(response,mask); if(CLIENT_MODEL.get()!=null && response.has("model")) response.put("model",CLIENT_MODEL.get()); out.response=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",response.toString()); addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
             }
             out.ok=true; RESP_NATIVE_RESULT.set(Boolean.TRUE); return out;
-        } catch(Exception e) { if(conn!=null)conn.disconnect(); out.status=502; out.body="Responses upstream failed"; out.response=errorResponse(502,out.body); return out; }
+        } catch(Exception e) { if(conn!=null)conn.disconnect(); out.status=target.commercialCandidates!=null ? 0 : 502; out.body="Responses upstream failed"; out.response=errorResponse(502,out.body); return out; }
     }
 
     private Attempt forwardCodex(RouteTarget target, JSONObject payload, boolean clientWantsStream,

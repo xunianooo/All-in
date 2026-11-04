@@ -3447,7 +3447,7 @@
         const issues = (data.invalidLines || 0) + (data.readErrors || 0) + (data.persistenceErrors || 0) + (data.uncertainWrites || 0);
         status.textContent = issues ? '部分账本异常 · 数据可能不完整' : '已更新 ' + new Date(data.generatedAt).toTimeString().slice(0,5) + ' · ' + data.timezone;
         document.getElementById('heat-note').textContent = (data.firstRecordedDate ? '最早记录 ' + data.firstRecordedDate + '。' : '尚无调用记录。')
-          + 'Token = 成功调用的输入 + 输出；请求含失败，重试不重复计数。未上报的 Token 不估算。'
+          + 'Token 为有记录的尝试输入 + 输出，可能包含估算；请求按结束日期计数，重试不重复计数。未知用量未计入。'
           + (issues ? '异常：坏行 ' + (data.invalidLines || 0) + '，读取 ' + (data.readErrors || 0) + '，写入 ' + (data.persistenceErrors || 0) + '，待确认写入 ' + (data.uncertainWrites || 0) + '。' : '');
       } catch (e) {
         if (revision !== heatRevision) return;
@@ -3492,7 +3492,7 @@
         } else cell.setAttribute('aria-hidden','true');
         grid.appendChild(cell);
       }
-      const active = heatData.days.filter(day => day.requests > 0).length;
+      const active = heatData.days.filter(day => day[heatMetric] > 0).length;
       document.getElementById('heat-total').textContent = '已记录 ' + heatExact(heatData.totals[heatMetric]) + (heatMetric === 'tokens' ? ' Token' : ' 次请求') + ' · ' + active + ' 个活跃日';
       if (!scrollToLatest) scroller.scrollLeft = position;
       requestAnimationFrame(() => {
@@ -3569,7 +3569,7 @@
       const value = document.createElement('span'); value.textContent = heatExact(day[heatMetric]) + (heatMetric === 'tokens' ? ' Token' : ' 次请求');
       top.appendChild(label); top.appendChild(value); box.appendChild(top);
       const sub = document.createElement('div'); sub.className = 'heat-detail-sub';
-      sub.textContent = day.requests ? '输入 ' + heatExact(day.input) + ' · 输出 ' + heatExact(day.output) + ' · 请求 ' + heatExact(day.requests) + ' · 失败 ' + heatExact(day.failed) : '当天无已记录调用';
+      sub.textContent = day.requests ? '输入 ' + heatExact(day.input) + ' · 输出 ' + heatExact(day.output) + ' · 请求 ' + heatExact(day.requests) + ' · 失败 ' + heatExact(day.failed) : (day.tokens > 0 || day.attempts > 0 ? '已记录尝试，逻辑请求在其他日期结束 · 输入 ' + heatExact(day.input) + ' · 输出 ' + heatExact(day.output) : '当天无已记录调用');
       box.appendChild(sub);
     }
     // ==================== 用量看板 ====================
@@ -3668,11 +3668,25 @@
         }
       };
 
-      set('uk-tokens', fmtNum(t.tokens), '输入 ' + fmtNum(t.input) + ' · 输出 ' + fmtNum(t.output));
-      set('uk-req', fmtFull(t.requests),
-        (t.failed ? t.failed + ' 次失败' : '全部成功') + ' · 重试后成功 ' + (t.retried || 0));
-      set('uk-hit', t.hitRate === null || t.hitRate === undefined ? '—' : t.hitRate + '%',
-        '缓存读 ' + fmtNum(t.cacheRead || 0));
+      const present = key => t[key] !== undefined && t[key] !== null;
+      const coverage = key => present(key) && Number.isFinite(Number(t[key])) ? Number(t[key]) + '%' : '—';
+      let tokenSub = '输入 ' + fmtNum(t.input) + ' · 输出 ' + fmtNum(t.output);
+      if (['usageKnown', 'usagePartial', 'usageEstimated', 'usageUnknown', 'usageLegacy'].some(present)) {
+        tokenSub += ' · 尝试用量 ' + [['usageKnown','已知'], ['usagePartial','部分已知'], ['usageEstimated','估算'], ['usageUnknown','未知'], ['usageLegacy','历史']]
+          .filter(([key]) => present(key)).map(([key, label]) => label + ' ' + fmtFull(t[key])).join(' / ');
+        if (present('usageCoverage')) tokenSub += ' · 已知覆盖 ' + coverage('usageCoverage');
+      }
+      if (present('inputCoverage')) tokenSub += ' · 输入覆盖 ' + coverage('inputCoverage');
+      if (present('outputCoverage')) tokenSub += ' · 输出覆盖 ' + coverage('outputCoverage');
+      let reqSub = (t.failed ? fmtFull(t.failed) + ' 次失败' : '全部成功') + ' · 重试后成功 ' + fmtFull(t.retried || 0);
+      if (present('attempts')) reqSub += ' · 实际尝试 ' + fmtFull(t.attempts);
+      if (present('attemptFailed')) reqSub += ' · 失败尝试 ' + fmtFull(t.attemptFailed);
+      let hitSub = '缓存读 ' + fmtNum(t.cacheRead || 0);
+      if (present('cacheKnownInputTokens')) hitSub += ' · 已知缓存输入 ' + fmtNum(t.cacheKnownInputTokens);
+      if (Object.prototype.hasOwnProperty.call(t, 'cacheCoverage')) hitSub += ' · 尝试覆盖 ' + coverage('cacheCoverage');
+      set('uk-tokens', fmtNum(t.tokens), tokenSub);
+      set('uk-req', fmtFull(t.requests), reqSub);
+      set('uk-hit', t.hitRate === null || t.hitRate === undefined ? '—' : t.hitRate + '%', hitSub);
       setHtml('uk-speed', t.speed ? Math.round(t.speed) + '<span class="uk-unit">tok/s</span>' : '—',
         (t.timed || 0) + ' 次计时');
       setHtml('uk-ttft', t.meanTtft ? (t.meanTtft / 1000).toFixed(1) + '<span class="uk-unit">秒</span>' : '—',
@@ -3795,7 +3809,7 @@
         }
       }
 
-      if (state) state.innerText = '共 ' + j.rows + ' 条调用记录 · 数据来自每次请求的真实 usage，不是估算';
+      if (state) state.innerText = '共 ' + j.rows + ' 条调用记录 · 用量可能包含估算，未知用量未计入';
     }
 
     function moveNavPill(el) {

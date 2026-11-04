@@ -110,8 +110,11 @@ public final class GatewayAuditOfflineTest {
             public InputStream getErrorStream(){return input;} public void disconnect(){} public boolean usingProxy(){return false;} public void connect(){}
         };
         Class<?> attemptType=Class.forName("com.gaeul.allin.GatewayServer$Attempt"); Constructor<?> ctor=attemptType.getDeclaredConstructor(); ctor.setAccessible(true); Object attempt=ctor.newInstance();
-        Method m=GatewayServer.class.getDeclaredMethod("responsesUpstreamError",attemptType,HttpURLConnection.class,int.class,PrivacyMasker.Session.class,ContextGuard.Result.class,String.class); m.setAccessible(true);
-        m.invoke(g,attempt,conn,422,null,null,"test-key");
+        Class<?> targetType=Class.forName("com.gaeul.allin.GatewayServer$RouteTarget");
+        Constructor<?> targetCtor=targetType.getDeclaredConstructor(); targetCtor.setAccessible(true); Object target=targetCtor.newInstance();
+        Field apiKey=targetType.getDeclaredField("apiKey"); apiKey.setAccessible(true); apiKey.set(target,"test-key");
+        Method m=GatewayServer.class.getDeclaredMethod("responsesUpstreamError",attemptType,HttpURLConnection.class,int.class,PrivacyMasker.Session.class,ContextGuard.Result.class,targetType); m.setAccessible(true);
+        m.invoke(g,attempt,conn,422,null,null,target);
         Field response=attemptType.getDeclaredField("response"); response.setAccessible(true); NanoHTTPD.Response r=(NanoHTTPD.Response)response.get(attempt);
         String body=ResponsesGatewayOfflineTest.read(r.getData()); check(r.getStatus().getRequestStatus()==422 && !body.contains("test-key") && body.contains("[REDACTED]"),"bounded error status/redaction");
         check(input.closed && input.reads==16,"read past 65536-byte bound");
