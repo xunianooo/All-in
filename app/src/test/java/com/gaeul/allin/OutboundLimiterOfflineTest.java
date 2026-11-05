@@ -43,15 +43,32 @@ public class OutboundLimiterOfflineTest {
         final OutboundLimiter l = new OutboundLimiter(4, 4); l.configure(config("a", p(0,0,1,3,0)));
         OutboundLimiter.Ticket held = l.tryAcquire(ids("a")).ticket;
         final List<Integer> order = Collections.synchronizedList(new ArrayList<Integer>());
-        final CountDownLatch firstStarted = new CountDownLatch(1);
-        Thread first = new Thread(new Runnable() { public void run() { try { firstStarted.countDown(); OutboundLimiter.Result r = l.await(ids("a"), 0, null); if (r.ticket != null) { order.add(1); r.ticket.close(); } } catch (InterruptedException e) { throw new AssertionError(e); } } });
-        first.start(); firstStarted.await();
-        // Synchronize by observing the bounded per-domain queue, not a timing assumption.
-        l.configure(config("a", p(0,0,1,1,0)));
-        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (l.await(ids("a"), System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1), null).status != OutboundLimiter.Status.QUEUE_FULL && System.nanoTime() < until) Thread.yield();
-        assertEquals(OutboundLimiter.Status.QUEUE_FULL, l.await(ids("a"), 0, null).status);
-        held.close(); first.join(2000); assertEquals(Arrays.asList(1), order);
+        final java.util.concurrent.atomic.AtomicReference<Throwable> workerFailure=new java.util.concurrent.atomic.AtomicReference<>();
+        Thread first = new Thread(() -> {
+            try {
+                OutboundLimiter.Result r=l.await(ids("a"),System.nanoTime()+TimeUnit.SECONDS.toNanos(5),null);
+                if(r.ticket==null) throw new AssertionError("first waiter: "+r.status);
+                try { order.add(1); } finally { r.ticket.close(); }
+            } catch(Throwable failure) { workerFailure.set(failure); }
+        });
+        first.setDaemon(true);
+        try {
+            first.start();
+            // Observe actual queue admission. A second await used as a probe can itself
+            // take the sole queue slot before the worker is scheduled on Windows.
+            long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+            while(l.queued()!=1 && first.isAlive() && System.nanoTime()<until) Thread.yield();
+            assertEquals(1,l.queued());
+            l.configure(config("a",p(0,0,1,1,0)));
+            assertEquals(OutboundLimiter.Status.QUEUE_FULL,l.await(ids("a"),System.nanoTime()+TimeUnit.SECONDS.toNanos(1),null).status);
+            held.close(); first.join(4000);
+            assertFalse(first.isAlive());
+            if(workerFailure.get()!=null) throw new AssertionError("waiter failed",workerFailure.get());
+            assertEquals(Arrays.asList(1),order);
+        } finally {
+            held.close();
+            if(first.isAlive()) { first.interrupt(); l.signalChange(); first.join(2000); }
+        }
         final boolean[] cancelled = {true}; assertEquals(OutboundLimiter.Status.CANCELLED, l.await(ids("a"), 0, new OutboundLimiter.Cancellation() { public boolean isCancelled() { return cancelled[0]; } }).status);
         l.configure(config("a", p(0,0,2,1,0))); assertEquals(OutboundLimiter.Status.ACQUIRED, l.tryAcquire(ids("a")).status);
         l.stop(); assertEquals(OutboundLimiter.Status.STOPPED, l.tryAcquire(ids("a")).status);
