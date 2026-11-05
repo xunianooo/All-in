@@ -101,7 +101,7 @@ public class CopilotAuth {
     }
 
     private static HttpURLConnection open(String urlStr) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(urlStr);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(20000);
         return conn;

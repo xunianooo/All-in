@@ -67,7 +67,9 @@ final class DeepSeekWebChat {
         validate(request);
         final PipedInputStream input=new PipedInputStream(32768);
         final PipedOutputStream output=new PipedOutputStream(input);
+        final NetworkPolicy.Snapshot snapshot=NetworkPolicy.capture();
         Thread worker=new Thread(()->{
+          try (NetworkPolicy.Scope scope=NetworkPolicy.use(snapshot)) {
             boolean success=false; int status=502; String error="";
             try {
                 DeepSeekWeb.Listener listener=new DeepSeekWeb.Listener() {
@@ -92,6 +94,7 @@ final class DeepSeekWebChat {
                 error=cancelled?"Client cancelled":safeErrorMessage(status);
                 if(!cancelled) try {output.write(errorEvent(status).getBytes(StandardCharsets.UTF_8)); output.flush();} catch(IOException ignored) {}
             } finally { try {output.close();} catch(IOException ignored) {} completion.done(success,success?200:status,error); }
+          }
         },"deepseek-web-stream");
         worker.setDaemon(true); worker.start();
         return new FilterInputStream(input) { public void close() throws IOException { cancel(); worker.interrupt(); super.close(); } };

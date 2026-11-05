@@ -8,31 +8,51 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Delegates framing unchanged; releases admission only after the complete HTTP send exits. */
 public final class AllInTrackedResponse extends NanoHTTPD.Response {
     private final NanoHTTPD.Response delegate;
+    public interface DeliveryObserver { void headers(); void body(); void failed(); }
+    private final DeliveryObserver observer;
     private final Runnable completed;
     private final AtomicBoolean released = new AtomicBoolean();
     public AllInTrackedResponse(NanoHTTPD.Response delegate, Runnable completed) {
+        this(delegate,completed,null);
+    }
+    public AllInTrackedResponse(NanoHTTPD.Response delegate,Runnable completed,DeliveryObserver observer) {
         super(delegate.getStatus(), delegate.getMimeType(), null, 0);
+        this.observer=observer;
         this.delegate = delegate;
         this.completed = completed;
     }
     private void release() { if (released.compareAndSet(false, true)) completed.run(); }
     /** Optional body notification after HTTP framing and the final flush. */
-    public interface WriteCompletion { void onWriteComplete(boolean success); }
+    public interface WriteCompletion { default void onWriteStart() {} void onWriteComplete(boolean success); }
     @Override protected void send(final OutputStream output) {
         final boolean[] writeFailed = {false};
         boolean returned = false;
         OutputStream checked = new OutputStream() {
+            int headerMatch; boolean headersDone;
+            private void observed(byte[] bytes,int off,int len) {
+                if(observer==null) return;
+                for(int i=off;i<off+len;i++) {
+                    if(headersDone) { observer.body(); return; }
+                    int b=bytes[i]&255;
+                    headerMatch=(headerMatch==0 && b==13)?1:(headerMatch==1 && b==10)?2:(headerMatch==2 && b==13)?3:(headerMatch==3 && b==10)?4:0;
+                    if(headerMatch==4) { headersDone=true; observer.headers(); }
+                }
+            }
             @Override public void write(int b) throws IOException {
-                try { output.write(b); } catch (IOException e) { writeFailed[0] = true; throw e; }
+                try { output.write(b); observed(new byte[]{(byte)b},0,1); } catch (IOException e) { writeFailed[0] = true; if(observer!=null) observer.failed(); throw e; }
             }
             @Override public void write(byte[] b, int off, int len) throws IOException {
-                try { output.write(b, off, len); } catch (IOException e) { writeFailed[0] = true; throw e; }
+                try { output.write(b, off, len); observed(b,off,len); } catch (IOException e) { writeFailed[0] = true; if(observer!=null) observer.failed(); throw e; }
             }
             @Override public void flush() throws IOException {
-                try { output.flush(); } catch (IOException e) { writeFailed[0] = true; throw e; }
+                try { output.flush(); } catch (IOException e) { writeFailed[0] = true; if(observer!=null) observer.failed(); throw e; }
             }
         };
-        try { delegate.send(checked); returned = true; }
+        try {
+            InputStream body = delegate.getData();
+            if (body instanceof WriteCompletion) ((WriteCompletion) body).onWriteStart();
+            delegate.send(checked); returned = true;
+        }
         finally {
             try {
                 InputStream body = delegate.getData();

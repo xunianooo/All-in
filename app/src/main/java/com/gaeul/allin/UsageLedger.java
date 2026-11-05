@@ -128,6 +128,10 @@ public class UsageLedger {
         public long cacheInputTokens = -1;
         // In-flight protocol state: Anthropic input excludes cache counters.
         public transient boolean cacheInputExcludesCache;
+        public transient RecentUsageScheduler.Lease recentUsageLease;
+        /** Bounded transport metadata, never prompt/header/credential material. */
+        public long outboundAt, queuedMs;
+        public String failureKind="", upstreamErrorCode="", upstreamRetryAfter="";
         public boolean isLegacy() { return requestId == null || requestId.isEmpty(); }
         public boolean isTerminal() { return isLegacy() || terminal; }
         public boolean isAttempt() { return isLegacy() || attempt > 0; }
@@ -406,6 +410,7 @@ public class UsageLedger {
 
     public static void record(Row r) {
         if (r == null) return;
+        if (r.recentUsageLease != null) r.recentUsageLease.complete(r);
         if (r.t <= 0) r.t = System.currentTimeMillis();
         if (r.hour < 0) {
             java.util.Calendar c = java.util.Calendar.getInstance();
@@ -482,6 +487,8 @@ public class UsageLedger {
                 o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.terminal);
                 if (r.credentialId != null && !r.credentialId.isEmpty()) o.put("credentialId", r.credentialId);
                 o.put("usageSource", r.effectiveUsageSource());
+                o.put("outboundAt",r.outboundAt); o.put("queuedMs",r.queuedMs);
+                o.put("failureKind",r.failureKind); o.put("upstreamErrorCode",r.upstreamErrorCode); o.put("upstreamRetryAfter",r.upstreamRetryAfter);
                 o.put("inputKnown", r.inputKnown); o.put("outputKnown", r.outputKnown);
                 if (r.cacheInputTokens >= 0) o.put("cacheInputTokens", r.cacheInputTokens);
                 o.put("cacheSource", r.cacheSource == null || r.cacheSource.isEmpty() ? "unknown" : r.cacheSource);
@@ -521,6 +528,8 @@ public class UsageLedger {
             Row r = new Row();
             r.requestId = o.optString("requestId", "");
             r.credentialId = o.optString("credentialId", "");
+            r.outboundAt=o.optLong("outboundAt",0); r.queuedMs=o.optLong("queuedMs",0);
+            r.failureKind=o.optString("failureKind",""); r.upstreamErrorCode=o.optString("upstreamErrorCode",""); r.upstreamRetryAfter=o.optString("upstreamRetryAfter","");
             r.attempt = o.optInt("attempt", 1); r.terminal = o.optBoolean("terminal", true);
             r.inputKnown = o.optBoolean("inputKnown", false); r.outputKnown = o.optBoolean("outputKnown", false);
             r.cacheInputTokens = o.optLong("cacheInputTokens", -1);
@@ -715,6 +724,7 @@ public class UsageLedger {
                 o.put("prov", r.prov);
                 o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.isTerminal());
                 o.put("credentialId", r.credentialId); o.put("usageSource", r.effectiveUsageSource());
+                o.put("outboundAt",r.outboundAt); o.put("queuedMs",r.queuedMs); o.put("failureKind",r.failureKind); o.put("upstreamErrorCode",r.upstreamErrorCode); o.put("upstreamRetryAfter",r.upstreamRetryAfter);
                 o.put("cacheSource", r.cacheSource); o.put("reasoningSource", r.reasoningSource);
                 o.put("cacheInputTokens", r.cacheInputTokens >= 0 ? r.cacheInputTokens : JSONObject.NULL);
                 o.put("model", r.model);

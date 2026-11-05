@@ -851,7 +851,27 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
     }
-  </style>
+
+    #tab-providers [hidden] { display:none !important; }
+    .provider-toolbar {display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+    .provider-toolbar input {min-width:0;flex:1 1 150px}
+    .provider-compact {display:flex;align-items:center;gap:8px;border:1px solid var(--card-border);border-radius:12px;margin:8px 0;padding:8px;background:var(--card-bg, transparent);min-width:0}
+    .provider-compact-main {border:0;background:transparent;color:var(--text);text-align:left;display:flex;gap:10px;align-items:center;flex:1;min-width:0;padding:6px;cursor:pointer}
+    .provider-compact-main span {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .provider-compact-main small {display:block;color:var(--text-muted);white-space:normal;overflow-wrap:anywhere}
+    .provider-list-heading h2 {font-size:1.05rem;margin:0 0 6px;color:var(--text)}
+    .provider-list-heading p {font-size:.76rem;line-height:1.6;color:var(--text-muted);margin:0 0 14px}
+    .provider-switch {flex:none;margin:0}
+    .provider-compact-main::after {content:'›';font-size:1.4rem;color:var(--text-muted);margin-left:auto;padding-left:4px;flex:none}
+    .provider-compact-main > span:first-child {flex:0 0 auto;overflow:visible}
+    .provider-compact-main > span:nth-child(2) {flex:1;font-size:.83rem;line-height:1.5}
+    .provider-compact-main small {font-size:.71rem;line-height:1.55;margin-top:3px}
+    #provider-list > details {margin-top:16px}
+    #provider-list > details > summary {font-size:.82rem;color:var(--text-muted);padding:8px 2px;cursor:pointer}
+    #provider-detail-info p {color:var(--text-muted);font-size:.78rem;line-height:1.6}
+    #provider-catalog .provider-row {min-width:0;overflow-wrap:anywhere}
+    .provider-compact :focus-visible,.provider-toolbar :focus-visible {outline:2px solid var(--primary);outline-offset:2px}
+</style>
   <script>
     /* 主题要在首帧前就定下来，否则会先闪一下白天再切夜间 */
     (function () {
@@ -1121,10 +1141,37 @@
         </div>
       </div>
 
+      <details class="card" id="card-outbound"><summary class="card-title">🚦 出站请求限额</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">按真实凭据跨模型共用限额，可叠加供应商共享限额。默认不限制发送频率或并发。当前覆盖普通商业 Chat / Anthropic / Responses 和小浣熊推理；登录、刷新、目录查询及其它特殊通道不在此范围。参数是本机策略，不代表厂商官方限额。</p>
+        <label for="outbound-provider">供应商 ID</label><input id="outbound-provider" type="text" maxlength="128" autocomplete="off" oninput="outboundEdit()" style="display:block;width:100%;box-sizing:border-box;padding:10px;margin:8px 0" placeholder="例如 raccoon">
+        <label for="outbound-domain">限额范围</label><select id="outbound-domain" onchange="outboundEdit()" style="display:block;width:100%;min-width:0;padding:10px;margin:8px 0"><option value="credential">每个凭据独立</option><option value="shared">整个供应商共享</option></select>
+        <button class="btn btn-outline" onclick="outboundSelect()">载入该范围</button>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px">
+          <label>最小发送间隔（毫秒）<input id="outbound-interval" type="number" min="0" max="300000" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>滚动 60 秒请求数<input id="outbound-rpm" type="number" min="0" max="10000" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>最大在途数<input id="outbound-flight" type="number" min="0" max="64" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>最大排队数<input id="outbound-queue" type="number" min="0" max="128" value="32" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>最大排队时间（毫秒）<input id="outbound-wait" type="number" min="0" max="300000" value="10000" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+        </div>
+        <p style="font-size:0.75rem;color:var(--text-muted)">间隔、RPM、在途数为 0 表示不限。排队参数为 0 时仍受网关总队列与请求截止时间约束。优先选择可立即发送的可用备选；取消、超时或服务停止会退出等待。</p>
+        <button id="outbound-save" class="btn" onclick="saveOutbound()">保存该范围</button> <button class="btn btn-outline" onclick="loadOutbound()">重新读取</button>
+        <div id="outbound-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+
+      <details class="card" id="card-network"><summary class="card-title">🌐 出站网络设置</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">设置网关访问供应商的网络方式。显式直连仍可能受 VPN 影响；系统浏览器和登录 WebView 网页由各自网络决定。字面回环 localhost、127.0.0.1、::1 直连。代理失败不会绕行，不支持 SOCKS 或代理认证。</p>
+        <label for="network-mode">网络模式</label><select id="network-mode" onchange="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px"><option value="default">默认网络</option><option value="direct">显式直连</option><option value="http_proxy">HTTP 代理</option></select>
+        <div id="network-proxy-fields" style="display:none"><label for="network-host">代理主机</label><input id="network-host" type="text" autocomplete="off" oninput="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px;box-sizing:border-box"><label for="network-port">代理端口</label><input id="network-port" type="number" min="1" max="65535" oninput="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px;box-sizing:border-box"></div>
+        <button id="network-save" class="btn" onclick="saveNetwork()">保存</button> <button class="btn btn-outline" onclick="loadNetwork()">读取当前设置</button><div id="network-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+
     </section>
 
     <section id="tab-providers" class="tab-pane">
-      <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <div id="provider-list-view"><div class="provider-list-heading"><h2>已接入供应商</h2><p>管理已导入的账号和 API Key。开启表示允许后续调用，不代表凭据已验证。</p></div><div class="provider-toolbar"><label for="provider-search">搜索供应商</label><input id="provider-search" type="search" placeholder="名称或供应商 ID" oninput="renderProviderList()"><button class="btn btn-outline" onclick="showProviderView('add')">添加供应商</button></div><div id="provider-status" role="status"></div><div id="provider-list"></div></div>
+      <div id="provider-subview" hidden><button class="btn btn-outline" onclick="showProviderView('list')">← 返回已接入</button><div id="provider-detail-info"></div></div>
+      <div id="provider-catalog" hidden>
+      <div id="provider-catalog-heading" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
         <div>
           <b style="font-size: 1.05rem; color: #fff;">⚡ 全平台免 Key 网页账号池</b>
           <span style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 2px;">
@@ -1526,6 +1573,7 @@
           <div id="commercial-keys-container"></div>
         </div>
       </details>
+      </div>
     </section>
 
     <section id="tab-routing" class="tab-pane">
@@ -1555,10 +1603,11 @@
         </p>
 
         <div style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.2);border-radius:10px;padding:10px 12px;font-size:0.72rem;color:var(--text-muted);line-height:1.7;margin-bottom:16px;">
-          <b style="color:#7dd3fc;">三种策略</b><br>
+          <b style="color:#7dd3fc;">四种策略</b><br>
           <b>order</b>：按你排的顺序，第一个一直用到调不动为止（主备思路，最省额度）<br>
           <b>rotate</b>：每个请求轮到下一个成员（多账号摊平，避免单个账号被限流）<br>
-          <b>manual</b>：只走你选定的那一个，其余仅作兜底（手动切线路）
+          <b>manual</b>：选中项优先，其余兜底（手动切线路）<br>
+          <b>近期用量优先</b>：优先选择近期可信用量与在途负载较低的目标，失败仍按原规则回退
         </div>
 
         <div id="groups-container"></div>
@@ -2390,7 +2439,7 @@
       }
     }
 
-    
+
     /**
      * Antigravity (Google Code Assist) 登录：
      * Google 不允许在 App 内 WebView 里做 OAuth（disallowed_useragent），
@@ -4330,23 +4379,162 @@
       if (!routingWrites) await loadRoutingState();
     }
 
+    let providerConfigRequest = 0, providerWriteRevision = 0, commercialKeysDirty = false;
+    const providerWrites = new Set(), commercialEditedIds = new Set(), dirtyKeysMap = new Map(), providerUnknown = new Set();
+    const providerDraftTokens = new Map(), providerDraftConflicts = new Set(), providerPendingKeys = new Map();
+    function providerToken(id) { const t = appConfig && appConfig.providerStateTokens && appConfig.providerStateTokens[id]; return typeof t === 'string' ? t : undefined; }
+    function withProviderToken(body, token) { if (token !== undefined) body.expectedStateToken = token; return body; }
+    function acknowledgeProviderToken(id, token) { if (typeof token === 'string') { if (!appConfig.providerStateTokens) appConfig.providerStateTokens = {}; appConfig.providerStateTokens[id] = token; } }
+    // JSON 对象的属性顺序不影响含义；数组顺序仍须严格一致。
+    function providerKeysEqual(left, right) {
+      function equal(a, b) {
+        if (a === b) return true;
+        if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+        if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => equal(v, b[i]));
+        const ak = Object.keys(a).sort(), bk = Object.keys(b).sort();
+        return ak.length === bk.length && ak.every((k, i) => k === bk[i] && equal(a[k], b[k]));
+      }
+      return Array.isArray(left) && Array.isArray(right) && equal(left, right);
+    }
+    function reconcileProviderReadback(incoming) {
+      for (const id of Array.from(providerUnknown)) {
+        const pending = providerPendingKeys.get(id), p = incoming.providers.find(x => x && x.id === id);
+        if (pending && p) {
+          const token = incoming.providerStateTokens && incoming.providerStateTokens[id];
+          if (providerKeysEqual(p.keys || [], JSON.parse(pending.snapshot))) {
+            if (JSON.stringify(dirtyKeysMap.get(id)) === pending.snapshot) { dirtyKeysMap.delete(id); commercialEditedIds.delete(id); providerDraftTokens.delete(id); }
+            else providerDraftTokens.set(id, typeof token === 'string' ? token : undefined);
+            showToast('Key 保存结果已确认');
+          } else { providerDraftConflicts.add(id); showToast('Key 状态与提交内容不一致，请核对并重新编辑后保存'); }
+          providerPendingKeys.delete(id);
+        }
+        if (!pending || p) providerUnknown.delete(id);
+      }
+      commercialKeysDirty = commercialEditedIds.size > 0;
+    }
+    // 兼容旧脚本的读取；实际写入状态按 providerWrites 分供应商跟踪。
+    let providerKeysSaving = false;
+    let providerRefreshNeeded = false, providerExpandDisabled = false, commercialRenderDeferred = false, providerConfigError = false;
+    let providerView = 'list', providerDetail = '', providerListSig = '', providerListScroll = 0;
+    function providerCounts(p) {
+      const keys = new Set((Array.isArray(p.keys) ? p.keys : []).map(k => typeof k === 'string' ? k.trim() : (k && typeof k === 'object' && typeof k.key === 'string' ? k.key.trim() : '')).filter(Boolean));
+      const accounts = (Array.isArray(p.accounts) ? p.accounts : []).filter(a => a && typeof a === 'object' && !Array.isArray(a) && ['token','access','accessToken','refresh','refreshToken','jwt','apiKey'].some(k => typeof a[k] === 'string' && a[k].trim()));
+      return {keys:keys.size, accounts:accounts.length, models:Array.isArray(p.models) ? p.models.length : 0};
+    }
+    function providerConfigured(p) { const c = providerCounts(p); return c.keys > 0 || c.accounts > 0; }
+    function providerEnabled(p) { return p.enabled !== false; }
+    function showProviderView(view, id) {
+      if (providerView === 'list') providerListScroll = window.scrollY || 0;
+      providerView = view; providerDetail = id || ''; applyProviderView();
+      if (view === 'list') { flushCommercialRender(); renderProviderList(); window.scrollTo(0, providerListScroll); } else window.scrollTo(0, 0);
+    }
+    function applyProviderView() {
+      const list = document.getElementById('provider-list-view'), sub = document.getElementById('provider-subview'), catalog = document.getElementById('provider-catalog');
+      if (!list || !sub || !catalog) return;
+      list.hidden = providerView !== 'list'; sub.hidden = providerView === 'list'; catalog.hidden = providerView === 'list';
+      const headingEl = document.getElementById('provider-catalog-heading'); if (headingEl) headingEl.hidden = providerView !== 'add';
+      const cards = document.getElementById('all-providers-cards-container');
+      const commercial = document.getElementById('commercial-keys-container');
+      const details = commercial && commercial.closest('details');
+      const providers = (appConfig && Array.isArray(appConfig.providers) ? appConfig.providers : []).filter(p => p && typeof p === 'object');
+      if (cards) Array.from(cards.children).forEach(card => {
+        const id = card.dataset.providerId;
+        const p = providers.find(x => x.id === id);
+        card.hidden = providerView === 'detail' ? id !== providerDetail : !!(p && providerConfigured(p));
+      });
+      if (commercial) Array.from(commercial.children).forEach(row => { const p = providers.find(x => x.id === row.dataset.providerId); row.hidden = providerView === 'detail' ? row.dataset.providerId !== providerDetail : !!(p && providerConfigured(p)); });
+      if (details) { details.hidden = !Array.from(commercial.children).some(x => !x.hidden); if (providerView === 'detail' && !details.hidden) details.open = true; }
+      const info = document.getElementById('provider-detail-info'); if (!info) return; info.replaceChildren();
+      if (providerView === 'add') { info.textContent = '添加供应商'; const available = (cards && Array.from(cards.children).some(x => !x.hidden)) || (commercial && Array.from(commercial.children).some(x => !x.hidden)); if (!available) { const note = document.createElement('p'); note.textContent = '暂无可添加的供应商'; info.appendChild(note); } return; }
+      const p = providers.find(x => x.id === providerDetail); if (!p) return;
+      const heading = document.createElement('h3'); heading.textContent = p.name || p.id; info.appendChild(heading);
+      const c = providerCounts(p), desc = document.createElement('p'); desc.textContent = '账号 ' + c.accounts + ' · Key ' + c.keys + ' · 模型 ' + c.models + '（配置） · 已配置 · 未验证'; info.appendChild(desc);
+      if (c.accounts) { const b = document.createElement('button'); b.className = 'btn btn-outline'; b.textContent = '管理账号'; b.onclick = () => manageProviderAccounts(p.id); info.appendChild(b); }
+      const hasCard = cards && Array.from(cards.children).some(x => !x.hidden), hasCommercial = details && !details.hidden;
+      if (!hasCard && !hasCommercial && Array.isArray(p.models)) { const models = document.createElement('p'); models.textContent = '模型：' + p.models.map(m => typeof m === 'string' ? m : (m && (m.name || m.id)) || '').filter(Boolean).join('、'); info.appendChild(models); }
+      if (!hasCard && !hasCommercial) { const note = document.createElement('p'); note.textContent = '当前未提供该类型配置入口'; info.appendChild(note); }
+    }
+    function renderProviderList() {
+      const box = document.getElementById('provider-list'), search = document.getElementById('provider-search'); if (!box || !search) return;
+      renderProviderStatus();
+      const query = search.value.trim().toLowerCase();
+      const providers = visibleProviders(appConfig && appConfig.providers).filter(p => p && typeof p === 'object' && typeof p.id === 'string' && providerConfigured(p) && (String(p.name || '').toLowerCase().includes(query) || String(p.id || '').toLowerCase().includes(query)));
+      const sig = JSON.stringify([query, providers.map(p => [p.id,p.name,providerEnabled(p),providerCounts(p),providerWrites.has(p.id),providerUnknown.has(p.id)])]); if (sig === providerListSig) return; providerListSig = sig;
+      const active = document.activeElement; const focusId = active && active.dataset && active.dataset.providerFocus; const scroll = window.scrollY || 0;
+      const disabledOpen = providerExpandDisabled || !!box.querySelector('details[open]'); providerExpandDisabled = false; box.replaceChildren();
+      function row(p, parent) {
+        const wrap = document.createElement('div'); wrap.className = 'provider-compact';
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'provider-compact-main'; b.onclick = () => showProviderView('detail', p.id);
+        const icon = document.createElement('span'); icon.innerHTML = providerLogo(p.id, p.name, true); b.appendChild(icon);
+        b.dataset.providerFocus = 'row:' + p.id;
+        const text = document.createElement('span'), title = document.createElement('strong'), small = document.createElement('small'), c = providerCounts(p);
+        title.textContent = p.name || p.id;
+        const counts = []; if (c.accounts) counts.push(c.accounts + ' 个账号'); if (c.keys) counts.push(c.keys + ' 把 Key'); counts.push(c.models + ' 个模型');
+        small.textContent = counts.join(' · ') + (providerUnknown.has(p.id) ? ' · 状态待确认' : ' · 未验证');
+        text.appendChild(title); text.appendChild(small); b.appendChild(text); wrap.appendChild(b);
+        const sw = document.createElement('input'); sw.type = 'checkbox'; sw.className = 'provider-switch'; sw.setAttribute('role','switch'); sw.setAttribute('aria-label', (p.name || p.id) + '启用'); sw.dataset.providerFocus = 'switch:' + p.id; sw.checked = providerEnabled(p); sw.disabled = providerWrites.has(p.id) || providerUnknown.has(p.id); sw.onchange = () => setProviderEnabled(p.id, sw.checked); wrap.appendChild(sw); parent.appendChild(wrap);
+      }
+      providers.filter(providerEnabled).forEach(p => row(p,box)); const disabled = providers.filter(p => !providerEnabled(p));
+      if (disabled.length) { const d = document.createElement('details'); d.open = disabledOpen; const summary = document.createElement('summary'); summary.textContent = '已停用（' + disabled.length + '）'; d.appendChild(summary); disabled.forEach(p => row(p,d)); box.appendChild(d); }
+      if (focusId) { const target = Array.from(box.querySelectorAll('[data-provider-focus]')).find(x => x.dataset.providerFocus === focusId); if (target && !target.disabled) target.focus({preventScroll:true}); window.scrollTo(0, scroll); }
+      if (!providers.length) { const note = document.createElement('p'); note.textContent = query ? '没有匹配的供应商' : '暂无已接入供应商'; box.appendChild(note); }
+    }
+    function renderProviderStatus() {
+      const status = document.getElementById('provider-status'); if (!status) return;
+      status.replaceChildren();
+      if (providerUnknown.size || providerConfigError) {
+        const label = document.createElement('span'); label.textContent = providerUnknown.size ? '供应商状态待确认，请重新读取。 ' : '配置读取失败，显示上次结果。 '; status.appendChild(label);
+        const button = document.createElement('button'); button.className = 'btn btn-outline'; button.textContent = '重新读取'; button.onclick = () => loadConfig(); status.appendChild(button);
+      }
+    }
+    function flushCommercialRender() {
+      if (!commercialRenderDeferred) return;
+      const active = document.activeElement;
+      if (providerView !== 'list' && active && active.closest && active.closest('#commercial-keys-container')) return;
+      commercialRenderDeferred = false; renderCommercialKeys(); applyProviderView();
+    }
+    async function setProviderEnabled(id, enabled) {
+      if (providerWrites.has(id) || providerUnknown.has(id) || !(appConfig.providers || []).some(x => x.id === id)) return;
+      providerWrites.add(id); providerWriteRevision++; providerListSig = ''; renderProviderList();
+      let unknown = false; const token = providerToken(id);
+      try {
+        let res; try { res = await fetch(API_BASE + '/api/providers/enabled', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(withProviderToken({providerId:id,enabled:!!enabled}, token))}); } catch (_) { unknown = true; throw new Error('网络请求未确认'); }
+        if (res.status === 409) { showToast('供应商状态冲突，请核对后重试'); throw new Error('状态冲突'); }
+        let data; try { data = await res.json(); } catch (_) { unknown = true; throw new Error('响应无法解析'); }
+        if (!res.ok || (data && data.ok === false)) throw new Error('HTTP ' + res.status);
+        if (!data || data.ok !== true || data.providerId !== id || data.enabled !== !!enabled || (token !== undefined && typeof data.stateToken !== 'string')) { unknown = true; throw new Error('响应不完整'); }
+        acknowledgeProviderToken(id, data.stateToken);
+        const current = (appConfig.providers || []).find(x => x.id === id); if (current) current.enabled = !!enabled;
+        if (!enabled) providerExpandDisabled = true;
+        showToast(enabled ? '已启用' : '已停用');
+      } catch (e) { if (unknown) { providerUnknown.add(id); showToast('结果未确认，正在读取状态'); } else if (e.message !== '状态冲突') showToast('设置失败：' + e.message); }
+      finally { providerWrites.delete(id); providerWriteRevision++; providerRefreshNeeded = true; providerListSig = ''; renderProviderList(); if (!providerWrites.size && providerRefreshNeeded) { providerRefreshNeeded = false; await loadConfig(); } }
+    }
+
     async function loadConfig() {
+      const configRequestId = ++providerConfigRequest, requestWriteRevision = providerWriteRevision;
       try {
         const res = await fetch(API_BASE + '/api/config');
-        appConfig = await res.json();
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const incoming = await res.json();
+        if (!incoming || !Array.isArray(incoming.providers)) throw new Error('配置格式无效');
+        if (configRequestId !== providerConfigRequest || providerWriteRevision !== requestWriteRevision || providerWrites.size) return;
+        providerConfigError = false; reconcileProviderReadback(incoming); renderProviderStatus();
+        appConfig = incoming;
         const cfgSig = JSON.stringify(appConfig);
         if (cfgSig === lastConfigSig && !renderDirty) {
+          renderProviderList(); flushCommercialRender();
           // 配置真的没动：跳过全部重绘（下面的赠送额度/自动同步仍然会跑）
           try { autoSyncAfterLogin(); } catch (e) {}
           return;
         }
         lastConfigSig = cfgSig;
         renderDirty = false;
-        try { renderCommercialKeys(); } catch (e) {}
+        try { if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#commercial-keys-container')) commercialRenderDeferred = true; else { commercialRenderDeferred = false; renderCommercialKeys(); } } catch (e) {}
         try { renderGroups(); bindGroupEvents(); } catch (e) {}
         try { renderWbAccounts(); } catch (e) {}
         try { renderWbModelTags(); } catch (e) {}
-        try { renderAllProvidersCards(); } catch (e) {}
+        try { renderAllProvidersCards(); renderProviderList(); applyProviderView(); } catch (e) {}
         try { refreshProviderBadges(); } catch (e) {}
         try { applyPlaceholderGuard(); } catch (e) {}
         try { renderCredentials(); } catch (e) {}
@@ -4361,6 +4549,7 @@
         }
         try { autoSyncAfterLogin(); } catch (e) {}
       } catch (e) {
+        if (configRequestId === providerConfigRequest && requestWriteRevision === providerWriteRevision) { providerConfigError = true; renderProviderStatus(); providerListSig = ''; renderProviderList(); }
         console.error('loadConfig error', e);
       }
     }
@@ -4615,10 +4804,14 @@
     }
 
 
-    function updateKeys(idx, val) {
-      if (appConfig && appConfig.providers && appConfig.providers[idx]) {
-        appConfig.providers[idx].keys = val.split(',').map(s => s.trim()).filter(Boolean);
-      }
+    function updateProviderKeys(id, val) {
+      const provider = appConfig && Array.isArray(appConfig.providers) && appConfig.providers.find(p => p && p.id === id);
+      if (!provider) return;
+      const rebase = providerDraftConflicts.has(id) && !providerUnknown.has(id);
+      if (!commercialEditedIds.has(id) || rebase) { providerDraftTokens.set(id, providerToken(id)); providerDraftConflicts.delete(id); }
+      const old = (!rebase && dirtyKeysMap.get(id)) || (Array.isArray(provider.keys) ? provider.keys : []);
+      const keys = old.filter(k => k && typeof k === 'object').concat(val.split(',').map(s => s.trim()).filter(Boolean));
+      commercialKeysDirty = true; commercialEditedIds.add(id); dirtyKeysMap.set(id, keys);
     }
 
     // 隐藏已取消的供应商仅用于视图，不能改写 appConfig 或历史路由。
@@ -4646,11 +4839,11 @@
               '<div>',
               '  <div style="display:flex; align-items:center; gap:6px;">',
               '    <span style="color:#10b981; font-size:0.75rem;">●</span>',
-              '    <b style="font-size:0.85rem;">' + esc(acc.name || '已入池账号') + '</b>',
+              '    <b style="font-size:0.85rem;">' + '账号 ••••' + '</b>',
               '    <span class="badge badge-info">' + esc(p.id.toUpperCase()) + '</span>',
-              '    <span class="badge badge-success">ACTIVE</span>',
+              '    <span class="badge badge-info">' + (acc.off || acc.enabled === false ? '已停用' : '已配置') + '</span>',
               '  </div>',
-              '  <div style="font-size:0.75rem; color:var(--text-muted); margin-top:3px;">凭据前缀: <code>' + esc((acc.token || '').slice(0, 16)) + '...</code> | 入池时间: ' + dateStr + '</div>',
+              '  <div style="font-size:0.75rem; color:var(--text-muted); margin-top:3px;">入池时间: ' + dateStr + '</div>',
               '</div>',
               '<div style="display:flex; gap:6px;">' +
               '  <button class="btn btn-outline" style="color:#10b981; border-color:rgba(16,185,129,0.3); padding:4px 8px; font-size:0.75rem;" onclick="executeModelPingTest(\'workbuddy/hy3\')">⚡ 测试</button>' +
@@ -4789,7 +4982,7 @@
     // ===== 路由组编辑 =====
     //
     // 参考 yetone/magpie 的 group 结构，按手机版裁到最小：
-    //   members（有序的 provider/model）+ 策略（order / rotate / manual）+ pick（manual 用）
+    //   members（有序的 provider/model）+ 策略（order / rotate / manual / usage）+ pick（manual 用）
     // 砍掉 rules / classifier / affinity / firstToken / patience / weights / unlisted 等：
     // 它们要么需要后台分类模型调用，要么需要额度或价格数据，手机上不划算。
     //
@@ -4813,7 +5006,7 @@
       groupDraft = src.map(g => ({
         id: g.id,
         name: g.name || g.id,
-        strategy: (g.strategy === 'rotate' || g.strategy === 'manual') ? g.strategy : 'order',
+        strategy: (g.strategy === 'rotate' || g.strategy === 'manual' || g.strategy === 'usage') ? g.strategy : 'order',
         targets: Array.isArray(g.targets) ? g.targets.slice() : [],
         pick: g.pick || ''
       }));
@@ -4874,7 +5067,8 @@
         const stratDesc = {
           order: '按顺序，第一个一直用到调不动',
           rotate: '每个请求轮换下一个',
-          manual: '只走选定的那个，其余兜底'
+          manual: '选中项优先，其余兜底',
+          usage: '近期用量优先'
         };
 
         let rows = '';
@@ -4930,12 +5124,13 @@
           + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
           + '<span style="font-size:0.72rem;color:var(--text-muted);flex-shrink:0;">策略</span>'
           + '<select data-action="strategy" data-g="' + gi + '" '
-          + 'style="flex:1;padding:7px 10px;background:#0d0f17;color:#fff;border:1px solid var(--card-border);'
+          + 'style="flex:1;min-width:0;max-width:100%;width:0;box-sizing:border-box;padding:7px 10px;background:#0d0f17;color:#fff;border:1px solid var(--card-border);'
           + 'border-radius:8px;font-size:0.75rem;">'
-          + ['order', 'rotate', 'manual'].map(s =>
+          + ['order', 'rotate', 'manual', 'usage'].map(s =>
               '<option value="' + s + '"' + (g.strategy === s ? ' selected' : '') + '>'
-              + s + '（' + stratDesc[s] + '）</option>').join('')
+              + (s === 'usage' ? stratDesc[s] : s + '（' + stratDesc[s] + '）') + '</option>').join('')
           + '</select></div>'
+          + (g.strategy === 'usage' ? '<details style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"><summary>近期用量如何计算</summary><div style="line-height:1.6;margin-top:5px;">按供应商和模型的可信上报用量计分；无可信正数时按 1 计，估算值不计入。缓存按协议归一，推理 token 不重复叠加。一小时半衰，每个在途请求计入 1024；失败不增加。重启清空，同一目标跨组共享；冷却和 Key 选择仍按原策略处理。</div></details>' : '')
           + rows
           + '<select data-action="add" data-g="' + gi + '" '
           + 'style="width:100%;margin-top:8px;padding:8px 10px;background:#0d0f17;color:#38bdf8;'
@@ -5069,17 +5264,35 @@
     }
 
     async function saveProviders() {
-      try {
-        const res = await fetch(API_BASE + '/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({}, appConfig, { server: undefined }))
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        showToast('配置已保存！');
-      } catch (e) {
-        alert('保存失败: ' + e.message);
-      }
+      let failed = false;
+      await Promise.all(Array.from(commercialEditedIds).map(async id => {
+        if (providerWrites.has(id) || providerUnknown.has(id) || providerDraftConflicts.has(id)) {
+          failed = true; showToast(providerUnknown.has(id) ? '供应商结果待确认，草稿已保留' : providerDraftConflicts.has(id) ? '供应商状态冲突，请核对并重新编辑草稿' : '供应商操作进行中，草稿已保留'); return;
+        }
+        const keys = dirtyKeysMap.get(id); if (!keys) return;
+        const snapshot = JSON.stringify(keys), token = providerDraftTokens.get(id);
+        providerWrites.add(id); providerWriteRevision++; providerListSig = ''; renderProviderList();
+        let unknown = false;
+        try {
+          let res; try { res = await fetch(API_BASE + '/api/providers/keys', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(withProviderToken({providerId:id,keys:keys}, token))}); }
+          catch (_) { unknown = true; throw new Error('网络结果未确认'); }
+          if (res.status === 409) { providerDraftConflicts.add(id); throw new Error('供应商状态冲突，请核对并重新编辑草稿'); }
+          let data; try { data = await res.json(); } catch (_) { unknown = true; throw new Error('响应无法解析'); }
+          if (!res.ok || (data && data.ok === false)) throw new Error('保存失败，请核对后重试');
+          if (!data || data.ok !== true || data.providerId !== id || typeof data.keyCount !== 'number' || (token !== undefined && typeof data.stateToken !== 'string')) { unknown = true; throw new Error('响应不完整'); }
+          acknowledgeProviderToken(id, data.stateToken);
+          if (JSON.stringify(dirtyKeysMap.get(id)) === snapshot) { dirtyKeysMap.delete(id); commercialEditedIds.delete(id); providerDraftTokens.delete(id); }
+          else providerDraftTokens.set(id, typeof data.stateToken === 'string' ? data.stateToken : undefined);
+        } catch (e) {
+          failed = true;
+          if (unknown) { providerUnknown.add(id); providerPendingKeys.set(id, {snapshot}); showToast('Key 保存结果未确认，正在读取状态'); }
+          else if (e.message.includes('冲突')) showToast(e.message);
+          else alert(e.message);
+        } finally { providerWrites.delete(id); providerWriteRevision++; providerRefreshNeeded = true; providerListSig = ''; renderProviderList(); }
+      }));
+      commercialKeysDirty = commercialEditedIds.size > 0;
+      if (!providerWrites.size && providerRefreshNeeded) { providerRefreshNeeded = false; await loadConfig(); }
+      if (!failed) showToast(commercialKeysDirty ? '已保存提交时的内容，后续修改尚未保存' : '配置已保存！');
     }
 
     function testMaskSandbox() {
@@ -5559,11 +5772,131 @@
       }
     }
 
+    // 网络设置与配置轮询隔离；草稿绑定开始编辑时的版本。
+    let networkRevision = 0, networkReadSeq = 0, networkPending = false, networkDirty = false;
+    let networkUnknown = null, networkToken = null, networkBaseline = null, networkConflict = '';
+    let networkBlocked = false;
+    function networkStatus(t) { document.getElementById('network-status').textContent = (networkBlocked ? '出站请求已阻止，请保存有效设置恢复。' : '') + t; }
+    function networkVisibility() { document.getElementById('network-proxy-fields').style.display = document.getElementById('network-mode').value === 'http_proxy' ? 'block' : 'none'; }
+    function networkEdited() {
+      if (!networkDirty || networkConflict === 'edit') networkBaseline = networkToken;
+      if (networkConflict === 'edit') networkConflict = '';
+      networkRevision++; networkDirty = true; networkVisibility();
+    }
+    function networkHost(host) { const h = host.trim(); return h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h; }
+    function networkValid(v) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+      const keys = Object.keys(v).sort().join(',');
+      if (v.mode === 'default' || v.mode === 'direct') return keys === 'mode';
+      return v.mode === 'http_proxy' && keys === 'host,mode,port' && typeof v.host === 'string' && !!v.host.trim() && Number.isInteger(v.port) && v.port >= 1 && v.port <= 65535;
+    }
+    function networkApply(v) { document.getElementById('network-mode').value = v.mode; document.getElementById('network-host').value = v.host ? networkHost(v.host) : ''; document.getElementById('network-port').value = v.port || ''; networkVisibility(); networkDirty = false; networkBaseline = networkToken; }
+    function networkSame(a,b) { return a.mode === b.mode && (a.mode !== 'http_proxy' || (networkHost(a.host) === networkHost(b.host) && a.port === b.port)); }
+    async function loadNetwork() {
+      const seq = ++networkReadSeq, rev = networkRevision;
+      try {
+        const res = await fetch(API_BASE + '/api/network'); if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json(); if (!data || data.ok !== true || !networkValid(data.network) || typeof data.stateToken !== 'string' || !data.stateToken || (data.blocked !== undefined && typeof data.blocked !== 'boolean')) throw new Error('响应格式无效');
+        if (seq !== networkReadSeq || networkPending) return;
+        const unknown = networkUnknown; networkUnknown = null; networkToken = data.stateToken; networkBlocked = data.blocked === true;
+        if (networkConflict === 'read') networkConflict = 'edit';
+        if (unknown && !networkBlocked && networkSame(data.network, unknown.value) && networkRevision === unknown.rev) {
+          networkApply(data.network); networkStatus('已读取：当前设置与提交一致');
+        } else if (unknown) {
+          networkBaseline = data.stateToken;
+          networkStatus(!networkBlocked && networkSame(data.network, unknown.value) ? '当前读取与提交一致；后续编辑的草稿保留，请核对' : '当前读取与提交不同，草稿保留，请核对');
+        } else {
+          if (!networkDirty && rev === networkRevision) networkApply(data.network);
+          networkStatus(networkConflict === 'edit' ? '已读取当前设置，请核对草稿并继续编辑后保存' : networkDirty ? '已读取当前设置；草稿已保留' : networkBlocked ? '表单为修复占位，请保存有效设置' : '已读取当前设置');
+        }
+      } catch (e) { if (seq === networkReadSeq && !networkPending) networkStatus('读取失败：' + e.message + (networkUnknown ? '；保存结果仍未确认，请重新读取' : '；草稿已保留')); }
+    }
+    async function saveNetwork() {
+      if (networkPending) return;
+      if (networkUnknown) { networkStatus('上次保存结果未确认，请先读取当前设置'); return; }
+      if (networkConflict) { networkStatus(networkConflict === 'read' ? '设置冲突，请先重新读取并核对' : '请核对草稿并继续编辑后保存'); return; }
+      if (networkToken === null) { networkStatus('请先成功读取当前设置，再保存'); return; }
+      const mode = document.getElementById('network-mode').value, value = {mode:mode};
+      if (mode === 'http_proxy') { value.host = networkHost(document.getElementById('network-host').value); const port = document.getElementById('network-port').value.trim(); if (!/^\d+$/.test(port)) { networkStatus('请输入 1–65535 的代理端口'); return; } value.port = Number(port); }
+      if (!networkValid(value)) { networkStatus('请检查网络模式、代理主机和端口'); return; }
+      const rev = networkRevision, expected = networkDirty && networkBaseline !== null ? networkBaseline : networkToken;
+      // 初次读取完成前的编辑以首次读取到的版本为基线。
+      if (networkDirty && networkBaseline === null) networkBaseline = networkToken;
+      networkPending = true; ++networkReadSeq; document.getElementById('network-save').disabled = true; networkStatus('正在保存…'); let uncertain = false;
+      try {
+        let res; try { res = await fetch(API_BASE + '/api/network', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({}, value, {expectedStateToken:expected}))}); } catch (_) { uncertain = true; throw new Error('网络请求未确认'); }
+        if (res.status === 409) { networkConflict = 'read'; throw new Error('设置冲突，请重新读取并核对草稿'); }
+        if (res.status === 400 || res.status === 500) { let d; try { d = await res.json(); } catch (_) {} throw new Error((res.status === 400 ? '校验失败' : '持久化失败') + (d && d.error ? '：' + String(d.error) : '')); }
+        let d; try { d = await res.json(); } catch (_) { uncertain = true; throw new Error('响应无法解析'); }
+        if (!res.ok || !d || d.ok !== true || !networkValid(d.network) || typeof d.stateToken !== 'string' || !d.stateToken || !networkSame(d.network,value) || d.blocked === true) { uncertain = true; throw new Error('响应未确认'); }
+        networkToken = d.stateToken; networkBaseline = d.stateToken; networkBlocked = false;
+        if (networkRevision === rev) networkApply(d.network); networkStatus(networkRevision === rev ? '保存成功' : '保存成功；后续编辑的草稿已保留');
+      } catch (e) { if (uncertain) { networkUnknown = {value:value,rev:rev}; networkStatus('保存结果未确认，正在读取当前设置'); } else networkStatus('保存失败：' + e.message + '；草稿已保留'); }
+      finally { networkPending = false; document.getElementById('network-save').disabled = false; }
+      if (uncertain) await loadNetwork();
+    }
+
+    let outboundToken=null, outboundSettings={}, outboundPending=false, outboundDirty=false, outboundRev=0, outboundRead=0, outboundUnknown=false;
+    let outboundSelected=null;
+    function outboundStatus(text) { const el=document.getElementById('outbound-status'); if(el) el.textContent=text; }
+    function outboundEdit() { outboundDirty=true; ++outboundRev; }
+    function outboundSelection() { return {provider:document.getElementById('outbound-provider').value.trim(),domain:document.getElementById('outbound-domain').value}; }
+    function outboundSelect() {
+      if(outboundPending || outboundUnknown) { outboundStatus('保存结果未确认或正在保存，请先读取'); return; }
+      const selected=outboundSelection(); if(!selected.provider || outboundToken===null) { outboundStatus('请先读取设置并填写供应商 ID'); return; }
+      const p=(outboundSettings[selected.provider]||{})[selected.domain]||{};
+      const defaults={minIntervalMillis:0,rpm:0,maxInFlight:0,maxQueue:32,maxWaitMillis:10000};
+      for(const [id,key] of [['interval','minIntervalMillis'],['rpm','rpm'],['flight','maxInFlight'],['queue','maxQueue'],['wait','maxWaitMillis']]) document.getElementById('outbound-'+id).value=p[key]===undefined?defaults[key]:p[key];
+      outboundSelected={...selected,token:outboundToken}; outboundDirty=false; ++outboundRev; outboundStatus('已载入该范围；编辑后保存');
+    }
+    async function loadOutbound() {
+      if(outboundPending) return;
+      const seq=++outboundRead,rev=outboundRev;
+      try {
+        const r=await fetch(API_BASE+'/api/outbound'); if(!r.ok) throw new Error('HTTP '+r.status); const d=await r.json();
+        if(!d || d.ok!==true || !d.settings || Array.isArray(d.settings) || typeof d.settings!=='object' || typeof d.stateToken!=='string') throw new Error('响应无效');
+        if(seq!==outboundRead || outboundPending) return;
+        outboundSettings=d.settings; outboundToken=d.stateToken; outboundUnknown=false;
+        if(!outboundDirty && rev===outboundRev && outboundSelection().provider) outboundSelect();
+        else outboundStatus('已读取当前设置；现有草稿保留。核对后载入该范围再编辑');
+      } catch(e) { if(seq===outboundRead) outboundStatus('读取失败：'+e.message+'；草稿保留'); }
+    }
+    async function saveOutbound() {
+      if(outboundPending) return;
+      if(outboundUnknown) { outboundStatus('上次保存结果未确认，请先重新读取'); return; }
+      const selected=outboundSelection();
+      if(!outboundSelected || selected.provider!==outboundSelected.provider || selected.domain!==outboundSelected.domain || outboundToken!==outboundSelected.token) { outboundStatus('请先载入该范围，再编辑保存'); return; }
+      const policy={};
+      for(const [id,key,max] of [['interval','minIntervalMillis',300000],['rpm','rpm',10000],['flight','maxInFlight',64],['queue','maxQueue',128],['wait','maxWaitMillis',300000]]) {
+        const v=document.getElementById('outbound-'+id).value;
+        if(!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v)>max) { outboundStatus('请输入有效范围内的非负整数'); return; }
+        policy[key]=Number(v);
+      }
+      const settings=JSON.parse(JSON.stringify(outboundSettings));
+      if(!Object.prototype.hasOwnProperty.call(settings,selected.provider)) Object.defineProperty(settings,selected.provider,{value:{},enumerable:true,writable:true,configurable:true});
+      settings[selected.provider][selected.domain]=policy;
+      const rev=outboundRev; outboundPending=true; ++outboundRead; document.getElementById('outbound-save').disabled=true; outboundStatus('正在保存…');
+      try {
+        let r; try { r=await fetch(API_BASE+'/api/outbound',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings,expectedStateToken:outboundSelected.token})}); } catch(e) { outboundUnknown=true; throw new Error('网络结果未知，请读取核对'); }
+        if(r.status===409) { outboundSelected=null; throw new Error('设置冲突，请读取并核对草稿'); }
+        if(r.status===400 || r.status===500) throw new Error('保存被拒绝（HTTP '+r.status+'）');
+        let d; try { d=await r.json(); } catch(e) { outboundUnknown=true; throw new Error('响应未确认，请读取核对'); }
+        if(!r.ok || !d || d.ok!==true || typeof d.stateToken!=='string' || JSON.stringify(d.settings)!==JSON.stringify(settings)) { outboundUnknown=true; throw new Error('保存结果未确认，请读取核对'); }
+        outboundSettings=d.settings; outboundToken=d.stateToken;
+        if(rev===outboundRev) { outboundSelected={...selected,token:d.stateToken}; outboundDirty=false; }
+        else outboundSelected=null;
+        outboundStatus(rev===outboundRev?'保存成功':'保存成功；后续草稿保留，请核对后重新载入');
+      } catch(e) { outboundStatus(e.message+'；草稿保留'); }
+      finally { outboundPending=false; document.getElementById('outbound-save').disabled=false; }
+    }
+
     // 页面启动初始化
     window.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { queryGatewayState(); }, 200);
       loadStats();
       loadConfig();
+      loadNetwork();
+      loadOutbound();
       try { loadRoutingState(); } catch (e) {}
       try { loadEtaCard(); } catch (e) {}
       try { loadAuthKey(); } catch (e) {}
@@ -5587,7 +5920,7 @@
         if (insightVisible()) refreshInsightData();
       }, 3000);
     });
-  
+
     let inAppPollTimer = null;
 
     async function startInAppPhoneLogin(region) {
@@ -6176,12 +6509,13 @@
       // 仅取字母数字或汉字，拒绝 emoji 和注入字符。
       const initial = (String(name || key).match(/[A-Za-z0-9\u3400-\u9fff]/) || ['?'])[0].toUpperCase();
       const fallback = '<span class="provider-logo-fallback">' + esc(initial) + '</span>';
-      return '<span class="provider-logo' + (small ? ' provider-logo-small' : '') + '" aria-hidden="true">'
+      return '<span data-provider-logo-id="' + esc(key) + '" class="provider-logo' + (small ? ' provider-logo-small' : '') + '" aria-hidden="true">'
         + (file ? '<img src="provider-icons/' + file + '" alt="" onerror="this.nextElementSibling.hidden=false;this.remove()"><span class="provider-logo-fallback" hidden>' + esc(initial) + '</span>' : fallback)
         + '</span>';
     }
     document.querySelectorAll('[data-provider-logo]').forEach(el => {
       const id = el.getAttribute('data-provider-logo');
+      const card = el.closest('.card'); if (card) card.dataset.providerId = id;
       el.outerHTML = providerLogo(id, id, false);
     });
 
@@ -6198,7 +6532,7 @@
       { id: 'tabbit', name: 'Tabbit 免费模型池', icon: '🐰', badge: '免费高频通道', testModel: 'tabbit/deepseek-v4.1-flash-free', desc: '轻量免Key模型池，支持快速登录。' }
     ];
 
-    
+
     function renderAllProvidersCards() {
       // 静态卡片已内置！此函数只负责根据 appConfig 动态刷新各卡片中的已入池账号列表
       if (!appConfig || !Array.isArray(appConfig.providers)) return;
@@ -6220,8 +6554,8 @@
             const dateStr = acc.addedAt ? new Date(acc.addedAt).toLocaleDateString() : '刚刚';
             div.innerHTML = [
               '<div>',
-              '  <span style="color:#10b981; font-size:0.75rem;">●</span> <b style="font-size:0.82rem; color:#fff;">' + esc(acc.name || '已入池账号') + '</b>',
-              '  <span style="font-size:0.7rem; color:var(--text-muted); margin-left:6px;">(' + esc((acc.token || '').slice(0, 10)) + '...)</span>',
+              '  <span style="color:#10b981; font-size:0.75rem;">●</span> <b style="font-size:0.82rem; color:#fff;">' + '账号 ••••' + '</b>',
+
               '</div>',
               '<div style="display:flex; gap:6px;">',
               '  <button class="btn btn-outline" style="color:#ef4444; border-color:rgba(239,68,68,0.3); padding:3px 8px; font-size:0.7rem;" onclick="removeProviderAccount(\'' + jsAttr(pid) + '\', \'' + jsAttr(acc.id) + '\')">移除</button>',
@@ -6239,10 +6573,10 @@
       c.innerHTML = '';
       if (!appConfig || !Array.isArray(appConfig.providers)) return;
 
-      const commercial = ['deepseek', 'siliconflow', 'openai', 'anthropic', 'openrouter', 'tencent'];
+      const subscriptions = ['workbuddy','workbuddy-ai','raccoon','loomy','zcode','cline','codex','github-copilot','minimax-code','antigravity','qoder_cn','catpaw','deepseek-web','deepseek_web','trae-cn'];
       const rows = appConfig.providers
         .map((p, idx) => [p, idx])
-        .filter(pair => commercial.includes(pair[0].id));
+        .filter(([p]) => p && !subscriptions.includes(String(p.id || '').toLowerCase()) && ['openai','anthropic','responses'].includes(String(p.protocol || 'openai').toLowerCase()) && !(Array.isArray(p.accounts) && p.accounts.length) && !/subscription|gift/i.test(String(p.type || '')) && String(p.status || '').toLowerCase() !== 'placeholder');
 
       if (rows.length === 0) {
         c.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">没有可配置的商业 Key 供应商</div>';
@@ -6251,24 +6585,28 @@
 
       rows.forEach(pair => {
         const p = pair[0], idx = pair[1];
-        const keys = Array.isArray(p.keys) ? p.keys : [];
+        const keys = dirtyKeysMap.has(p.id) ? dirtyKeysMap.get(p.id) : (Array.isArray(p.keys) ? p.keys : []);
         const row = document.createElement('div');
         row.className = 'provider-row';
         row.dataset.providerId = p.id;
-        const badge = keys.length > 0
-          ? '<span class="badge badge-success">已配置 ' + keys.length + ' 个</span>'
+        const keyCount = providerCounts(p).keys;
+        const badge = keyCount > 0
+          ? '<span class="badge badge-success">已配置 ' + keyCount + ' 个</span>'
           : '<span class="badge badge-muted">未配置</span>';
         row.innerHTML = [
           '<div class="provider-row-head" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:6px;">',
           '  <div class="provider-row-title">' + providerLogo(p.id, p.name, true) + '<b style="font-size:0.85rem;">' + esc(p.name || p.id) + '</b></div>',
           '  <span style="display:flex; gap:4px; flex-shrink:0;">',
-          '    <span class="badge badge-info">' + (p.protocol || 'openai').toUpperCase() + '</span>',
+          '    <span class="badge badge-info">' + esc(String(p.protocol || 'openai').toUpperCase()) + '</span>',
           '    ' + badge,
           '  </span>',
           '</div>',
           (p.baseUrl ? '<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:6px;">' + esc(p.baseUrl) + '</div>' : ''),
-          '<input type="text" placeholder="配置 API Key (多个用逗号隔开)" value="' + keys.join(',') + '" onchange="updateKeys(' + idx + ', this.value)">'
+          '<input type="password" placeholder="配置字符串 API Key (多个用逗号隔开)" value="' + esc(keys.filter(k => typeof k === 'string').join(',')) + '">' + (keys.some(k => k && typeof k === 'object') ? '<small>结构化 Key 保持原样，当前无法修改</small>' : '')
         ].join('');
+        const input = row.querySelector('input');
+        input.oninput = () => updateProviderKeys(p.id, input.value);
+        input.onblur = () => setTimeout(flushCommercialRender, 0);
         c.appendChild(row);
       });
     }
@@ -6687,19 +7025,18 @@
         const item = document.createElement('div');
         item.style = 'background:rgba(255,255,255,0.04); border:1px solid var(--card-border); border-radius:12px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px;';
         const dateStr = acc.addedAt ? new Date(acc.addedAt).toLocaleString() : '刚刚';
-        const tokenPreview = (acc.token || '').slice(0, 16) + '...';
+
         item.innerHTML = [
           '<div style="flex:1; min-width:0;">',
           '  <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">',
           '    <span style="color:#10b981; font-size:0.75rem;">●</span>',
-          '    <b style="font-size:0.85rem; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (acc.name || ('账号 #' + (idx + 1))) + '</b>',
-          '    <span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; font-size:0.65rem; padding:1px 6px; border-radius:10px;">ACTIVE</span>',
+          '    <b style="font-size:0.85rem; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + ('账号 •••• #' + (idx + 1)) + '</b>',
+          '    <span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; font-size:0.65rem; padding:1px 6px; border-radius:10px;">' + (acc.off || acc.enabled === false ? '已停用' : '已配置') + '</span>',
           '  </div>',
-          '  <div style="font-size:0.72rem; color:var(--text-muted);">凭据: <code style="color:#a5b4fc;">' + tokenPreview + '</code></div>',
           '  <div style="font-size:0.7rem; color:#6b7280; margin-top:2px;">入池时间: ' + dateStr + '</div>',
           '</div>',
           '<div>',
-          '  <button class="btn btn-outline" style="color:#ef4444; border-color:rgba(239,68,68,0.35); background:rgba(239,68,68,0.08); padding:5px 12px; font-size:0.75rem; border-radius:16px;" onclick="removeProviderAccount(\'' + providerId + '\', \'' + acc.id + '\')">🗑️ 移除</button>',
+          '  <button class="btn btn-outline" style="color:#ef4444; border-color:rgba(239,68,68,0.35); background:rgba(239,68,68,0.08); padding:5px 12px; font-size:0.75rem; border-radius:16px;" onclick="removeProviderAccount(\'' + jsAttr(providerId) + '\', \'' + jsAttr(acc.id) + '\')">🗑️ 移除</button>',
           '</div>'
         ].join('');
         listEl.appendChild(item);
@@ -6714,6 +7051,7 @@
 
     async function removeProviderAccount(providerId, accId) {
       const pName = getProviderName(providerId);
+      providerWriteRevision++;
       try {
         const res = await fetch(API_BASE + '/api/auth/' + providerId + '/remove', {
           method: 'POST',
@@ -6722,6 +7060,7 @@
         });
         const data = await res.json();
         if (data.ok) {
+          providerWriteRevision++;
           showToast('已成功移出【' + pName + '】网关池！');
           await loadConfig();
           refreshProviderBadges();

@@ -1,7 +1,7 @@
 const fs = require('fs'), vm = require('vm'), assert = require('assert'), path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '../app/src/main/assets/dashboard.html'), 'utf8');
 function slice(a,b) { const start=html.indexOf(a), end=html.indexOf(b,start); assert(start>=0 && end>start); return html.slice(start,end); }
-const source = [slice('    let authKeyRevision = 0;', '    function toggleKeyVisible()'), slice('    let gatewayIp =', '    /** 从服务端拉当前口令 */'), slice('    async function loadConfig()', '    // 记住上一次'), slice('    async function saveProviders()', '    function testMaskSandbox()'), slice('    let setupState =', '    // 页面启动初始化')].join('\n');
+const source = [slice('    function updateProviderKeys(', '    // 隐藏已取消'), slice('    let providerConfigRequest', '    async function loadConfig()'), slice('    let authKeyRevision = 0;', '    function toggleKeyVisible()'), slice('    let gatewayIp =', '    /** 从服务端拉当前口令 */'), slice('    async function loadConfig()', '    // 记住上一次'), slice('    async function saveProviders()', '    function testMaskSandbox()'), slice('    let setupState =', '    // 页面启动初始化')].join('\n');
 const response = data => ({ok:true,json:async()=>JSON.parse(JSON.stringify(data))});
 function createServer() {
  const server={key:'magpie',disk:'magpie',done:false,requests:[],delayed:{},fail:false};
@@ -21,8 +21,8 @@ function createServer() {
  return server;
 }
 function page(server) {
- const elements={}; const document={getElementById(id){return elements[id] || (elements[id]={value:'',innerText:'',innerHTML:'',style:{},focus(){},select(){},setSelectionRange(){}})},createElement(){return {style:{},appendChild(){}}},body:{appendChild(){}}};
- const context={document,window:{crypto:{getRandomValues(buf){buf.fill(9)}},zcodeGiftLoaded:true},Uint8Array,Math,JSON,location:{hostname:'127.0.0.1',port:'3425'},API_BASE:'',AUTH_KEY:'magpie',currentAuthKey:'',authKeyVisible:false,appConfig:null,lastConfigSig:'',renderDirty:false,fetch:server.fetch,sessionStorage:{setItem(){}},navigator:{},console,setTimeout,showToast(message){context.toasts.push(message)},toasts:[],alerts:[],gatewayBaseUrl:()=> 'http://host:3425',renderCredentials(){},autoSyncAfterLogin(){},renderCommercialKeys(){},renderGroups(){},bindGroupEvents(){},renderWbAccounts(){},renderWbModelTags(){},renderAllProvidersCards(){},refreshProviderBadges(){},applyPlaceholderGuard(){},renderMiddleware(){},renderPingProviders(){},renderAllModelsTags(){},loadZCodeGift(){},alert(message){context.alerts.push(message)}};
+ const elements={}; const document={getElementById(id){return elements[id] || (elements[id]={value:'',innerText:'',innerHTML:'',style:{},replaceChildren(){},appendChild(){},querySelector(){return null},querySelectorAll(){return []},focus(){},select(){},setSelectionRange(){}})},createElement(){return {style:{},appendChild(){}}},body:{appendChild(){}}};
+ const context={document,window:{crypto:{getRandomValues(buf){buf.fill(9)}},zcodeGiftLoaded:true},Uint8Array,Math,JSON,location:{hostname:'127.0.0.1',port:'3425'},API_BASE:'',AUTH_KEY:'magpie',currentAuthKey:'',authKeyVisible:false,appConfig:null,lastConfigSig:'',renderDirty:false,fetch:server.fetch,sessionStorage:{setItem(){}},navigator:{},console,setTimeout,showToast(message){context.toasts.push(message)},toasts:[],alerts:[],gatewayBaseUrl:()=> 'http://host:3425',renderCredentials(){},autoSyncAfterLogin(){},visibleProviders(p){return p || []},renderCommercialKeys(){},renderGroups(){},bindGroupEvents(){},renderWbAccounts(){},renderWbModelTags(){},renderAllProvidersCards(){},refreshProviderBadges(){},applyPlaceholderGuard(){},renderMiddleware(){},renderPingProviders(){},renderAllModelsTags(){},loadZCodeGift(){},alert(message){context.alerts.push(message)}};
  vm.createContext(context); vm.runInContext(source,context); return {c:context,e:elements};
 }
 (async()=>{
@@ -36,7 +36,7 @@ function page(server) {
  const race=createServer(), r=page(race); const delayed=[]; race.delayed['/api/server-key']=delayed; const old=r.c.loadAuthKey(); delete race.delayed['/api/server-key']; await r.c.checkSetup(); const next=r.e['setup-key'].value; await r.c.setupNext(); delayed[0](); await old;
  assert.equal(r.c.currentAuthKey,next); assert.equal(vm.runInContext('AUTH_KEY',r.c),next); assert.equal(r.e['cred-api-key'].value,next);
  // A startup config response can arrive after the write; saving providers must not post its old server.
- const stale=createServer(), q=page(stale), delayedConfig=[]; stale.delayed['/api/config']=delayedConfig; const oldConfig=q.c.loadConfig(); delete stale.delayed['/api/config']; await q.c.checkSetup(); const newKey=q.e['setup-key'].value; await q.c.setupNext(); delayedConfig[0](); await oldConfig; await q.c.saveProviders(); assert.equal(stale.key,newKey); assert(!('server' in stale.requests.find(x=>x.url==='/api/config' && x.body).body));
+ const stale=createServer(), q=page(stale), delayedConfig=[]; stale.delayed['/api/config']=delayedConfig; const oldConfig=q.c.loadConfig(); delete stale.delayed['/api/config']; await q.c.checkSetup(); const newKey=q.e['setup-key'].value; await q.c.setupNext(); delayedConfig[0](); await oldConfig; await q.c.saveProviders(); assert.equal(stale.key,newKey); assert(!stale.requests.some(x=>x.url==='/api/config' && x.body));
  // Keep-current is cleared by actual user input.
  const k=createServer(), kp=page(k); await kp.c.checkSetup(); kp.c.setupKeepCurrent(); assert(html.includes('oninput="setupKeyInput()"')); kp.e['setup-key'].value='typed-new-key'; kp.c.setupKeyInput(); await kp.c.setupNext(); assert.equal(k.key,'typed-new-key');
  // Failed writes do not advance or claim success.
@@ -60,6 +60,6 @@ function page(server) {
  // A changed server key cannot be reported as a successful applied-key completion.
  const mismatch=createServer(), mp=page(mismatch); await mp.c.checkSetup(); await mp.c.setupNext(); await mp.c.setupNext(); mismatch.key='external-change'; await mp.c.setupNext(); assert(mp.c.toasts.some(x=>x.includes('不一致'))); assert.notEqual(mp.e['setup-wizard'].style.display,'none'); assert.equal(mp.e['setup-btn-next'].disabled,false);
  // Failed configuration writes cannot report success.
- const bad=createServer(), bp=page(bad); await bp.c.loadConfig(); const original=bp.c.fetch; bp.c.fetch=async (url,opt)=>url==='/api/config' && opt ? {ok:false,status:500} : original(url,opt); await bp.c.saveProviders(); assert(!bp.c.toasts.includes('配置已保存！')); assert(bp.c.alerts.some(x=>x.includes('500')));
+ const bad=createServer(), bp=page(bad); await bp.c.loadConfig(); vm.runInContext("commercialEditedIds.add('bad'); dirtyKeysMap.set('bad',['key'])",bp.c); const original=bp.c.fetch; bp.c.fetch=async (url,opt)=>url==='/api/providers/keys' && opt ? {ok:false,status:500,json:async()=>({ok:false})} : original(url,opt); await bp.c.saveProviders(); assert(!bp.c.toasts.includes('配置已保存！')); assert(bp.c.alerts.some(x=>x.includes('保存失败')));
  console.log('setup first-step persistence, races, reconstruction, failure and completion OK');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -302,7 +302,7 @@ final class ZCodeGift {
             String sid = sessionOf(agentSessionId, device);
             JSONObject body = dress(anthropicBody, site, model, device, sid);
 
-            conn = (HttpURLConnection) new URL(START_BASE + "/v1/messages").openConnection();
+            conn = NetworkPolicy.openHttp(START_BASE + "/v1/messages");
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setConnectTimeout(20000);
@@ -412,8 +412,7 @@ final class ZCodeGift {
                 body.put("metadata", meta);
             }
 
-            HttpURLConnection conn = (HttpURLConnection)
-                    new URL(START_BASE + "/v1/messages").openConnection();
+            HttpURLConnection conn = NetworkPolicy.openHttp(START_BASE + "/v1/messages");
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setConnectTimeout(20000);

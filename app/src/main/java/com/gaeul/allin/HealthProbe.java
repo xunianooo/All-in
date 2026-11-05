@@ -16,7 +16,7 @@ final class HealthProbe {
         HttpURLConnection c = null;
         int code = 0;
         try {
-            c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/api/health").openConnection();
+            c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/api/health").openConnection(java.net.Proxy.NO_PROXY);
             c.setInstanceFollowRedirects(false);
             c.setConnectTimeout(1000);
             c.setReadTimeout(1500);

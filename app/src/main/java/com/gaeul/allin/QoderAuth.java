@@ -371,7 +371,7 @@ public class QoderAuth {
     }
 
     private static String httpGet(String url, String token) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(12000);
         conn.setReadTimeout(20000);
@@ -391,7 +391,7 @@ public class QoderAuth {
     }
 
     private static String httpPostJson(String url, String token, String json) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setConnectTimeout(12000);
@@ -733,7 +733,7 @@ public class QoderAuth {
                 : qoderBody.optJSONObject("model_config").optString("source", "");
         java.util.Map<String, String> h = chatHeaders(CHAT_URL, si, wire, mkey, msrc);
 
-        HttpURLConnection conn = (HttpURLConnection) new URL(CHAT_URL).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(CHAT_URL);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);
@@ -850,7 +850,7 @@ public class QoderAuth {
         try {
             java.util.Map<String, String> h = cosyHeaders(MODELS_URL, si, "");
 
-            HttpURLConnection conn = (HttpURLConnection) new URL(MODELS_URL).openConnection();
+            HttpURLConnection conn = NetworkPolicy.openHttp(MODELS_URL);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(20000);

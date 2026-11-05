@@ -9,10 +9,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
-import java.net.Proxy;
-import java.net.Socket;
-import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -88,21 +84,8 @@ public class CodexAuth {
             "gpt-4.5-preview"
     };
 
-    private static Proxy sLocalProxy = null;
-    private static long sLastProxyCheck = 0;
-
-    /** 本地 7890 代理探测：统一走 ClineAuth 那一份，省掉第 5 份重复实现（含 fd 泄漏修复） */
-    public static Proxy getLocalProxy() {
-        return ClineAuth.getLocalProxy();
-    }
-
     public static HttpURLConnection openHttp(String urlStr) throws Exception {
-        URL url = new URL(urlStr);
-        Proxy p = getLocalProxy();
-        if (p != null) {
-            return (HttpURLConnection) url.openConnection(p);
-        }
-        return (HttpURLConnection) url.openConnection();
+        return NetworkPolicy.openHttp(urlStr);
     }
 
     /**
@@ -510,7 +493,7 @@ public class CodexAuth {
      * 授权前的地区/连通性预检。
      *
      * Codex 的 OAuth 授权页是开在系统浏览器里的，浏览器走系统网络，
-     * App 这边的 7890 代理探测管不到它。中国大陆等地区的出口 IP 会被
+     * App 的网络策略不控制浏览器。中国大陆等地区的出口 IP 可能会被
      * OpenAI 直接拒绝（页面回 {"code":"unsupported_country_region_territory"}），
      * 用户在浏览器里只会看到一坨英文 JSON，根本不知道发生了什么。
      *

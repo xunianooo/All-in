@@ -61,7 +61,7 @@ public class MainActivity extends Activity {
                     .invoke(nsp, "127.0.0.1")).append('\n');
             try {
                 java.net.HttpURLConnection hc = (java.net.HttpURLConnection)
-                        new java.net.URL("http://127.0.0.1:3425/api/status").openConnection();
+                        new java.net.URL("http://127.0.0.1:3425/api/status").openConnection(java.net.Proxy.NO_PROXY);
                 hc.setConnectTimeout(1500);
                 hc.setReadTimeout(1500);
                 sb.append("http loopback code=").append(hc.getResponseCode()).append('\n');

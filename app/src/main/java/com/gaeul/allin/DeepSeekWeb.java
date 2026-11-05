@@ -66,7 +66,7 @@ public final class DeepSeekWeb {
     }
     public static final class HttpTransport implements Transport {
         public Response request(String method,String url,Map<String,String> headers,byte[] body) throws IOException {
-            final HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();
+            final HttpURLConnection c=NetworkPolicy.openHttp(url);
             c.setRequestMethod(method); c.setConnectTimeout(15000);c.setReadTimeout(120000);c.setInstanceFollowRedirects(false);
             for(Map.Entry<String,String> h:headers.entrySet())c.setRequestProperty(h.getKey(),h.getValue());
             try { if(body!=null){c.setDoOutput(true);try(OutputStream o=c.getOutputStream()){o.write(body);}}

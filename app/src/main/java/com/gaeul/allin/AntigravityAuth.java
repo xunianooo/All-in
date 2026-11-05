@@ -257,7 +257,10 @@ public class AntigravityAuth {
     /** 发出一个 HTTPS 请求，返回状态与（尚未读完的）响应流 */
     public static Resp request(String urlStr, String method, String bearer, String accept,
                                String contentType, byte[] body, int connectMs, int readMs) throws Exception {
+        // A logical request and all handshake retries keep the same policy snapshot.
+        NetworkPolicy.Snapshot policy = NetworkPolicy.capture();
         java.net.URL u = new java.net.URL(urlStr);
+        if (!"https".equalsIgnoreCase(u.getProtocol())) throw new java.io.IOException("HTTPS required");
         String host = u.getHost();
         int port = u.getPort() > 0 ? u.getPort() : 443;
         String path = u.getPath();
@@ -272,14 +275,13 @@ public class AntigravityAuth {
         try {
             for (int attempt = 1; attempt <= HANDSHAKE_TRIES; attempt++) {
                 try {
-                    plain = new java.net.Socket();
-                    plain.connect(new java.net.InetSocketAddress(host, port), connectMs);
-                    plain.setSoTimeout(readMs);
+                    plain = policy.connectTunnel(host, port, connectMs, readMs);
             // 关键：不设 ALPN。Conscrypt 默认不送 ALPN，服务端按 HTTP/1.1 处理；
             // 一旦协商到 h2，cloudcode-pa 会直接 reset（实测）。
                     javax.net.ssl.SSLSocketFactory sf =
-                            (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+                            javax.net.ssl.SSLContext.getDefault().getSocketFactory();
                     java.net.Socket s = sf.createSocket(plain, host, port, true);
+                    enableHostVerification((javax.net.ssl.SSLSocket) s);
                     ((javax.net.ssl.SSLSocket) s).startHandshake();
                     s.setSoTimeout(readMs);
                     r.socket = s;
@@ -358,18 +360,24 @@ public class AntigravityAuth {
         }
     }
 
+    private static void enableHostVerification(javax.net.ssl.SSLSocket socket) {
+        javax.net.ssl.SSLParameters parameters = socket.getSSLParameters();
+        parameters.setEndpointIdentificationAlgorithm("HTTPS");
+        socket.setSSLParameters(parameters);
+    }
+
     /** 诊断：同一台机上 TLS 协议 / ALPN 组合到底哪个能握手（只用于 /api/antigravity/tlslab） */
     public static JSONObject tlsLab(String host, boolean tls12, String alpn, int connectMs) {
         JSONObject o = new JSONObject();
         java.net.Socket plain = null;
         java.net.Socket tls = null;
         try {
-            plain = new java.net.Socket();
-            plain.connect(new java.net.InetSocketAddress(host, 443), connectMs);
+            plain = NetworkPolicy.capture().connectTunnel(host, 443, connectMs, connectMs);
             javax.net.ssl.SSLSocketFactory f =
-                    (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+                    javax.net.ssl.SSLContext.getDefault().getSocketFactory();
             tls = f.createSocket(plain, host, 443, true);
             javax.net.ssl.SSLSocket ss = (javax.net.ssl.SSLSocket) tls;
+            enableHostVerification(ss);
             if (tls12) ss.setEnabledProtocols(new String[]{"TLSv1.2"});
             if (alpn != null) {
                 java.lang.reflect.Method m = ss.getClass().getMethod("setApplicationProtocols", String[].class);
@@ -408,6 +416,8 @@ public class AntigravityAuth {
     public static JSONObject flap(String host, int n, String mode) {
         JSONObject out = new JSONObject();
         JSONArray arr = new JSONArray();
+        // Proxy mode cannot truthfully measure target IP families: the proxy resolves the target.
+        NetworkPolicy.Snapshot policy = NetworkPolicy.capture();
         int ok = 0;
         long totalMs = 0;
         java.util.Map<String, Integer> reasons = new java.util.LinkedHashMap<String, Integer>();
@@ -418,26 +428,33 @@ public class AntigravityAuth {
             java.net.InetAddress addr = null;
             long t0 = System.currentTimeMillis();
             try {
-                java.net.InetAddress[] all = java.net.InetAddress.getAllByName(host);
-                for (java.net.InetAddress a : all) {
-                    boolean v4 = a instanceof java.net.Inet4Address;
-                    if ("ipv4".equals(mode) && !v4) continue;
-                    if ("ipv6".equals(mode) && v4) continue;
-                    addr = a;
-                    break;
+                if ("ipv4".equals(mode) || "ipv6".equals(mode)) {
+                    if (!policy.isDirectFor(host, 443)) throw new java.io.IOException("address-family diagnostic unavailable through proxy");
+                    java.net.InetAddress[] all = java.net.InetAddress.getAllByName(host);
+                    for (java.net.InetAddress a : all) {
+                        boolean v4 = a instanceof java.net.Inet4Address;
+                        if ("ipv4".equals(mode) != v4) continue;
+                        addr = a;
+                        break;
+                    }
+                    if (addr == null) throw new java.net.UnknownHostException("没有匹配 " + mode + " 的地址");
+                    // Selection was DIRECT for the original name; connect to the chosen IP directly.
+                    plain = new java.net.Socket(java.net.Proxy.NO_PROXY);
+                    plain.connect(new java.net.InetSocketAddress(addr, 443), 6000);
+                    plain.setSoTimeout(6000);
+                } else {
+                    plain = policy.connectTunnel(host, 443, 6000, 6000);
                 }
-                if (addr == null) throw new java.net.UnknownHostException("没有匹配 " + mode + " 的地址");
-                plain = new java.net.Socket();
-                plain.connect(new java.net.InetSocketAddress(addr, 443), 6000);
                 javax.net.ssl.SSLSocketFactory sf =
-                        (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+                        javax.net.ssl.SSLContext.getDefault().getSocketFactory();
                 tls = sf.createSocket(plain, host, 443, true);
+                enableHostVerification((javax.net.ssl.SSLSocket) tls);
                 ((javax.net.ssl.SSLSocket) tls).startHandshake();
                 long ms = System.currentTimeMillis() - t0;
                 one.put("i", i + 1);
                 one.put("ok", true);
                 one.put("ms", ms);
-                one.put("ip", addr.getHostAddress());
+                one.put("ip", addr == null ? "" : addr.getHostAddress());
                 ok++;
                 totalMs += ms;
             } catch (Throwable e) {
@@ -824,7 +841,7 @@ public class AntigravityAuth {
     private static javax.net.ssl.SSLSocketFactory buildTls12() {
         try {
             final javax.net.ssl.SSLSocketFactory base =
-                    (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+                    javax.net.ssl.SSLContext.getDefault().getSocketFactory();
             return new javax.net.ssl.SSLSocketFactory() {
                 public String[] getDefaultCipherSuites() { return base.getDefaultCipherSuites(); }
                 public String[] getSupportedCipherSuites() { return base.getSupportedCipherSuites(); }

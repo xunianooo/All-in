@@ -32,6 +32,14 @@ import java.util.regex.Pattern;
 
 public class LoginActivity extends Activity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // Native login work keeps the policy captured when this Activity starts.
+    // Browser and WebView networking are controlled by the system, not this scope.
+    private NetworkPolicy.Snapshot loginNetworkSnapshot;
+    private Runnable scopedLoginTask(final Runnable task) {
+        return () -> {
+            try (NetworkPolicy.Scope scope = NetworkPolicy.use(loginNetworkSnapshot)) { task.run(); }
+        };
+    }
     private WebView webView;
     private TextView subtitleView;
     private boolean isPolling = false;
@@ -70,6 +78,7 @@ public class LoginActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        loginNetworkSnapshot = NetworkPolicy.capture();
         requestWindowFeature(Window.FEATURE_NO_TITLE);
 
         String prov = getIntent().getStringExtra("provider");
@@ -140,6 +149,13 @@ public class LoginActivity extends Activity {
         subtitleView.setTextColor(Color.parseColor("#a5b4fc"));
         subtitleView.setPadding(10, 8, 0, 0);
         header.addView(subtitleView);
+
+        TextView policyHint = new TextView(this);
+        policyHint.setText("网络策略修改对新请求生效；当前原生登录需重新打开登录页才会使用新策略。浏览器和网页使用系统网络设置。");
+        policyHint.setTextSize(11);
+        policyHint.setTextColor(Color.parseColor("#a5b4fc"));
+        policyHint.setPadding(10, 8, 0, 0);
+        header.addView(policyHint);
 
         root.addView(header);
 
@@ -314,7 +330,7 @@ public class LoginActivity extends Activity {
     /** 妙手 CatPaw 登录：走官方 login-config 入口，sid 由网关侧轮询（不需要回跳端口） */
     private void initCatPawAuth() {
         subtitleView.setText("正在向妙手申请官方登录通道…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -355,12 +371,12 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startCatPawPolling() {
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + 3 * 60 * 1000L;
@@ -407,17 +423,17 @@ public class LoginActivity extends Activity {
                 }
                 isPolling = false;
             }
-        }).start();
+        })).start();
     }
 
     private void initWorkBuddyAuth() {
         subtitleView.setText("正在连接腾讯官方申请授权通道...");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
                     String stateUrl = "https://copilot.tencent.com/v2/plugin/auth/state?platform=CLI";
-                    HttpURLConnection conn = (HttpURLConnection) new URL(stateUrl).openConnection();
+                    HttpURLConnection conn = NetworkPolicy.openHttp(stateUrl);
                     conn.setRequestMethod("POST");
                     conn.setDoOutput(true);
                     conn.setConnectTimeout(15000);
@@ -458,7 +474,7 @@ public class LoginActivity extends Activity {
                     showError("网络连接失败: " + e.getMessage());
                 }
             }
-        }).start();
+        })).start();
     }
 
     /**
@@ -489,7 +505,7 @@ public class LoginActivity extends Activity {
     private void initZCodeAuth() {
         final String siteName = "bigmodel".equals(currentZCodeSite) ? "BigModel（智谱）" : "Z.ai";
         subtitleView.setText("正在向 ZCode 申请 " + siteName + " 登录通道…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -531,7 +547,7 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     /**
@@ -541,7 +557,7 @@ public class LoginActivity extends Activity {
      */
     private void initAntigravityAuth() {
         subtitleView.setText("正在向网关申请 Google 授权链接…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -613,13 +629,13 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startAntigravityPolling() {
         if (isPolling) return;   // Activity 重建会重复调，避免两个线程抢同一个 flow
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + 15 * 60 * 1000L;
@@ -673,7 +689,7 @@ public class LoginActivity extends Activity {
                     }
                 }
             }
-        }).start();
+        })).start();
     }
 
     /**
@@ -711,7 +727,7 @@ public class LoginActivity extends Activity {
      */
     private void initDeviceFlowAuth(final String providerId, final String display, final long hardDeadlineMs) {
         subtitleView.setText("正在向 " + display + " 申请设备授权…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -770,13 +786,13 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startDeviceFlowPolling(final String providerId, final String display,
                                         final long intervalMs, final long hardDeadlineMs) {
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + hardDeadlineMs;
@@ -835,7 +851,7 @@ public class LoginActivity extends Activity {
                 }
                 isPolling = false;
             }
-        }).start();
+        })).start();
     }
 
     /**
@@ -845,7 +861,7 @@ public class LoginActivity extends Activity {
      */
     private void initClineAuth() {
         subtitleView.setText("正在向 Cline 申请设备授权…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -900,12 +916,12 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startClinePolling(final long intervalMs) {
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + 15 * 60 * 1000L;
@@ -962,7 +978,7 @@ public class LoginActivity extends Activity {
                     }
                 }
             }
-        }).start();
+        })).start();
     }
 
     /**
@@ -971,7 +987,7 @@ public class LoginActivity extends Activity {
      */
     private void initQoderCnAuth() {
         subtitleView.setText("正在向 Qoder CN 申请登录通道…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -1014,12 +1030,12 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startQoderCnPolling(final long intervalMs) {
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + 15 * 60 * 1000L;
@@ -1091,12 +1107,12 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startZCodePolling(final long intervalMs) {
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + 6 * 60 * 1000L;
@@ -1156,12 +1172,12 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startWorkBuddyPolling() {
         isPolling = true;
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 int count = 0;
@@ -1172,7 +1188,7 @@ public class LoginActivity extends Activity {
                         if (!isPolling) break;
 
                         String tokenUrl = "https://copilot.tencent.com/v2/plugin/auth/token?state=" + URLEncoder.encode(currentState, "UTF-8");
-                        HttpURLConnection conn = (HttpURLConnection) new URL(tokenUrl).openConnection();
+                        HttpURLConnection conn = NetworkPolicy.openHttp(tokenUrl);
                         conn.setRequestMethod("GET");
                         conn.setConnectTimeout(10000);
                         conn.setReadTimeout(10000);
@@ -1221,7 +1237,7 @@ public class LoginActivity extends Activity {
                     } catch (Exception ignored) {}
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void extractTokenFromPage(final boolean isManualClick) {
@@ -1425,7 +1441,7 @@ public class LoginActivity extends Activity {
         if (!deepSeekActive || deepSeekSaving || deepSeekComplete || isFinishing()
                 || webView == null || !isDeepSeekOrigin(webView.getUrl())) return;
         deepSeekSaving = true;
-        new Thread(new Runnable() { @Override public void run() {
+        new Thread(scopedLoginTask(new Runnable() { @Override public void run() {
             boolean success = false;
             try {
                 JSONObject body = new JSONObject();
@@ -1452,7 +1468,7 @@ public class LoginActivity extends Activity {
                     if (manual) showError("入池验证失败，请检查网关并完成网页登录验证后重试。");
                 }
             }});
-        }}).start();
+        }})).start();
     }
 
     // ===== 网关口令 =====
@@ -1505,7 +1521,7 @@ public class LoginActivity extends Activity {
     }
 
     private void saveAccountToGateway(final String providerId, final String name, final String token) {
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -1538,7 +1554,7 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void showError(final String msg) {
@@ -1693,7 +1709,7 @@ public class LoginActivity extends Activity {
 
     private void initCodexAuth() {
         subtitleView.setText("正在向 OpenAI 发起 Codex 授权申请…");
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -1753,11 +1769,11 @@ public class LoginActivity extends Activity {
                     });
                 }
             }
-        }).start();
+        })).start();
     }
 
     private void startPollingCodexFlow() {
-        new Thread(new Runnable() {
+        new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
                 long deadline = System.currentTimeMillis() + 600000L;
@@ -1797,7 +1813,7 @@ public class LoginActivity extends Activity {
                     } catch (Throwable ignored) {}
                 }
             }
-        }).start();
+        })).start();
     }
 
 }

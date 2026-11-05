@@ -9,10 +9,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
-import java.net.Proxy;
-import java.net.Socket;
-import java.net.URL;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -90,52 +86,8 @@ public class ClineAuth {
             "cline-pass/mimo-v2.5"
     };
 
-    private static Proxy sLocalProxy = null;
-    private static long sLastProxyCheck = 0;
-
-    /**
-     * 检测本地是否存在可用代理（例如 Clash / Mihomo 运行在 127.0.0.1:7890）。
-     * 存在时优先走本地代理，避免 Android fake-ip DNS 导致 28.0.0.0/8 直连超时。
-     */
-    public static synchronized Proxy getLocalProxy() {
-        long now = System.currentTimeMillis();
-        if (now - sLastProxyCheck < 30000) {
-            return sLocalProxy;
-        }
-        sLastProxyCheck = now;
-        Socket sock = null;
-        try {
-            sock = new Socket();
-            sock.connect(new InetSocketAddress("127.0.0.1", 7890), 250);
-            sLocalProxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", 7890));
-            return sLocalProxy;
-        } catch (Throwable e) {
-            sLocalProxy = null;
-            return null;
-        } finally {
-            // connect 失败时原来不会关 socket，每 30 秒泄漏一个 fd
-            if (sock != null) {
-                try {
-                    sock.close();
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-    }
-
-    /**
-     * 打开 HTTP 连接，本地有 7890 代理时自动使用代理。
-     */
     public static HttpURLConnection openHttp(String urlStr) throws Exception {
-        URL url = new URL(urlStr);
-        Proxy proxy = getLocalProxy();
-        if (proxy != null) {
-            try {
-                return (HttpURLConnection) url.openConnection(proxy);
-            } catch (Throwable ignored) {
-            }
-        }
-        return (HttpURLConnection) url.openConnection();
+        return NetworkPolicy.openHttp(urlStr);
     }
 
     public static Map<String, String> clientHeaders(String taskId) {

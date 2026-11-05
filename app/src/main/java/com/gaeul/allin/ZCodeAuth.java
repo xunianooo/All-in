@@ -95,7 +95,7 @@ public class ZCodeAuth {
         } catch (Exception ignored) {
         }
 
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod(method);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(timeoutMs);
@@ -539,7 +539,7 @@ public class ZCodeAuth {
 
     /** 列表接口的 data 是数组时，用这个方法取 */
     private static JSONArray fetchArray(String method, String url, String auth, JSONObject body) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod(method);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(20000);
@@ -676,8 +676,8 @@ public class ZCodeAuth {
     public static boolean probeBase(String base, String key) {
         java.net.HttpURLConnection conn = null;
         try {
-            conn = (java.net.HttpURLConnection) new java.net.URL(
-                    base.replaceAll("/+$", "") + "/models").openConnection();
+            conn = NetworkPolicy.openHttp(
+                    base.replaceAll("/+$", "") + "/models");
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(4000);
             conn.setReadTimeout(6000);

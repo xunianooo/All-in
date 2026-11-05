@@ -8,7 +8,7 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.2.13（versionCode 19）
+- 当前版本：1.2.14（versionCode 20）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
@@ -54,6 +54,18 @@ MAGPIE_KEY_ALIAS=gaeul \
 网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
 
 Responses 兼容完整 Agent 请求中的 `user`、`stream_options`、`text.verbosity`、常见可空默认值及普通 reasoning／工具历史。未知顶层扩展字段在副本上忽略，类型错误仍返回 400；非空服务器端会话、模板和异步执行不会静默丢弃。跨协议展示选项降级通过兼容性响应头提示，详见 [字段兼容表](docs/responses-agent-compatibility.md)。
+
+## 1.2.14 供应商管理、网络配置与连接可靠性
+
+- 已接入供应商紧凑管理、搜索、启停、详情及局部 Key 保存，支持草稿保留与冲突保护。
+- 显式出站默认网络 / 直连 / HTTP 代理，失败不绕行，独立保存并保留请求网络快照。
+- 路由组可选“近期用量优先”：按供应商/模型共享近期负载，保留流式终态与最终交付双条件。
+- 请求取消、单调截止时间、稳定凭据身份和错误分类；出站间隔、滚动 RPM、并发与有界队列可独立配置。
+- 小浣熊 `user_model_rate_limited` 单独处理，避免同账号短间隔重放；限额默认不预设厂商阈值。
+- R1 覆盖普通商业 Chat/Anthropic/Responses 和小浣熊推理；其它特殊通道及登录/刷新不宣称全面覆盖。
+- 本版不包含后续耐受重试、SSE 心跳或会话亲和。
+
+验收说明：[`docs/connection-resilience-r0-r1-acceptance.md`](docs/connection-resilience-r0-r1-acceptance.md)、[`docs/recent-usage-routing-acceptance.md`](docs/recent-usage-routing-acceptance.md)、[`docs/network-configuration-acceptance.md`](docs/network-configuration-acceptance.md)、[`docs/provider-management-acceptance.md`](docs/provider-management-acceptance.md)。
 
 ## 1.2.13 ZCode 用量与地址修复
 

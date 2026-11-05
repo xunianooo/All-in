@@ -42,6 +42,10 @@ jobs:
           node tests/dashboard-background.cjs
           node tests/dashboard-heatmap.cjs
           node tests/dashboard-live-status.cjs
+          node tests/dashboard-provider-management.cjs
+          node tests/dashboard-network.cjs
+          node tests/dashboard-usage-routing.cjs
+          node tests/dashboard-outbound.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |
@@ -50,8 +54,8 @@ jobs:
       - name: Streaming HTTP pacing and gated tools
         shell: pwsh
         run: |
-          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat streamingHttpTests --no-daemon }
-          else { ./gradlew streamingHttpTests --no-daemon }
+          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat streamingHttpTests outboundRoutingHttpTests --no-daemon }
+          else { ./gradlew streamingHttpTests outboundRoutingHttpTests --no-daemon }
       - name: Debug APK
         shell: pwsh
         run: |

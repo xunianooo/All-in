@@ -431,7 +431,7 @@ public final class CatPawAuth {
     // ===================== HTTP 底座 =====================
 
     private static JSONObject getJson(String url, Map<String, String> headers, int timeoutMs) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(Math.min(timeoutMs, 15000));
         conn.setReadTimeout(timeoutMs);
@@ -453,7 +453,7 @@ public final class CatPawAuth {
 
     private static String post(String url, String body, Map<String, String> headers,
                                int timeoutMs, String accept) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);
@@ -477,7 +477,7 @@ public final class CatPawAuth {
 
     private static byte[] streamPost(String url, String body, Map<String, String> headers,
                                      int timeoutMs) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection conn = NetworkPolicy.openHttp(url);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);

@@ -22,6 +22,30 @@ public final class DeepSeekWebChatTest {
  static String read(InputStream in) throws IOException { ByteArrayOutputStream b=new ByteArrayOutputStream();byte[] buf=new byte[1024];int n;while((n=in.read(buf))!=-1)b.write(buf,0,n);return b.toString("UTF-8"); }
  public static void main(String[] args) throws Exception {
   JSONObject req=new JSONObject("{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
+  NetworkPolicy.Snapshot previous=NetworkPolicy.current();
+  NetworkPolicy.Snapshot policyA=NetworkPolicy.parse(new JSONObject().put("mode","direct"));
+  CountDownLatch policyEntered=new CountDownLatch(1), proceed=new CountDownLatch(1), scopedDone=new CountDownLatch(1);
+  boolean[] scopeOk={true}, scopedSuccess={false}; int[] scopedCalls={0};
+  Mock scopedTransport=new Mock(){public DeepSeekWeb.Response request(String method,String url,Map<String,String> headers,byte[] body) throws IOException {
+   policyEntered.countDown();
+   try {if(!proceed.await(2,TimeUnit.SECONDS)) throw new IOException("policy switch timeout");}
+   catch(InterruptedException e){Thread.currentThread().interrupt();throw new IOException(e);}
+   scopeOk[0] &= NetworkPolicy.capture()==policyA; scopedCalls[0]++;
+   return super.request(method,url,headers,body);
+  }};
+  try {
+   InputStream scopedInput;
+   try(NetworkPolicy.Scope scope=NetworkPolicy.use(policyA)) {
+    scopedInput=new DeepSeekWebChat("secret",scopedTransport).stream(req,"alias",(v,st,e)->{scopedSuccess[0]=v;scopedDone.countDown();});
+   }
+   try {
+    check(policyEntered.await(2,TimeUnit.SECONDS),"worker policyEntered transport");
+    NetworkPolicy.Snapshot policyB=NetworkPolicy.configure(new JSONObject().put("mode","default"));
+    check(policyB!=policyA,"distinct configured policy");
+    proceed.countDown(); read(scopedInput);
+    check(scopedDone.await(2,TimeUnit.SECONDS)&&scopedSuccess[0]&&scopeOk[0]&&scopedCalls[0]>=4,"worker keeps request policy through cleanup");
+   } finally {proceed.countDown();scopedInput.close();}
+  } finally {if("blocked".equals(previous.mode)) NetworkPolicy.block(); else NetworkPolicy.configure(previous.toJson());}
   Mock fake=new Mock();DeepSeekWebChat web=new DeepSeekWebChat("secret",fake); check("hello".equals(web.run(req,null).text),"non-stream");
   CountDownLatch done=new CountDownLatch(1); final CountDownLatch completed=done; boolean[] success={false}; InputStream in=new DeepSeekWebChat("secret",fake).stream(req,"alias",(ok,status,err)->{success[0]=ok;completed.countDown();});String data=read(in);check(done.await(2,TimeUnit.SECONDS)&&success[0]&&data.contains("hello")&&data.contains("[DONE]")&&!data.contains("secret"),"stream success");in.close();
   fake.fail=true;done=new CountDownLatch(1);final CountDownLatch failed=done;final boolean[] ok={true};in=new DeepSeekWebChat("secret",fake).stream(req,"alias",(v,status,e)->{ok[0]=v;failed.countDown();});data=read(in);check(done.await(2,TimeUnit.SECONDS)&&!ok[0]&&data.contains("upstream_error")&&!data.contains("[DONE]")&&!data.contains("secret")&&!data.contains("upstream-body"),"stream error");in.close();
