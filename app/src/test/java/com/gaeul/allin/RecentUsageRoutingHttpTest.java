@@ -80,7 +80,12 @@ public final class RecentUsageRoutingHttpTest {
                     if(r.flood) {
                         byte[] chunk=bytes("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\""+repeat('x',12000)+"\"}}]}\n\n");
                         try { for(int i=0;i<2000;i++) { out.write(chunk); out.flush(); } } catch(IOException disconnected) { }
-                    } else if(r.hold) { out.write(bytes(OPENAI_END)); out.flush(); }
+                    } else if(r.hold) {
+                        // never-sent close deliberately disconnects this held upstream before release.
+                        // Only the final fixture write may observe the expected peer cancellation.
+                        try { out.write(bytes(OPENAI_END)); out.flush(); }
+                        catch(SocketException cancelledPeer) { }
+                    }
                 } else {
                     byte[] body=bytes(r.body);
                     out.write(bytes("HTTP/1.1 "+r.status+" Fixture\r\nContent-Type: application/json\r\nRetry-After: 120\r\nContent-Length: "+body.length+"\r\nConnection: close\r\n\r\n")); out.write(body); out.flush();
