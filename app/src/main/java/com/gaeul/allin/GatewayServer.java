@@ -679,6 +679,41 @@ public class GatewayServer extends NanoHTTPD {
         return resp;
     }
 
+    // Advertise IPv4 addresses only when compatible with the listener bind host.
+    static JSONObject gatewayAddressInfo(int port, String ip, String bindHost) throws Exception {
+        String host = bindHost == null || bindHost.isEmpty() ? "0.0.0.0" : bindHost;
+        String local = "";
+        String lan = "";
+        if (port > 0 && port <= 65535) {
+            if ("0.0.0.0".equals(host) || "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host))
+                local = "http://127.0.0.1:" + port + "/v1";
+            if (validGatewayIpv4(ip) && ("0.0.0.0".equals(host) || host.equals(ip)))
+                lan = "http://" + ip + ":" + port + "/v1";
+        }
+        JSONObject info = new JSONObject();
+        info.put("localBaseUrl", local);
+        info.put("lanBaseUrl", lan);
+        info.put("listenAddress", host);
+        return info;
+    }
+
+    private static boolean validGatewayIpv4(String ip) {
+        if (ip == null) return false;
+        String[] parts = ip.split("\\.", -1);
+        if (parts.length != 4) return false;
+        int[] octets = new int[4];
+        for (int i = 0; i < 4; i++) {
+            if (parts[i].isEmpty() || parts[i].length() > 3) return false;
+            for (int j = 0; j < parts[i].length(); j++)
+                if (parts[i].charAt(j) < '0' || parts[i].charAt(j) > '9') return false;
+            if (parts[i].length() > 1 && parts[i].charAt(0) == '0') return false;
+            octets[i] = Integer.parseInt(parts[i]);
+            if (octets[i] > 255) return false;
+        }
+        return octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
+                || (octets[0] == 192 && octets[1] == 168);
+    }
+
     public static String getLocalIpAddress() {
         // 以前的实现直接返回第一个非回环 IPv4，开着 Clash 时会先命中 tun0(172.19.0.1)，
         // 面板「服务地址」就是错的，电脑根本连不上。
@@ -936,8 +971,14 @@ public class GatewayServer extends NanoHTTPD {
             if ("/api/status".equals(uri)) {
                 JSONObject status = new JSONObject();
                 status.put("ok", true);
-                status.put("port", getListeningPort());
-                status.put("ip", getLocalIpAddress());
+                int port = getListeningPort();
+                String ip = getLocalIpAddress();
+                JSONObject address = gatewayAddressInfo(port, ip, getHostname());
+                status.put("port", port);
+                status.put("ip", ip);
+                status.put("localBaseUrl", address.getString("localBaseUrl"));
+                status.put("lanBaseUrl", address.getString("lanBaseUrl"));
+                status.put("listenAddress", address.getString("listenAddress"));
                 status.put("totalRequests", totalRequests.get());
                 status.put("totalTokens", totalTokens.get());
                 status.put("totalMasked", totalMasked.get());
@@ -952,7 +993,7 @@ public class GatewayServer extends NanoHTTPD {
             // 用户复制后粘进 ETA 的提供商里就能用（ETA 会自己从 /v1/models 拉模型）
             if ("/api/eta/import".equals(uri)) {
                 JSONObject ret = new JSONObject();
-                String base = "http://127.0.0.1:3425/v1";
+                String base = gatewayAddressInfo(getListeningPort(), getLocalIpAddress(), getHostname()).getString("localBaseUrl");
                 String key = configuredAuthKey();
                 String recommended = "";
                 JSONArray modelsOut = new JSONArray();
@@ -4767,7 +4808,10 @@ public class GatewayServer extends NanoHTTPD {
         // read() 到 EOF 后会被反复调用，必须保证只记一次
         final boolean[] uCommitted = new boolean[]{false};
 
-        InputStream pipedStream = new InputStream() {
+        final boolean awaitDelivery = uRow != null && "gift".equals(uRow.ep) && "zcode".equals(uRow.prov);
+        class ChatForwardStream extends InputStream implements fi.iki.elonen.AllInTrackedResponse.WriteCompletion {
+            private boolean deliveryConfirmed;
+            private boolean readComplete;
             private final BufferedReader reader = new BufferedReader(new InputStreamReader(upstreamIs, java.nio.charset.StandardCharsets.UTF_8));
             private ByteArrayInputStream currentChunkIs = null;
             private boolean flushedTail = false;
@@ -4780,7 +4824,7 @@ public class GatewayServer extends NanoHTTPD {
             private boolean emittedTerminalError = false;
 
             private void recordUsage() {
-                if (uRow == null || uCommitted[0]) return;
+                if (uRow == null || uCommitted[0] || (awaitDelivery && !deliveryConfirmed && !sawError)) return;
                 uCommitted[0]=true; uRow.ms=System.currentTimeMillis()-uStart; uRow.status=sawError?502:200;
                 if (sawError) uRow.err = "Upstream stream incomplete or cancelled";
                 if(uFirst[0]>0) { uRow.ttft=uFirst[0]-uStart; if(uLast[0]>=uFirst[0]) { uRow.decMs=uLast[0]-uFirst[0]; uRow.decOut=uRow.out; } }
@@ -4819,6 +4863,7 @@ public class GatewayServer extends NanoHTTPD {
                             return currentChunkIs.read();
                         }
                     }
+                    readComplete = true;
                     return -1;
                 }
                 String restored = line;
@@ -4854,6 +4899,7 @@ public class GatewayServer extends NanoHTTPD {
                         String ud = restored.substring(5).trim();
                         if (!ud.isEmpty() && !"[DONE]".equals(ud)) {
                             JSONObject uj = new JSONObject(ud);
+                            boolean originalGiftUsage = "gift".equals(uRow.ep) && "zcode".equals(uRow.prov);
                             boolean hasContent = false;
                             JSONArray uchs = uj.optJSONArray("choices");
                             if (uchs != null && uchs.length() > 0) {
@@ -4865,16 +4911,16 @@ public class GatewayServer extends NanoHTTPD {
                                     hasContent = true;
                                 }
                                 JSONObject uu = uc0 == null ? null : uc0.optJSONObject("usage");
-                                if (uu != null) absorbUsage(uRow, uu);
+                                if (uu != null && !originalGiftUsage) absorbUsage(uRow, uu);
                             }
                             String utype = uj.optString("type", "");
                             if ("content_block_delta".equals(utype)) hasContent = true;
                             if ("message_start".equals(utype)) {
                                 JSONObject um = uj.optJSONObject("message");
-                                if (um != null) absorbUsage(uRow, um.optJSONObject("usage"));
+                                if (um != null && !originalGiftUsage) absorbUsage(uRow, um.optJSONObject("usage"));
                             }
                             JSONObject uu2 = uj.optJSONObject("usage");
-                            if (uu2 != null) absorbUsage(uRow, uu2);
+                            if (uu2 != null && !originalGiftUsage) absorbUsage(uRow, uu2);
                             if (hasContent) {
                                 long unow = System.currentTimeMillis();
                                 if (uFirst[0] < 0) uFirst[0] = unow;
@@ -4945,18 +4991,27 @@ public class GatewayServer extends NanoHTTPD {
                 return count + 1;
             }
 
+            @Override public void onWriteComplete(boolean success) {
+                deliveryConfirmed = true;
+                if (!success || (awaitDelivery && !readComplete)) sawError = true;
+                recordUsage();
+            }
+
             @Override
             public void close() throws IOException {
                 if (closed) return;
                 closed = true;
-                if (!sawDone && !sawFinish) sawError = true;
-                try { upstreamIs.close(); } finally {
+                if ((!sawDone && !sawFinish) || (awaitDelivery && !readComplete)) sawError = true;
+                try { upstreamIs.close(); }
+                catch (IOException failure) { sawError = true; throw failure; }
+                finally {
                     try { recordUsage(); } finally {
                         if (upstreamConn != null) upstreamConn.disconnect();
                     }
                 }
             }
-        };
+        }
+        InputStream pipedStream = new ChatForwardStream();
 
         Response resp = newChunkedResponse(Status.OK, "text/event-stream", pipedStream);
         if (servedBy != null && !servedBy.isEmpty()) resp.addHeader("X-Magpie-Served-By", servedBy);
@@ -5119,50 +5174,44 @@ public class GatewayServer extends NanoHTTPD {
         U_DONE.set(Boolean.FALSE);
     }
 
-    /** 各种上游的 usage 形状：OpenAI / Anthropic / Gemini(Code Assist) */
+    /** Only actual numeric counters establish a known dimension; JSON null is unknown. */
+    private static boolean usageCounter(JSONObject usage, String key) {
+        Object value = usage == null ? null : usage.opt(key);
+        return value instanceof Number && ((Number) value).doubleValue() >= 0
+                && ((Number) value).doubleValue() <= Integer.MAX_VALUE;
+    }
+
+    /** Absorb independently reported dimensions without inventing missing counters. */
     private static void absorbUsage(UsageLedger.Row r, JSONObject u) {
         if (r == null || u == null) return;
         String source = u.optBoolean("estimated", false) ? "estimated" : "known";
-        boolean hasInput = u.has("prompt_tokens") || u.has("input_tokens") || u.has("promptTokenCount");
-        boolean hasOutput = u.has("completion_tokens") || u.has("output_tokens") || u.has("candidatesTokenCount");
+        boolean hasInput = false, hasOutput = false;
+        for (String key : new String[]{"prompt_tokens", "input_tokens", "promptTokenCount"})
+            if (usageCounter(u, key)) { r.in = u.optInt(key); hasInput = true; break; }
+        for (String key : new String[]{"completion_tokens", "output_tokens", "candidatesTokenCount"})
+            if (usageCounter(u, key)) { r.out = u.optInt(key); hasOutput = true; break; }
         if (hasInput) r.inputKnown = true;
         if (hasOutput) r.outputKnown = true;
         if (hasInput || hasOutput) r.usageSource = "estimated".equals(source) || "estimated".equals(r.usageSource)
                 ? "estimated" : (r.inputKnown && r.outputKnown ? "known" : "partial");
-        JSONObject promptDetails = u.optJSONObject("prompt_tokens_details");
-        JSONObject completionDetails = u.optJSONObject("completion_tokens_details");
-        if (promptDetails == null) promptDetails = u.optJSONObject("input_tokens_details");
-        if (completionDetails == null) completionDetails = u.optJSONObject("output_tokens_details");
-        if ((promptDetails != null && promptDetails.has("cached_tokens"))
-                || u.has("cache_read_input_tokens") || u.has("cache_creation_input_tokens")
-                || u.has("cachedContentTokenCount")) r.cacheSource = source;
-        if (u.has("thoughtsTokenCount") || (completionDetails != null && completionDetails.has("reasoning_tokens"))) {
-            r.reasoningSource = source;
-            if (completionDetails != null && completionDetails.has("reasoning_tokens"))
-                r.reasoning = completionDetails.optInt("reasoning_tokens", r.reasoning);
-        }
-        if (u.has("prompt_tokens") || u.has("completion_tokens")) {
-            r.in = u.optInt("prompt_tokens", r.in);
-            r.out = u.optInt("completion_tokens", r.out);
-            if (promptDetails != null && promptDetails.has("cached_tokens")) r.cacheRead = promptDetails.optInt("cached_tokens", 0);
-        }
-        if (u.has("input_tokens") || u.has("output_tokens")) {
-            if (promptDetails != null && promptDetails.has("cached_tokens")) r.cacheRead = promptDetails.optInt("cached_tokens", 0);
-            r.in = u.optInt("input_tokens", r.in);
-            r.out = u.optInt("output_tokens", r.out);
-            if (u.has("cache_read_input_tokens")) r.cacheRead = u.optInt("cache_read_input_tokens", 0);
-            if (u.has("cache_creation_input_tokens")) r.cacheWrite = u.optInt("cache_creation_input_tokens", 0);
-        }
-        if (u.has("promptTokenCount") || u.has("candidatesTokenCount")) {
-            r.in = u.optInt("promptTokenCount", r.in);
-            r.out = u.optInt("candidatesTokenCount", r.out);
-            if (u.has("cachedContentTokenCount")) r.cacheRead = u.optInt("cachedContentTokenCount", 0);
-            if (u.has("thoughtsTokenCount")) r.reasoning = u.optInt("thoughtsTokenCount", 0);
-        }
-        if (r.inputKnown && !"unknown".equals(r.cacheSource) && !r.cacheSource.isEmpty()) {
-            boolean anthropicCache = u.has("cache_read_input_tokens") || u.has("cache_creation_input_tokens");
-            if (anthropicCache) r.cacheInputTokens = (long) r.in + r.cacheRead + r.cacheWrite;
-            else if (hasInput && (promptDetails != null || r.cacheInputTokens < 0)) r.cacheInputTokens = r.in;
+        JSONObject prompt = u.optJSONObject("prompt_tokens_details");
+        if (prompt == null) prompt = u.optJSONObject("input_tokens_details");
+        JSONObject completion = u.optJSONObject("completion_tokens_details");
+        if (completion == null) completion = u.optJSONObject("output_tokens_details");
+        boolean cache = false;
+        if (usageCounter(prompt, "cached_tokens")) { r.cacheRead = prompt.optInt("cached_tokens"); cache = true; }
+        if (usageCounter(prompt, "cache_write_tokens")) { r.cacheWrite = prompt.optInt("cache_write_tokens"); cache = true; }
+        if (usageCounter(u, "cache_read_input_tokens")) { r.cacheRead = u.optInt("cache_read_input_tokens"); cache = true; }
+        if (usageCounter(u, "cache_creation_input_tokens")) { r.cacheWrite = u.optInt("cache_creation_input_tokens"); cache = true; }
+        if (usageCounter(u, "cachedContentTokenCount")) { r.cacheRead = u.optInt("cachedContentTokenCount"); cache = true; }
+        if (cache) r.cacheSource = source;
+        if (usageCounter(completion, "reasoning_tokens")) { r.reasoning = completion.optInt("reasoning_tokens"); r.reasoningSource = source; }
+        if (usageCounter(u, "thoughtsTokenCount")) { r.reasoning = u.optInt("thoughtsTokenCount"); r.reasoningSource = source; }
+        if (usageCounter(u, "cache_read_input_tokens") || usageCounter(u, "cache_creation_input_tokens"))
+            r.cacheInputExcludesCache = true;
+        if (r.inputKnown && !r.cacheSource.isEmpty() && !"unknown".equals(r.cacheSource)) {
+            if (r.cacheInputExcludesCache) r.cacheInputTokens = (long) r.in + r.cacheRead + r.cacheWrite;
+            else if (hasInput && (prompt != null || r.cacheInputTokens < 0)) r.cacheInputTokens = r.in;
         }
     }
 
@@ -6584,12 +6633,14 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     /** 取第一个带 session JWT 的 ZCode 账号（只有它能花 gift 额度） */
-    private JSONObject zcodeSessionAccount() {
+    private JSONObject zcodeSessionAccount() { return zcodeSessionAccount(false); }
+
+    private JSONObject zcodeSessionAccount(boolean requireEnabled) {
         JSONObject zc = getProviderById("zcode");
-        JSONArray accs = zc == null ? null : zc.optJSONArray("accounts");
+        JSONArray accs = zc == null || (requireEnabled && !zc.optBoolean("enabled", true)) ? null : zc.optJSONArray("accounts");
         for (int i = 0; accs != null && i < accs.length(); i++) {
             JSONObject a = accs.optJSONObject(i);
-            if (a != null && !a.optString("jwt", "").trim().isEmpty()) return a;
+            if (a != null && (!requireEnabled || a.optBoolean("enabled", true)) && !a.optString("jwt", "").trim().isEmpty()) return a;
         }
         return null;
     }
@@ -6617,13 +6668,58 @@ public class GatewayServer extends NanoHTTPD {
         return s;
     }
 
+    interface GiftTransport {
+        JSONObject summary(String jwt, String device);
+        ZCodeGift.Stream open(String jwt, String device, String site, String model,
+                              JSONObject body, boolean dressed);
+    }
+    private volatile GiftTransport giftTransportOverride;
+    void setGiftTransportForTest(GiftTransport transport) { giftTransportOverride = transport; }
+    private GiftTransport giftTransport() {
+        GiftTransport override = giftTransportOverride;
+        if (override != null) return override;
+        return new GiftTransport() {
+            public JSONObject summary(String jwt, String device) { return currentGift(jwt, device); }
+            public ZCodeGift.Stream open(String jwt, String device, String site, String model,
+                                         JSONObject body, boolean dressed) {
+                return ZCodeGift.openStream(jwt, device, site, model, body, null, 15 * 60 * 1000, dressed);
+            }
+        };
+    }
+    private static void absorbGiftErrorUsage(ZCodeGift.Stream stream) {
+        if (stream == null || stream.status < 300 || stream.errorBody == null) return;
+        try {
+            JSONObject body = new JSONObject(stream.errorBody);
+            absorbUsage(U_ROW.get(), body.optJSONObject("usage"));
+            JSONObject detail = body.optJSONObject("error");
+            if (detail != null) absorbUsage(U_ROW.get(), detail.optJSONObject("usage"));
+        } catch (org.json.JSONException ignored) { }
+    }
+
+    private static void closeGiftStream(ZCodeGift.Stream stream) {
+        if (stream == null) return;
+        try { if (stream.is != null) stream.is.close(); } catch (Exception ignored) { }
+        finally { if (stream.conn != null) stream.conn.disconnect(); }
+    }
+
+    private void finishGiftUsage(int status, String error, boolean terminal) {
+        UsageLedger.Row row = U_ROW.get();
+        Long start = U_START.get();
+        if (row != null) {
+            row.status = status; row.err = error; row.terminal = terminal;
+            row.ms = start == null ? 0 : System.currentTimeMillis() - start;
+            try { UsageLedger.record(row); } catch (Throwable ignored) { }
+        }
+        U_ROW.remove(); U_START.remove(); U_FIRST.remove(); U_LAST.remove(); U_DONE.remove();
+    }
+
     /**
      * OpenAI 形态的请求走 ZCode gift。
      * 返回 null 表示「这个模型不在赠送额度的支持范围内」，调用方继续走原来的 Coding Plan 路径。
      */
     private Response tryZCodeGiftOpenAI(JSONObject payload, String requestedModel, boolean clientWantsStream,
                                         PrivacyMasker.Session maskSession, ContextGuard.Result guardResult) {
-        JSONObject acc = zcodeSessionAccount();
+        JSONObject acc = zcodeSessionAccount(true);
         if (acc == null) return null;
         String jwt = acc.optString("jwt", "");
         String device = acc.optString("device", "");
@@ -6632,11 +6728,12 @@ public class GatewayServer extends NanoHTTPD {
         String upstream = requestedModel.startsWith("zcode/")
                 ? requestedModel.substring(6) : requestedModel;
 
-        JSONObject summary = currentGift(jwt, device);
+        GiftTransport transport = giftTransport();
+        JSONObject summary = transport.summary(jwt, device);
         java.util.List<String> allowed = ZCodeGift.allowedModels(summary);
         if (allowed.isEmpty()) return null;
         boolean supported = false;
-        for (String m : allowed) if (m.equalsIgnoreCase(upstream)) { supported = true; break; }
+        for (String m : allowed) if (m.equalsIgnoreCase(upstream)) { upstream = m; supported = true; break; }
         if (!supported) return null;
 
         JSONObject anthropic;
@@ -6649,31 +6746,52 @@ public class GatewayServer extends NanoHTTPD {
             return errorResponse(400, "请求体转换成 Anthropic 格式失败: " + e.getMessage());
         }
 
-        ZCodeGift.Stream st = ZCodeGift.openStream(jwt, device, site, upstream, anthropic,
-                null, 15 * 60 * 1000, false);
+        JSONObject middleware = configJson.optJSONObject("middleware");
+        if (wantsAnthropicOut() && (Middleware.wordGuardEnabled(middleware) || Middleware.thinkTagsEnabled(middleware)))
+            return errorResponse(400, "Native Anthropic responses cannot safely apply word-guard or think-tags; disable these transforms or use a Chat client");
+        LogicalRequest logical = new LogicalRequest();
+        logical.attempts = 1;
+        LOGICAL.set(logical);
+        beginUsage("zcode", requestedModel, upstream);
+        U_ROW.get().ep = "gift";
+        ZCodeGift.Stream st = null;
+        boolean handedOff = false;
+        try {
+        st = transport.open(jwt, device, site, upstream, anthropic, false);
+        absorbGiftErrorUsage(st);
         if (st.status == 405 || st.refused) {
-            if (st.conn != null) st.conn.disconnect();
-            st = ZCodeGift.openStream(jwt, device, site, upstream, anthropic,
-                    null, 15 * 60 * 1000, true);
+            closeGiftStream(st);
+            int refusedStatus = st.refused ? 405 : st.status;
+            st = null;
+            finishGiftUsage(refusedStatus, "ZCode gift refused first attempt", false);
+            logical.attempts = 2;
+            beginUsage("zcode", requestedModel, upstream);
+            U_ROW.get().ep = "gift";
+            st = transport.open(jwt, device, site, upstream, anthropic, true);
+            absorbGiftErrorUsage(st);
         }
-        if (st.status < 200 || st.status >= 400) {
-            if (st.conn != null) st.conn.disconnect();
+        if (st.refused || st.status < 200 || st.status >= 400) {
+            finishGiftUsage(st.refused ? 405 : (st.status >= 400 ? st.status : 502), "ZCode gift upstream request failed", true);
             if (st.refused) {
                 return errorResponse(405, st.edge
                         ? "ZCode 边缘防火墙拦了这个网络的出口 IP，换个网络或稍后再试。"
-                        : "ZCode 风控把这个账号判成异常活动（code 3012）。插件文档说 ZCode 自己的客户端也会被这样拦，"
-                          + "只有 ZCode 客服能解除。原始返回：" + st.errorBody);
+                        : "ZCode 风控把这个账号判成异常活动（code 3012），请联系 ZCode 客服解除。");
             }
             return errorResponse(st.status <= 0 ? 502 : st.status,
-                    "ZCode gift: " + (st.errorBody.isEmpty() ? st.error : st.errorBody));
+                    "ZCode gift upstream request failed (HTTP " + (st.status <= 0 ? 502 : st.status) + ")");
         }
 
         if (clientWantsStream) {
-            InputStream converted = new AnthropicSseToOpenAI(st.is, new ZCodeAnthropic.StreamState(requestedModel));
-            Response resp = wantsAnthropicOut()
-                    ? streamForwardAnthropicResponse(converted, requestedModel, maskSession, guardResult, st.conn)
-                    : streamForwardResponse(converted, maskSession, guardResult, st.conn, "zcode-gift");
+            Response resp;
+            if (wantsAnthropicOut()) {
+                resp = nativeAnthropicResponse(st.is, maskSession, guardResult, st.conn);
+                resp.addHeader("X-AllIn-Native-Anthropic", "true");
+            } else {
+                InputStream converted = new AnthropicSseToOpenAI(st.is, new ZCodeAnthropic.StreamState(requestedModel), U_ROW.get());
+                resp = streamForwardResponse(converted, maskSession, guardResult, st.conn, "zcode-gift");
+            }
             resp.addHeader("X-Magpie-Served-By", "zcode-gift");
+            handedOff = true;
             return resp;
         }
 
@@ -6682,15 +6800,18 @@ public class GatewayServer extends NanoHTTPD {
             byte[] buf = new byte[8192];
             int n;
             while ((n = st.is.read(buf)) != -1) bo.write(buf, 0, n);
-            st.is.close();
             String text = new String(bo.toByteArray(), "UTF-8");
-            if (maskSession != null) text = PrivacyMasker.unmaskText(text, maskSession);
+            JSONObject raw = new JSONObject(text);
+            absorbUsage(U_ROW.get(), raw.optJSONObject("usage"));
+            text = NativeAnthropicPolicy.unmaskResponse(text, maskSession);
             JSONObject msg = new JSONObject(text);
             if (wantsAnthropicOut()) {
                 Response resp = newFixedLengthResponse(Status.OK, "application/json; charset=UTF-8", text);
                 resp.addHeader("X-Magpie-Served-By", "zcode-gift");
+                resp.addHeader("X-AllIn-Native-Anthropic", "true");
                 addCorsHeaders(resp);
                 applyGuardHeaders(resp, guardResult);
+                finishGiftUsage(200, "", true);
                 return resp;
             }
             JSONObject out = ZCodeAnthropic.toOpenAI(msg, requestedModel);
@@ -6698,11 +6819,28 @@ public class GatewayServer extends NanoHTTPD {
             resp.addHeader("X-Magpie-Served-By", "zcode-gift");
             addCorsHeaders(resp);
             applyGuardHeaders(resp, guardResult);
+            finishGiftUsage(200, "", true);
             return resp;
+        } catch (PrivacyMasker.PrivacyException e) {
+            finishGiftUsage(503, "Privacy masking unavailable", true);
+            return errorResponse(503, "Privacy masking unavailable");
         } catch (Exception e) {
-            return errorResponse(502, "读取 ZCode gift 响应失败: " + e.getMessage());
+            finishGiftUsage(502, "ZCode gift response read failed", true);
+            return errorResponse(502, "读取 ZCode gift 响应失败");
+        }
+        } catch (PrivacyMasker.PrivacyException e) {
+            finishGiftUsage(503, "Privacy masking unavailable", true);
+            return errorResponse(503, "Privacy masking unavailable");
+        } catch (Exception e) {
+            finishGiftUsage(502, "ZCode gift transport failed", true);
+            return errorResponse(502, "ZCode gift transport failed");
         } finally {
-            if (st.conn != null) st.conn.disconnect();
+            if (handedOff) { U_ROW.remove(); U_START.remove(); U_FIRST.remove(); U_LAST.remove(); U_DONE.remove(); }
+            else {
+                closeGiftStream(st);
+                if (U_ROW.get() != null) finishGiftUsage(502, "ZCode gift request failed", true);
+            }
+            LOGICAL.remove();
         }
     }
 
@@ -6840,6 +6978,7 @@ public class GatewayServer extends NanoHTTPD {
     private static class AnthropicSseToOpenAI extends InputStream {
         private final java.io.BufferedReader reader;
         private final ZCodeAnthropic.StreamState state;
+        private final UsageLedger.Row originalUsage;
         private byte[] buf = new byte[0];
         private int pos = 0;
         private boolean done = false;
@@ -6855,6 +6994,10 @@ public class GatewayServer extends NanoHTTPD {
         }
 
         AnthropicSseToOpenAI(InputStream upstream, ZCodeAnthropic.StreamState state) {
+            this(upstream, state, null);
+        }
+        AnthropicSseToOpenAI(InputStream upstream, ZCodeAnthropic.StreamState state, UsageLedger.Row originalUsage) {
+            this.originalUsage = originalUsage;
             this.reader = new java.io.BufferedReader(
                     new java.io.InputStreamReader(upstream, java.nio.charset.Charset.forName("UTF-8")));
             this.state = state;
@@ -6883,6 +7026,11 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     if (obj == null) return fail("Invalid Anthropic upstream stream data");
                     String type = obj.optString("type", pendingEvent == null ? "" : pendingEvent);
+                    if (originalUsage != null) {
+                        JSONObject message = obj.optJSONObject("message");
+                        if (message != null) absorbUsage(originalUsage, message.optJSONObject("usage"));
+                        absorbUsage(originalUsage, obj.optJSONObject("usage"));
+                    }
                     if ("error".equals(type) || obj.has("error")) {
                         JSONObject error = obj.optJSONObject("error");
                         return fail(error == null ? "Anthropic upstream stream error" : error.optString("message", "Anthropic upstream stream error"));
@@ -7480,7 +7628,7 @@ public class GatewayServer extends NanoHTTPD {
             }
         }
 
-        if (chosenProvider == null) return null;
+        if (chosenProvider == null || !chosenProvider.optBoolean("enabled", true)) return null;
 
         String selectedKey = "";
         JSONArray keys = chosenProvider.optJSONArray("keys");
@@ -7490,6 +7638,7 @@ public class GatewayServer extends NanoHTTPD {
             selectedKey = keys.optString(idx);
         }
 
+        if ("zcode".equals(chosenProvider.optString("id")) && selectedKey.trim().isEmpty()) return null;
         RouteTarget route = new RouteTarget();
         route.providerId = chosenProvider.optString("id");
         route.baseUrl = chosenProvider.optString("baseUrl", "https://api.deepseek.com/v1");

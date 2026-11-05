@@ -41,6 +41,7 @@ jobs:
           node tests/dashboard-exposed.cjs
           node tests/dashboard-background.cjs
           node tests/dashboard-heatmap.cjs
+          node tests/dashboard-live-status.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |

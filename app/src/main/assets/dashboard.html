@@ -480,7 +480,7 @@
       appearance: none;
     }
     /* 只读的展示型输入框（地址 / 密钥）：字号收一档，避免长地址被裁掉尾巴 */
-    #cred-base-url, #cred-api-key {
+    #cred-base-url, #cred-lan-url, #cred-api-key {
       font-size: 13px !important;
       letter-spacing: -0.1px;
       text-overflow: ellipsis;
@@ -938,7 +938,7 @@
           <b style="color:#a5b4fc;">设置 → 提供商 → 添加 → 粘贴</b>，ETA 会自动从本机网关拉取模型清单。
         </p>
         <div style="font-size:0.78rem;line-height:1.9;margin-bottom:12px;">
-          <div class="eta-field"><span>Base URL</span><code id="eta-base" style="color:#7dd3fc;">http://127.0.0.1:3425/v1</code></div>
+          <div class="eta-field"><span>Base URL</span><code id="eta-base" style="color:#7dd3fc;">—</code></div>
           <div>API Key：<code id="eta-key" style="color:#7dd3fc;">—</code></div>
           <div>推荐模型：<code id="eta-model" style="color:#7dd3fc;">—</code></div>
         </div>
@@ -1052,7 +1052,7 @@
           下面两项就是客户端（Claude Code / Cursor / Codex 等）要填的值，各自可以一键复制。
         </p>
 
-        <div style="font-size: 0.78rem; font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">API 地址</div>
+        <div style="font-size: 0.78rem; font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">本机应用（推荐）</div>
         <div style="display:flex; gap:8px; align-items:stretch; margin-bottom:14px;">
           <input id="cred-base-url" type="text" readonly value=""
             style="flex:1; min-width:0; padding:11px 13px; background:#0d0f17; color:#38bdf8;
@@ -1062,6 +1062,13 @@
             style="flex-shrink:0; padding:11px 16px; border-radius:9px;
                    background:rgba(56,189,248,0.16); border:1px solid rgba(56,189,248,0.45);
                    color:#7dd3fc; font-size:0.8rem; white-space:nowrap;">📋 复制</button>
+        </div>
+
+        <div style="font-size:0.78rem;font-weight:600;color:#a5b4fc;margin-bottom:6px;">局域网其他设备</div>
+        <p style="font-size:0.75rem;color:var(--text-muted);">其他设备需与手机在同一 WiFi，能否访问还需验证。</p>
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <input id="cred-lan-url" type="text" readonly value="" placeholder="未检测到可用的局域网 IPv4 地址" style="flex:1;min-width:0;padding:11px 13px;border-radius:9px;">
+          <button class="btn" onclick="copyCredential('lan')">📋 复制</button>
         </div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
@@ -1608,7 +1615,7 @@
         </div>
         <div class="heat-footer"><span id="heat-total">正在读取账本…</span><span class="heat-legend" aria-label="颜色越深用量越多">少 <i class="heat-swatch"></i><i class="heat-swatch" data-level="1"></i><i class="heat-swatch" data-level="2"></i><i class="heat-swatch" data-level="3"></i><i class="heat-swatch" data-level="4"></i> 多</span></div>
         <div class="heat-detail" id="heat-detail" aria-live="polite"></div>
-        <div class="heat-footer"><span id="heat-status">点选格子查看当天明细</span><button class="heat-refresh" onclick="loadHeatmap()">刷新</button></div>
+        <div class="heat-footer"><span id="heat-status">点选格子查看当天明细</span><button class="heat-refresh" onclick="refreshInsightData(true)">刷新</button></div>
         <div class="heat-note" id="heat-note">按手机本地日期汇总已记录用量；未上报的 Token 不估算。</div>
       </div>
 
@@ -1862,6 +1869,7 @@
 
       <div class="card">
         <div class="card-title">🕐 最近请求</div>
+        <div id="recent-sessions-status" style="font-size:0.75rem;color:var(--text-muted);"></div>
         <div id="recent-sessions"></div>
       </div>
     </section>
@@ -3114,10 +3122,19 @@
       }
     }
 
+    let recentSessionsRevision = 0;
+    let recentSessionsHasData = false;
     async function loadRecentSessions() {
+      const revision = ++recentSessionsRevision;
+      const status = document.getElementById('recent-sessions-status');
       try {
         const res = await fetch(API_BASE + '/api/sessions?limit=12');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const d = await res.json();
+        if (revision !== recentSessionsRevision) return;
+        if (!d || !Array.isArray(d.sessions)) throw new Error('会话数据不完整');
+        recentSessionsHasData = true;
+        if (status) status.textContent = '';
         const el = document.getElementById('recent-sessions');
         if (!el) return;
         const list = d.sessions || [];
@@ -3137,7 +3154,8 @@
             + '</div>';
         }).join('');
       } catch (e) {
-        console.error('loadRecentSessions error', e);
+        if (revision !== recentSessionsRevision) return;
+        if (status) status.textContent = (recentSessionsHasData ? '刷新失败，保留上次记录：' : '读取失败：') + e.message;
       }
     }
 
@@ -3146,7 +3164,6 @@
       loadGuard();
       loadPermissions();
       loadMiddleware();
-      loadRecentSessions();
     }
 
     /**
@@ -3611,8 +3628,10 @@
       return (Number(n) || 0).toLocaleString('en-US');
     }
 
+    let usageRevision = 0;
+    let usageHasData = false;
     async function loadUsage(days, group) {
-      loadHeatmap();
+      const revision = ++usageRevision;
       if (days !== undefined && days !== null) usageDays = days;
       if (group) usageGroup = group;
 
@@ -3640,16 +3659,20 @@
       let j = null;
       try {
         const res = await fetch(API_BASE + '/api/usage/summary?days=' + usageDays + '&group=' + usageGroup);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         j = await res.json();
       } catch (e) {
-        if (state) state.innerText = '读取失败：' + e.message;
+        if (revision !== usageRevision) return;
+        if (state) state.innerText = (usageHasData ? '刷新失败，保留上次数据：' : '读取失败：') + e.message;
         return;
       }
+      if (revision !== usageRevision) return;
       if (!j || !j.ok) {
-        if (state) state.innerText = '读取失败：' + ((j && j.error) || '未知错误');
+        if (state) state.innerText = (usageHasData ? '刷新失败，保留上次数据：' : '读取失败：') + ((j && j.error) || '未知错误');
         return;
       }
 
+      usageHasData = true;
       const t = j.totals || {};
       const set = (id, v, sub) => {
         const el = document.getElementById(id);
@@ -3812,6 +3835,31 @@
       if (state) state.innerText = '共 ' + j.rows + ' 条调用记录 · 用量可能包含估算，未知用量未计入';
     }
 
+    let insightRefreshPromise = null;
+    let insightRefreshPending = false;
+    function insightVisible() {
+      const tab = document.getElementById('tab-insight');
+      return !document.hidden && !!tab && tab.classList.contains('active');
+    }
+    function refreshInsightData(force) {
+      if (!insightVisible()) return Promise.resolve();
+      if (insightRefreshPromise) {
+        if (force) insightRefreshPending = true;
+        return insightRefreshPromise;
+      }
+      insightRefreshPromise = Promise.all([loadUsage(), loadHeatmap(), loadRecentSessions()]).finally(() => {
+        insightRefreshPromise = null;
+        if (insightRefreshPending) {
+          insightRefreshPending = false;
+          if (insightVisible()) refreshInsightData(true);
+        }
+      });
+      return insightRefreshPromise;
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (insightVisible()) refreshInsightData(true);
+    });
+
     function moveNavPill(el) {
       const nav = document.getElementById('bottom-nav');
       if (!nav) return;
@@ -3853,7 +3901,7 @@
         }
         moveNavPill(document.querySelector('.tab-btn.active'));
         if (tabId === 'insight') {
-          try { loadUsage(); } catch (e) {}
+          try { refreshInsightData(true); } catch (e) {}
           try { loadExposed(); } catch (e) {}
           try { loadInsightAll(); } catch (e) {}
         }
@@ -3892,22 +3940,47 @@
     let currentAuthKey = '';
 
     let gatewayIp = '';
+    let authKeyKnown = false;
 
-    /** 当前网关的对外地址（不含 /v1，OpenAI 兼容的完整地址另算） */
+    let statusRevision = 0;
+    let statusKnown = false;
+    let statusPort = 0;
+    let statusLanUrl = '';
     function gatewayBaseUrl() {
-      // App 内面板是 file://，请求实际发往 127.0.0.1；但用户要填进客户端的是局域网地址
-      const ip = gatewayIp;
-      const host = (ip && ip !== '127.0.0.1') ? ip : (location.hostname || '127.0.0.1');
-      const port = location.port || '3425';
-      if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return 'http://' + host + ':' + port;
-      return 'http://127.0.0.1:' + port;
+      return statusKnown && statusPort ? 'http://127.0.0.1:' + statusPort : '';
+    }
+    function validLanIp(ip) {
+      if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(ip || '')) return false;
+      const p = ip.split('.').map(Number);
+      return p.every(n => n <= 255) && (p[0] === 10 || (p[0] === 172 && p[1] >= 16 && p[1] <= 31) || (p[0] === 192 && p[1] === 168));
+    }
+    function parseEndpoint(value, local, port) {
+      try {
+        if (typeof value !== 'string' || !/^http:\/\//.test(value)) return '';
+        const u = new URL(value);
+        if (u.protocol !== 'http:' || u.username || u.password || u.search || u.hash || u.pathname !== '/v1' || Number(u.port) !== port) return '';
+        const rawHost = value.slice(7).split(':')[0];
+        if (rawHost !== u.hostname || (local ? u.hostname !== '127.0.0.1' : !validLanIp(rawHost))) return '';
+        return 'http://' + u.hostname + ':' + port + '/v1';
+      } catch (e) { return ''; }
+    }
+    function gatewayLanUrl() { return statusKnown ? statusLanUrl : ''; }
+    function syncEtaAddress() {
+      const base = gatewayBaseUrl();
+      const value = base ? base + '/v1' : '—';
+      const el = document.getElementById('eta-base');
+      if (el && el.textContent !== value) renderEtaBase(el, value);
     }
 
     /** 刷新卡片里的两项取值 */
     function renderCredentials() {
+      const etaKey = document.getElementById('eta-key');
+      if (etaKey) etaKey.textContent = authKeyKnown ? (currentAuthKey || '(未设置)') : '—';
       const baseEl = document.getElementById('cred-base-url');
       const keyEl = document.getElementById('cred-api-key');
-      if (baseEl) baseEl.value = gatewayBaseUrl() + '/v1';
+      if (baseEl) { baseEl.value = gatewayBaseUrl() ? gatewayBaseUrl() + '/v1' : ''; baseEl.placeholder = '服务地址暂不可用'; }
+      const lanEl = document.getElementById('cred-lan-url');
+      if (lanEl) lanEl.value = gatewayLanUrl();
       if (keyEl) {
         keyEl.value = currentAuthKey || '（未设置，网关当前不校验）';
         keyEl.type = authKeyVisible ? 'text' : 'password';
@@ -3929,11 +4002,13 @@
         const d = await res.json();
         if (d && d.ok && revision === authKeyRevision) {
           currentAuthKey = d.authKey || '';
+          authKeyKnown = true;
           // 面板若是通过 sessionStorage 带的口令，以服务端为准
-          if (currentAuthKey) AUTH_KEY = currentAuthKey;
+          AUTH_KEY = currentAuthKey;
           renderCredentials();
         }
       } catch (e) {
+        if (revision !== authKeyRevision) return;
         // 401 等情况：说明当前口令不对，把状态提示出来
         const state = document.getElementById('cred-key-state');
         if (state) state.innerHTML = '<span style="color:#f87171;">● 读取失败（令牌可能已变）</span>';
@@ -3957,12 +4032,16 @@
     function copyCredential(which) {
       let text = '';
       if (which === 'base') {
-        text = gatewayBaseUrl() + '/v1';
+        text = gatewayBaseUrl() ? gatewayBaseUrl() + '/v1' : '';
+        if (!text) { showToast('服务地址暂不可用'); return; }
+      } else if (which === 'lan') {
+        text = gatewayLanUrl();
+        if (!text) { showToast('未检测到可用的局域网 IPv4 地址'); return; }
       } else {
         text = currentAuthKey || '';
         if (!text) { showToast('还没有设置密钥'); return; }
       }
-      copyText(text, which === 'base' ? '✅ API 地址已复制' : '✅ API 密钥已复制');
+      copyText(text, which === 'base' || which === 'lan' ? '✅ API 地址已复制' : '✅ API 密钥已复制');
     }
 
     /** 统一的复制实现：优先 clipboard API，降级 execCommand（WebView 里后者更可靠） */
@@ -4045,6 +4124,7 @@
         }
         authKeyRevision++;
         currentAuthKey = d.authKey;
+        authKeyKnown = true;
         // 立刻切到新密钥，否则后面的请求会被自己刚设的口令挡住
         AUTH_KEY = currentAuthKey;
         try { sessionStorage.setItem('magpieAuthKey', currentAuthKey); } catch (e) {}
@@ -4058,21 +4138,36 @@
     }
 
     async function loadStats() {
+      const revision = ++statusRevision;
       try {
         const res = await fetch(API_BASE + '/api/status');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
+        if (revision !== statusRevision) return;
         document.getElementById('stat-total-req').innerText = data.totalRequests || 0;
         document.getElementById('stat-total-tokens').innerText = (data.totalTokens || 0).toLocaleString();
         document.getElementById('stat-total-masked').innerText = data.totalMasked || 0;
         const droppedEl = document.getElementById('stat-total-dropped');
         if (droppedEl) droppedEl.innerText = data.contextDropped || 0;
-        if (data.ip) {
-          gatewayIp = data.ip;
-          try { renderCredentials(); } catch (e) {}
+        const previousBase = gatewayBaseUrl();
+        const port = Number(data.port);
+        statusPort = Number.isInteger(port) && port > 0 && port <= 65535 ? port : 0;
+        statusKnown = !!statusPort;
+        if (Object.prototype.hasOwnProperty.call(data, 'localBaseUrl') && !parseEndpoint(data.localBaseUrl, true, statusPort)) statusKnown = false;
+        gatewayIp = data.ip || '';
+        if (Object.prototype.hasOwnProperty.call(data, 'lanBaseUrl')) {
+          statusLanUrl = parseEndpoint(data.lanBaseUrl, false, statusPort);
+        } else {
+          statusLanUrl = validLanIp(gatewayIp) && statusPort ? 'http://' + gatewayIp + ':' + statusPort + '/v1' : '';
         }
+        if (previousBase !== gatewayBaseUrl()) window.__etaSnippet = '';
+        try { renderCredentials(); syncEtaAddress(); } catch (e) {}
         statsFailures = 0;
         if (!gatewayRunning) applyGatewayUI(true);
       } catch (e) {
+        if (revision !== statusRevision) return;
+        statusKnown = false; statusPort = 0; gatewayIp = ''; statusLanUrl = ''; window.__etaSnippet = '';
+        try { renderCredentials(); syncEtaAddress(); } catch (ignored) {}
         statsFailures++;
         // 给足 8 次容忍度，避免冷启动瞬时未就绪误判为关闭
         if (statsFailures >= 8 && gatewayRunning) applyGatewayUI(false);
@@ -4110,13 +4205,10 @@
       try {
         const res = await fetch(API_BASE + '/api/eta/import');
         const d = await res.json();
-        const b = document.getElementById('eta-base');
-        const k = document.getElementById('eta-key');
         const m = document.getElementById('eta-model');
-        if (b) renderEtaBase(b, d.baseUrl || 'http://127.0.0.1:3425/v1');
-        if (k) k.textContent = d.apiKey || '(未设置)';
+        syncEtaAddress();
         if (m) m.textContent = d.recommendedModel || '(暂无可用模型)';
-        window.__etaSnippet = d.snippet || '';
+        window.__etaSnippet = '';
         try {
           if (window.AllInNative && AllInNative.hasEta && !AllInNative.hasEta()) {
             const note = document.getElementById('eta-missing');
@@ -4129,8 +4221,11 @@
     }
 
     function etaCopyAll() {
-      const txt = window.__etaSnippet
-        || ('Base URL: http://127.0.0.1:3425/v1\nAPI Key: ' + (currentAuthKey || ''));
+      const base = gatewayBaseUrl();
+      if (!base) { showToast('服务地址暂不可用'); return false; }
+      const model = document.getElementById('eta-model');
+      const txt = 'Base URL: ' + base + '/v1\nAPI Key: ' + (currentAuthKey || '')
+        + (model && model.textContent && model.textContent !== '(暂无可用模型)' ? '\n推荐模型: ' + model.textContent : '');
       let ok = false;
       try {
         if (window.AllInNative && AllInNative.copyText) ok = AllInNative.copyText(txt);
@@ -4146,7 +4241,7 @@
     function etaCopyField(which) {
       const el = document.getElementById(
         which === 'base' ? 'eta-base' : (which === 'key' ? 'eta-key' : 'eta-model'));
-      const txt = el ? (el.textContent || '') : '';
+      const txt = which === 'key' ? (authKeyKnown ? currentAuthKey : '') : (el ? (el.textContent || '') : '');
       if (!txt || txt === '—') {
         showToast('这一项还没有值');
         return false;
@@ -5057,6 +5152,7 @@
               existingKey = keyData.authKey || '';
               authKeyRevision++;
               AUTH_KEY = currentAuthKey = existingKey;
+              authKeyKnown = true;
               try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
               try { renderCredentials(); } catch (e) {}
             } else if (revision !== authKeyRevision) existingKey = currentAuthKey;
@@ -5171,6 +5267,7 @@
             if (inp) inp.value = d.authKey;
             authKeyRevision++;
             AUTH_KEY = currentAuthKey = d.authKey;
+            authKeyKnown = true;
             try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
             try { renderCredentials(); } catch (e) {}
           } catch (e) {
@@ -5445,6 +5542,7 @@
           authKeyRevision++;
           AUTH_KEY = d.authKey;
           currentAuthKey = d.authKey;
+          authKeyKnown = true;
           try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
         }
         const w = document.getElementById('setup-wizard');
@@ -5486,11 +5584,8 @@
         }
         loadStats();
         loadConfig();
+        if (insightVisible()) refreshInsightData();
       }, 3000);
-      setInterval(() => {
-        const insight = document.getElementById('tab-insight');
-        if (!document.hidden && gatewayRunning && insight && insight.classList.contains('active')) loadHeatmap();
-      }, 30000);
     });
   
     let inAppPollTimer = null;

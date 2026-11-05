@@ -15,7 +15,7 @@ public final class GatewayProtocolOfflineTest {
     }
     static InputStream nativeStream(InputStream in) throws Exception {
         Class<?> c = Class.forName("com.gaeul.allin.GatewayServer$AnthropicSseToOpenAI");
-        Constructor<?> ctor = c.getDeclaredConstructors()[0]; ctor.setAccessible(true);
+        Constructor<?> ctor = c.getDeclaredConstructor(InputStream.class, ZCodeAnthropic.StreamState.class); ctor.setAccessible(true);
         return (InputStream) ctor.newInstance(in, new ZCodeAnthropic.StreamState("test"));
     }
     static String evt(String json) { return "data: " + json + "\n\n"; }

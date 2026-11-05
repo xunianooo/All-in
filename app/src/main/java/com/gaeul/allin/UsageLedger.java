@@ -126,6 +126,8 @@ public class UsageLedger {
         public boolean inputKnown, outputKnown;
         // Protocol-normalized cache hit denominator; -1 means unavailable.
         public long cacheInputTokens = -1;
+        // In-flight protocol state: Anthropic input excludes cache counters.
+        public transient boolean cacheInputExcludesCache;
         public boolean isLegacy() { return requestId == null || requestId.isEmpty(); }
         public boolean isTerminal() { return isLegacy() || terminal; }
         public boolean isAttempt() { return isLegacy() || attempt > 0; }

@@ -337,7 +337,8 @@ final class ZCodeAnthropic {
 
             JSONObject usage = msg.optJSONObject("usage");
             if (usage != null) {
-                out.put("usage", openAIUsage(usage));
+                JSONObject convertedUsage = openAIUsage(usage);
+                if (convertedUsage.length() > 0) out.put("usage", convertedUsage);
             }
         } catch (Exception e) {
             try { out.put("error", String.valueOf(e.getMessage())); } catch (Exception ignored) {}
@@ -347,18 +348,22 @@ final class ZCodeAnthropic {
 
     // Anthropic input_tokens excludes cache reads and writes; OpenAI prompt_tokens includes both.
     private static JSONObject openAIUsage(JSONObject usage) throws Exception {
-        long input = usage.optLong("input_tokens", 0);
-        long read = usage.optLong("cache_read_input_tokens", 0);
-        long write = usage.optLong("cache_creation_input_tokens", 0);
-        long output = usage.optLong("output_tokens", 0);
+        boolean hasInput = usage.has("input_tokens") && !usage.isNull("input_tokens");
+        boolean hasOutput = usage.has("output_tokens") && !usage.isNull("output_tokens");
+        boolean hasRead = usage.has("cache_read_input_tokens") && !usage.isNull("cache_read_input_tokens");
+        boolean hasWrite = usage.has("cache_creation_input_tokens") && !usage.isNull("cache_creation_input_tokens");
+        long input = hasInput ? usage.optLong("input_tokens", 0) : 0;
+        long read = hasRead ? usage.optLong("cache_read_input_tokens", 0) : 0;
+        long write = hasWrite ? usage.optLong("cache_creation_input_tokens", 0) : 0;
+        long output = hasOutput ? usage.optLong("output_tokens", 0) : 0;
         JSONObject u = new JSONObject();
-        u.put("prompt_tokens", input + read + write);
-        u.put("completion_tokens", output);
-        u.put("total_tokens", input + read + write + output);
-        if (usage.has("cache_read_input_tokens") || usage.has("cache_creation_input_tokens")) {
+        if (hasInput) u.put("prompt_tokens", input + read + write);
+        if (hasOutput) u.put("completion_tokens", output);
+        if (hasInput && hasOutput) u.put("total_tokens", input + read + write + output);
+        if (hasRead || hasWrite) {
             JSONObject details = new JSONObject();
-            if (usage.has("cache_read_input_tokens")) details.put("cached_tokens", read);
-            if (usage.has("cache_creation_input_tokens")) details.put("cache_write_tokens", write);
+            if (hasRead) details.put("cached_tokens", read);
+            if (hasWrite) details.put("cache_write_tokens", write);
             u.put("prompt_tokens_details", details);
         }
         return u;

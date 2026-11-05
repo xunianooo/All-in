@@ -68,7 +68,7 @@ public class ResponsesBridgeAuditTest {
     }
     static void gatewayFixtures() throws Exception {
         String nativeSse=sse("{\"type\":\"message_start\"}","{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}","{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}","{\"type\":\"message_stop\"}");
-        Class<?> c=Class.forName("com.gaeul.allin.GatewayServer$AnthropicSseToOpenAI"); java.lang.reflect.Constructor<?> ctor=c.getDeclaredConstructors()[0]; ctor.setAccessible(true);
+        Class<?> c=Class.forName("com.gaeul.allin.GatewayServer$AnthropicSseToOpenAI"); java.lang.reflect.Constructor<?> ctor=c.getDeclaredConstructor(InputStream.class,ZCodeAnthropic.StreamState.class); ctor.setAccessible(true);
         InputStream converted=(InputStream)ctor.newInstance(new ByteArrayInputStream(nativeSse.getBytes(StandardCharsets.UTF_8)),new ZCodeAnthropic.StreamState("m"));
         String response=read(ResponsesBridge.chatStreamToResponses(converted,"m"));
         check(response.contains("hello") && response.contains("response.completed"),"Anthropic adapter chain failed: "+response);
