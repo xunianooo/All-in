@@ -65,8 +65,18 @@ public final class ZCodeGiftUsageHttpTest {
                     if (current.equals("cancel")) {
                         char[] chars = new char[8192]; Arrays.fill(chars, 'x');
                         byte[] more = event("content_block_delta", ",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":" + JSONObject.quote(new String(chars)) + "}").getBytes(StandardCharsets.UTF_8);
-                        try { for (int i = 0; i < 8192; i++) { out.write(more); out.flush(); } }
-                        catch (IOException expected) { disconnected.incrementAndGet(); }
+                        // Observe peer EOF/reset as well as write failure. A platform may
+                        // accept buffered writes after close, or drain the finite fixture
+                        // before the client reset reaches this thread.
+                        s.setSoTimeout(100);
+                        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                        try {
+                            while (System.nanoTime() < until) {
+                                out.write(more); out.flush();
+                                try { if (in.read() == -1) { disconnected.incrementAndGet(); break; } }
+                                catch (SocketTimeoutException pending) { /* peer still open */ }
+                            }
+                        } catch (IOException expected) { disconnected.incrementAndGet(); }
                     }
                 } catch (SocketTimeoutException ignored) { }
                 catch (SocketException e) { if (!server.isClosed()) failure = e; }
