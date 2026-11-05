@@ -25,6 +25,38 @@ final class AnthropicBridge {
 
     private static final int DEFAULT_MAX_TOKENS = 4096;
 
+    // References are opaque strings. Never infer an inbound identity from position
+    // or coerce null/numeric IDs: there is no safe way to pair a later tool result.
+    private static String toolString(JSONObject object, String field) {
+        Object value = object.opt(field);
+        if (!(value instanceof String) || ((String)value).trim().isEmpty())
+            throw new IllegalArgumentException("tool call requires a nonempty string " + field);
+        return (String)value;
+    }
+
+    private static String toolFragment(JSONObject object, String field) {
+        Object value = object == null ? null : object.opt(field);
+        if (value == null || value == JSONObject.NULL) return "";
+        if (!(value instanceof String)) throw new IllegalArgumentException("tool call " + field + " must be a string");
+        return (String)value;
+    }
+
+    private static int toolIndex(JSONObject call) {
+        Object value = call.opt("index");
+        return ToolContract.index(value);
+    }
+
+    private static JSONObject toolInput(JSONObject function) {
+        Object args = function.opt("arguments");
+        if (!(args instanceof String)) throw new IllegalArgumentException("tool call arguments must be a JSON object string for Messages");
+        try {
+            return ToolContract.input((String)args);
+        } catch (Exception invalid) {
+            // Parser exceptions may quote argument text; keep diagnostics structural.
+            throw new IllegalArgumentException("tool call arguments must be a JSON object string for Messages");
+        }
+    }
+
     // ===================== 请求：Anthropic → OpenAI =====================
 
     static JSONObject requestToOpenAI(JSONObject a) throws Exception {
@@ -90,10 +122,10 @@ final class AnthropicBridge {
                 if (b == null) continue;
                 if ("text".equals(b.optString("type"))) text.append(b.optString("text", ""));
                 if ("tool_use".equals(b.optString("type"))) {
-                    String id = b.optString("id", "");
-                    if (id.isEmpty()) throw new IllegalArgumentException("tool_use has no id");
-                    JSONObject fn = new JSONObject().put("name", b.optString("name", ""))
-                            .put("arguments", b.optJSONObject("input") == null ? "{}" : b.optJSONObject("input").toString());
+                    String id = toolString(b, "id"), name = toolString(b, "name");
+                    JSONObject input = b.optJSONObject("input");
+                    if (input == null) throw new IllegalArgumentException("tool_use input must be an object");
+                    JSONObject fn = new JSONObject().put("name", name).put("arguments", input.toString());
                     calls.put(new JSONObject().put("id", id).put("type", "function").put("function", fn));
                 }
             }
@@ -156,7 +188,7 @@ final class AnthropicBridge {
             if (b == null) continue;
             String type = b.optString("type");
             if ("tool_result".equals(type)) {
-                JSONObject tool = new JSONObject().put("role", "tool").put("tool_call_id", b.optString("tool_use_id", ""));
+                JSONObject tool = new JSONObject().put("role", "tool").put("tool_call_id", toolString(b, "tool_use_id"));
                 String body = flattenToolResult(b.opt("content"));
                 if (b.optBoolean("is_error", false)) body = "[Tool error] " + body;
                 JSONArray images = new JSONArray();
@@ -233,6 +265,9 @@ final class AnthropicBridge {
         for (int i = 0; i < input.length();) {
             JSONObject m = input.getJSONObject(i++);
             JSONArray calls = m.optJSONArray("tool_calls");
+            if (m.has("tool_calls") && !m.isNull("tool_calls") && calls == null)
+                throw new IllegalArgumentException("tool_calls must be an array");
+            if ("tool".equals(m.optString("role"))) toolString(m, "tool_call_id");
             if (calls == null || calls.length() == 0) {
                 if ("tool".equals(m.optString("role"))) appendOrphan(out, m, translated);
                 else out.put(m);
@@ -241,14 +276,14 @@ final class AnthropicBridge {
             out.put(m);
             java.util.LinkedHashMap<String, JSONObject> answers = new java.util.LinkedHashMap<String, JSONObject>();
             for (int k = 0; k < calls.length(); k++) {
-                String id = calls.getJSONObject(k).optString("id");
+                String id = toolString(calls.getJSONObject(k), "id");
                 if (answers.containsKey(id)) throw new IllegalArgumentException("duplicate tool_use id: " + id);
                 answers.put(id, null);
             }
             while (i < input.length()) {
                 JSONObject item = input.getJSONObject(i);
                 if (!"tool".equals(item.optString("role"))) break;
-                String id = item.optString("tool_call_id");
+                String id = toolString(item, "tool_call_id");
                 if (!answers.containsKey(id)) break;
                 i++;
                 if (answers.get(id) == null) answers.put(id, item);
@@ -401,22 +436,18 @@ final class AnthropicBridge {
                         if ("stop".equals(finish)) finish = "content_filter";
                     }
                     JSONArray calls = msg.optJSONArray("tool_calls");
+                    if (msg.has("tool_calls") && !msg.isNull("tool_calls") && calls == null)
+                        throw new IllegalArgumentException("tool_calls must be an array");
+                    java.util.Set<String> ids = new java.util.HashSet<String>();
                     for (int i = 0; calls != null && i < calls.length(); i++) {
-                        JSONObject call = calls.optJSONObject(i);
-                        if (call == null) continue;
-                        JSONObject fn = call.optJSONObject("function");
-                        if (fn == null) continue;
+                        JSONObject call = calls.getJSONObject(i), fn = call.getJSONObject("function");
+                        String callId = toolString(call, "id");
+                        if (!ids.add(callId)) throw new IllegalArgumentException("duplicate tool call id");
                         JSONObject use = new JSONObject();
                         use.put("type", "tool_use");
-                        use.put("id", call.optString("id", "toolu_" + i));
-                        use.put("name", fn.optString("name", ""));
-                        JSONObject input;
-                        try {
-                            input = new JSONObject(fn.optString("arguments", "{}"));
-                        } catch (Exception e) {
-                            input = new JSONObject();
-                        }
-                        use.put("input", input);
+                        use.put("id", callId);
+                        use.put("name", toolString(fn, "name"));
+                        use.put("input", toolInput(fn));
                         content.put(use);
                     }
                 }
@@ -429,11 +460,9 @@ final class AnthropicBridge {
             counts.merge(openai.optJSONObject("usage"));
             out.put("usage", counts.toAnthropic());
         } catch (Exception e) {
-            try {
-                out.put("type", "message");
-                out.put("content", new JSONArray());
-                out.put("stop_reason", "end_turn");
-            } catch (Exception ignored) {}
+            // Never turn an invalid tool identity/argument into a successful empty
+            // message. Do not expose parser exceptions that can contain tool args.
+            return errorBody(502, e instanceof IllegalArgumentException ? e.getMessage() : "Invalid upstream tool response");
         }
         return out;
     }
@@ -513,8 +542,8 @@ final class AnthropicBridge {
         private boolean failed;
         private boolean hasContent;
         private boolean closed;
-        // OpenAI may interleave arguments for several tools. Anthropic consumers expect
-        // sequential blocks: stream the first tool, defer subsequent blocks until EOF.
+        // Chat may interleave tools and fragment their ID/name until finish. Hold
+        // tool blocks until identity is complete, then emit sequential Messages blocks.
         private final List<DeferredBlock> deferred = new ArrayList<DeferredBlock>();
         private final java.util.Map<Integer, DeferredBlock> tools = new java.util.HashMap<Integer, DeferredBlock>();
 
@@ -618,6 +647,8 @@ final class AnthropicBridge {
                                 hasContent = true; finish = "content_filter"; outs.addAll(textDelta(delta.optString("refusal")));
                             }
                             JSONArray calls = delta.optJSONArray("tool_calls");
+                            if (delta.has("tool_calls") && !delta.isNull("tool_calls") && calls == null)
+                                throw new IllegalArgumentException("tool_calls must be an array");
                             for (int i = 0; calls != null && i < calls.length(); i++) {
                                 hasContent = true;
                                 outs.addAll(toolDelta(calls.optJSONObject(i)));
@@ -708,22 +739,23 @@ final class AnthropicBridge {
         private List<String> toolDelta(JSONObject call) throws Exception {
             List<String> outs = new ArrayList<String>();
             if (call == null) throw new IllegalStateException("invalid tool call delta");
-            int idx = call.optInt("index", 0);
-            if (idx < 0) throw new IllegalStateException("invalid tool index");
+            int idx = toolIndex(call);
             DeferredBlock block = tools.get(Integer.valueOf(idx));
             JSONObject fn = call.optJSONObject("function");
+            if (call.has("function") && !call.isNull("function") && fn == null)
+                throw new IllegalArgumentException("tool call function must be an object");
             if (block == null) {
                 if (deferred.size() >= MAX_BLOCKS) throw new IllegalStateException("too many deferred blocks");
                 closeOpen(outs);
                 block = new DeferredBlock(); block.index = nextIndex++; block.type = "tool_use";
                 tools.put(Integer.valueOf(idx), block); deferred.add(block);
             }
-            String id = call.isNull("id") ? "" : call.optString("id", "");
-            String name = fn == null || fn.isNull("name") ? "" : fn.optString("name", "");
+            String id = toolFragment(call, "id");
+            String name = toolFragment(fn, "name");
             reserve(id.length() + name.length());
             if (!id.isEmpty()) block.id += id;
             if (!name.isEmpty()) block.name += name;
-            String args = fn == null || fn.isNull("arguments") ? "" : fn.optString("arguments", "");
+            String args = toolFragment(fn, "arguments");
             if (!args.isEmpty()) {
                 reserve(args.length() + 128);
                 block.deltas.add(new JSONObject().put("type", "input_json_delta").put("partial_json", args));
@@ -755,9 +787,18 @@ final class AnthropicBridge {
             try {
                 if (!started || finish.isEmpty()) return onError("Upstream stream ended before a finish reason");
                 if (!hasContent) return onError("Upstream stream returned an empty response");
+                java.util.Set<String> ids = new java.util.HashSet<String>();
                 for (DeferredBlock block : deferred) {
-                    if ("tool_use".equals(block.type) && (block.id.isEmpty() || block.name.isEmpty()))
+                    if (!"tool_use".equals(block.type)) continue;
+                    if (block.id.trim().isEmpty() || block.name.trim().isEmpty())
                         return onError("Upstream tool call is missing an id or name");
+                    if (!ids.add(block.id)) return onError("Upstream tool calls have duplicate ids");
+                    // Messages requires an object input. Validate the assembled
+                    // string without rewriting the original argument fragments.
+                    // Missing/partial/non-object args must not become implicit {}.
+                    StringBuilder args = new StringBuilder();
+                    for (JSONObject delta : block.deltas) args.append(delta.getString("partial_json"));
+                    toolInput(new JSONObject().put("arguments", args.toString()));
                 }
                 closeOpen(outs);
                 for (int i = 0; i < deferred.size(); i++) {

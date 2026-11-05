@@ -1141,6 +1141,16 @@
         </div>
       </div>
 
+      <details class="card" id="card-resilience"><summary class="card-title">⏳ 请求耐受与流心跳</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。先尝试可用备选，只有明确的短暂限流或过载拒绝才可等待后重试；额度、鉴权、小浣熊账号吞吐墙、代理与执行结果未知不进入耐受重试。等待和重试仍受总尝试次数与请求截止时间约束。</p>
+        <label for="resilience-patience">候选耗尽后的最长耐受（毫秒，0关闭，最大60000）</label>
+        <input id="resilience-patience" type="number" min="0" max="60000" value="0" oninput="resilienceEdited()" style="display:block;width:100%;box-sizing:border-box;margin:8px 0;padding:10px">
+        <label style="display:flex;gap:10px;align-items:center"><input id="resilience-heartbeat" type="checkbox" onchange="resilienceEdited()">流式等待期间发送 SSE 心跳</label>
+        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">心跳约3秒一次，仅适用于标准 Chat / Messages / Responses 流式接口，完整事件之间发送注释，不算业务进度或 Token。上游半个事件停顿时不能插入。首个心跳之后 HTTP 状态已提交，后续失败通过协议错误返回。并非所有客户端的业务超时都会被心跳重置。</p>
+        <button id="resilience-save" class="btn" onclick="saveResilience()">保存</button> <button class="btn btn-outline" onclick="loadResilience()">读取当前设置</button>
+        <div id="resilience-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+
       <details class="card" id="card-outbound"><summary class="card-title">🚦 出站请求限额</summary>
         <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">按真实凭据跨模型共用限额，可叠加供应商共享限额。默认不限制发送频率或并发。当前覆盖普通商业 Chat / Anthropic / Responses 和小浣熊推理；登录、刷新、目录查询及其它特殊通道不在此范围。参数是本机策略，不代表厂商官方限额。</p>
         <label for="outbound-provider">供应商 ID</label><input id="outbound-provider" type="text" maxlength="128" autocomplete="off" oninput="outboundEdit()" style="display:block;width:100%;box-sizing:border-box;padding:10px;margin:8px 0" placeholder="例如 raccoon">
@@ -3171,6 +3181,47 @@
       }
     }
 
+    function diagnosticText(value) {
+      return typeof value === 'string' && value.length <= 512 ? value : '未知';
+    }
+    function diagnosticMillis(value) {
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) + ' ms' : '未知';
+    }
+    function renderRecentRequest(s) {
+      const d = s.diagnostics && s.diagnostics.schemaVersion === 1 ? s.diagnostics : {};
+      const target = d.target && typeof d.target === 'object' ? d.target : {};
+      const states = {not_sent:'未发出',rejected:'明确拒绝',unknown_execution:'执行结果未知',delivered:'已确认交付'};
+      const phases = {uncommitted:'结算时未提交',headers:'结算时已发响应头',business:'结算时已写业务数据'};
+      const failures = {rate:'速率限制',account_throughput:'账号吞吐限制',quota:'额度限制',auth:'鉴权',request:'请求不兼容',overload:'上游过载',network:'网络',proxy:'代理',unknown_execution:'执行结果未知',other:'其他',admission:'本地出站准入',deadline:'截止时间',cancelled:'取消',protocol:'协议响应无效',downstream:'下游写入失败'};
+      const hasStatus = Number.isInteger(s.statusCode) && s.statusCode > 0;
+      const failed = hasStatus && s.statusCode >= 400;
+      const source = typeof s.usageSource === 'string' ? s.usageSource : 'unknown';
+      const tokens = source === 'known' || source === 'legacy' ? fmtTok(s.totalTokens) + ' tok' : source === 'estimated' ? '估算 ' + fmtTok(s.totalTokens) + ' tok' : source === 'partial' ? '部分已知用量' : '用量未知';
+      const attempt = Number.isInteger(s.attempt) && s.attempt >= 0 ? (s.attempt === 0 ? '逻辑终态（不计尝试）' : '尝试 ' + s.attempt + (s.terminal ? ' · 终态' : '')) : '旧记录';
+      const id = typeof s.requestId === 'string' && /^[a-fA-F0-9-]{32,36}$/.test(s.requestId) ? s.requestId : '未记录';
+      const time = new Date(s.timestamp);
+      const row = (label, value) => '<div style="overflow-wrap:anywhere;"><span style="color:var(--text-muted);">' + esc(label) + '：</span>' + esc(value) + '</div>';
+      return '<details style="font-size:0.75rem;padding:7px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere;">'
+        + '<summary style="cursor:pointer;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">'
+        + '<span style="color:' + (failed ? '#f87171' : 'var(--text-muted)') + ';">' + (hasStatus ? 'HTTP ' + s.statusCode : '状态未知') + '</span>'
+        + '<span style="flex:1;min-width:100px;overflow-wrap:anywhere;">' + esc(s.model || '-') + '</span>'
+        + '<span style="color:var(--text-muted);">' + esc(tokens) + ' · ' + esc(diagnosticMillis(s.durationMs)) + '</span>'
+        + '<span style="color:var(--text-muted);">' + esc(Number.isNaN(time.getTime()) ? '时间未知' : time.toLocaleTimeString()) + '</span></summary>'
+        + '<div style="display:grid;gap:4px;padding:9px 0 2px;">'
+        + row('执行状态', states[d.executionState] || '未观测')
+        + row('交付确认', d.deliveryConfirmed === true ? '完整写入已确认' : d.deliveryConfirmed === false ? '写入失败已确认' : '未观测')
+        + row('逻辑请求 ID', id) + row('尝试', attempt)
+        + row('请求模型', diagnosticText(d.requestedModel))
+        + row('路由目标', diagnosticText(target.provider) + ' / ' + diagnosticText(target.model))
+        + row('逻辑耗时（截至结算）', diagnosticMillis(d.logicalDurationMs))
+        + row('出站准入等待', diagnosticMillis(d.queuedMs))
+        + row('耐受等待', diagnosticMillis(d.patienceWaitMs))
+        + row('失败类别', failures[d.failureKind] || '未观测')
+        + row('响应阶段', phases[d.responsePhase] || '未观测')
+        + row('规则版本', diagnosticText(d.rulesVersion))
+        + '<div style="color:var(--text-muted);">路由目标不代表厂商实际执行模型；HTTP 成功不等于完整交付。此处为最近账本行，可能未包含同一逻辑请求的全部尝试。</div></div></details>';
+    }
+
     let recentSessionsRevision = 0;
     let recentSessionsHasData = false;
     async function loadRecentSessions() {
@@ -3191,17 +3242,7 @@
           el.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">暂无请求记录</div>';
           return;
         }
-        el.innerHTML = list.map(s => {
-          const ok = (s.statusCode || 0) < 400;
-          const t = new Date(s.timestamp).toLocaleTimeString();
-          return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:0.75rem;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'
-            + '<span style="color:' + (ok ? '#34d399' : '#f87171') + ';">' + (ok ? '●' : '✕') + '</span>'
-            + '<span style="flex:1;color:#a5b4fc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(s.model || '-') + '</span>'
-            + '<span style="color:var(--text-muted);">' + fmtTok(s.totalTokens) + ' tok</span>'
-            + '<span style="color:var(--text-muted);">' + (s.durationMs || 0) + 'ms</span>'
-            + '<span style="color:#6b7280;">' + t + '</span>'
-            + '</div>';
-        }).join('');
+        el.innerHTML = list.map(renderRecentRequest).join('');
       } catch (e) {
         if (revision !== recentSessionsRevision) return;
         if (status) status.textContent = (recentSessionsHasData ? '刷新失败，保留上次记录：' : '读取失败：') + e.message;
@@ -5890,6 +5931,44 @@
       finally { outboundPending=false; document.getElementById('outbound-save').disabled=false; }
     }
 
+    let resilienceToken=null,resilienceBaseline=null,resilienceDirty=false,resilienceRev=0,resilienceRead=0,resiliencePending=false,resilienceUnknown=false,resilienceConflict=false;
+    function resilienceStatus(text) { const n=document.getElementById('resilience-status');if(n)n.textContent=text; }
+    function resilienceEdited() { if(!resilienceDirty)resilienceBaseline=resilienceToken;resilienceDirty=true;++resilienceRev; }
+    function resilienceValue() { return {patienceMillis:Number(document.getElementById('resilience-patience').value),heartbeat:document.getElementById('resilience-heartbeat').checked}; }
+    function resilienceValid(v) { return v && Number.isSafeInteger(v.patienceMillis) && v.patienceMillis>=0 && v.patienceMillis<=60000 && typeof v.heartbeat==='boolean'; }
+    async function loadResilience() {
+      if(resiliencePending)return;const seq=++resilienceRead,rev=resilienceRev;
+      try {
+        const r=await fetch(API_BASE+'/api/resilience');if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();
+        if(!d || d.ok!==true || !resilienceValid(d.settings) || typeof d.stateToken!=='string' || !d.stateToken)throw Error('响应无效');
+        if(seq!==resilienceRead || resiliencePending)return;
+        resilienceToken=d.stateToken;resilienceUnknown=false;
+        if(!resilienceDirty && rev===resilienceRev) {document.getElementById('resilience-patience').value=d.settings.patienceMillis;document.getElementById('resilience-heartbeat').checked=d.settings.heartbeat;resilienceBaseline=d.stateToken;resilienceStatus('已读取当前设置');}
+        else if(resilienceConflict) {resilienceConflict=false;resilienceBaseline=d.stateToken;resilienceStatus('已读取当前设置；草稿保留，请核对后保存');}
+        else {resilienceStatus('已读取当前设置；草稿保留。若设置已改变，保存会提示冲突');}
+      }catch(e){if(seq===resilienceRead)resilienceStatus('读取失败：'+e.message+'；草稿保留');}
+    }
+    async function saveResilience() {
+      if(resiliencePending)return;
+      if(resilienceUnknown || resilienceConflict) {resilienceStatus('请先读取当前设置并核对草稿');return;}
+      if(resilienceToken===null) {resilienceStatus('请先成功读取当前设置');return;}
+      const raw=document.getElementById('resilience-patience').value,value=resilienceValue();
+      if(!/^\d+$/.test(raw) || !resilienceValid(value)) {resilienceStatus('请输入0到60000的整数毫秒数');return;}
+      const rev=resilienceRev,expected=resilienceDirty && resilienceBaseline!==null?resilienceBaseline:resilienceToken;
+      resiliencePending=true;++resilienceRead;document.getElementById('resilience-save').disabled=true;
+      try {
+        let r;try {r=await fetch(API_BASE+'/api/resilience',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings:value,expectedStateToken:expected})});}catch(e){resilienceUnknown=true;throw Error('保存结果未确认，请读取核对');}
+        if(r.status===409){resilienceConflict=true;throw Error('设置冲突，请读取并核对');}
+        if(r.status===400 || r.status===500)throw Error('保存被拒绝（HTTP '+r.status+'）');
+        let d;try{d=await r.json();}catch(e){resilienceUnknown=true;throw Error('响应未确认，请读取核对');}
+        if(!r.ok || !d || d.ok!==true || !resilienceValid(d.settings) || d.settings.patienceMillis!==value.patienceMillis || d.settings.heartbeat!==value.heartbeat || typeof d.stateToken!=='string') {resilienceUnknown=true;throw Error('保存结果未确认');}
+        resilienceToken=d.stateToken;resilienceBaseline=d.stateToken;
+        if(rev===resilienceRev)resilienceDirty=false;
+        resilienceStatus(rev===resilienceRev?'保存成功':'保存成功；后续输入草稿保留');
+      }catch(e){resilienceStatus(e.message+'；草稿保留');}
+      finally{resiliencePending=false;document.getElementById('resilience-save').disabled=false;}
+    }
+
     // 页面启动初始化
     window.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { queryGatewayState(); }, 200);
@@ -5897,6 +5976,7 @@
       loadConfig();
       loadNetwork();
       loadOutbound();
+      loadResilience();
       try { loadRoutingState(); } catch (e) {}
       try { loadEtaCard(); } catch (e) {}
       try { loadAuthKey(); } catch (e) {}

@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 20
-        versionName '1.2.14'
+        versionCode 21
+        versionName '1.2.15'
     }
 
     signingConfigs {
@@ -74,6 +74,10 @@ def offlineTestMains = [
         'com.gaeul.allin.RecentUsageSchedulerOfflineTest',
         'com.gaeul.allin.OutboundLimiterOfflineTest',
         'com.gaeul.allin.RequestCoordinationOfflineTest',
+        'com.gaeul.allin.PatiencePolicyOfflineTest',
+        'com.gaeul.allin.ToolCallContractOfflineTest',
+        'com.gaeul.allin.ToolContractStrictOfflineTest',
+        'com.gaeul.allin.RequestDiagnosticsOfflineTest',
         'com.gaeul.allin.NetworkSettingsOfflineTest',
         'com.gaeul.allin.ProviderKeysOfflineTest',
         'com.gaeul.allin.GatewayAddressOfflineTest',
@@ -109,6 +113,7 @@ def offlineTestMains = [
         'com.gaeul.allin.RecoveryPolicyTest',
         'com.gaeul.allin.ForegroundServicePolicyTest',
         'fi.iki.elonen.TrackedResponseOfflineTest',
+        'fi.iki.elonen.HeldResponseOfflineTest',
 ]
 
 def mainClassesDir = provider { tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().destinationDirectory.get() }
@@ -210,4 +215,24 @@ tasks.register('outboundRoutingHttpTests', JavaExec) {
     dependsOn 'compileOfflineTests'
     classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
     mainClass = 'com.gaeul.allin.OutboundRoutingHttpTest'
+}
+
+tasks.register('patienceRoutingHttpTests', JavaExec) {
+    group = 'verification'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.PatienceRoutingHttpTest'
+}
+
+tasks.named('streamingHttpTests') { dependsOn 'patienceRoutingHttpTests' }
+
+// Protocol contract and diagnostic loopback regressions share the existing local HTTP gate.
+['ProtocolDiagnosticsHttpTest', 'ToolContractFailoverHttpTest'].each { name ->
+    def taskName = name.substring(0, 1).toLowerCase() + name.substring(1)
+    tasks.register(taskName, JavaExec) {
+        dependsOn 'compileOfflineTests'
+        classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+        mainClass = 'com.gaeul.allin.' + name
+    }
+    tasks.named('streamingHttpTests') { dependsOn taskName }
 }

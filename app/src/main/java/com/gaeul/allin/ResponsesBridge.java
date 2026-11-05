@@ -225,19 +225,20 @@ final class ResponsesBridge {
                     if (!Arrays.asList("user", "assistant", "system", "developer").contains(role)) throw new IllegalArgumentException("Unsupported message role: " + role);
                     messages.put(new JSONObject().put("role", role).put("content", chatContent(item.opt("content"))));
                 } else if ("function_call".equals(type)) {
-                    String id = item.optString("call_id"), name = item.optString("name");
-                    if (id.isEmpty() || name.isEmpty() || !(item.opt("arguments") instanceof String)) throw new IllegalArgumentException("function_call requires call_id, name and arguments");
-                    JSONObject fn = new JSONObject().put("name", name).put("arguments", item.getString("arguments"));
+                    String id = toolString(item, "call_id"), name = toolString(item, "name");
+                    JSONObject fn = new JSONObject().put("name", name).put("arguments", toolArguments(item));
                     JSONObject call = new JSONObject().put("id", id).put("type", "function").put("function", fn);
                     JSONObject last = messages.length() == 0 ? null : messages.optJSONObject(messages.length()-1);
                     if (last == null || !"assistant".equals(last.optString("role"))) {
                         last = new JSONObject().put("role", "assistant").put("content", JSONObject.NULL); messages.put(last);
                     }
                     if (!last.has("tool_calls")) last.put("tool_calls",new JSONArray());
-                    last.getJSONArray("tool_calls").put(call);
+                    JSONArray calls = last.getJSONArray("tool_calls");
+                    for (int j=0;j<calls.length();j++) if (id.equals(calls.getJSONObject(j).getString("id"))) throw new IllegalArgumentException("duplicate tool call id");
+                    calls.put(call);
                 } else if ("function_call_output".equals(type)) {
-                    String id = item.optString("call_id");
-                    if (id.isEmpty() || !(item.opt("output") instanceof String)) throw new IllegalArgumentException("function_call_output requires call_id and string output");
+                    String id = toolString(item, "call_id");
+                    if (!(item.opt("output") instanceof String)) throw new IllegalArgumentException("function_call_output requires string output");
                     messages.put(new JSONObject().put("role", "tool").put("tool_call_id", id).put("content", item.getString("output")));
                 } else throw new IllegalArgumentException("Unsupported input item type: " + type);
             }
@@ -301,6 +302,31 @@ final class ResponsesBridge {
     private static void copy(JSONObject from, JSONObject to, String key, String dest) throws Exception {
         if (from.has(key)) to.put(dest, from.get(key));
     }
+    // Tool references are opaque. Missing IDs fail consistently in requests and
+    // outputs; response-local ordinals cannot safely identify a later result.
+    private static String toolString(JSONObject object, String field) {
+        Object value=object.opt(field);
+        if (!(value instanceof String) || ((String)value).trim().isEmpty()) throw new IllegalArgumentException("tool call requires a nonempty string "+field);
+        return (String)value;
+    }
+    private static String toolArguments(JSONObject object) {
+        Object value=object.opt("arguments");
+        if (!(value instanceof String)) throw new IllegalArgumentException("tool call arguments must be a string");
+        return (String)value;
+    }
+    private static String toolFragment(JSONObject object, String field) {
+        Object value=object==null?null:object.opt(field);
+        if (value==null || value==JSONObject.NULL) return "";
+        if (!(value instanceof String)) throw new IllegalArgumentException("tool call "+field+" must be a string");
+        return (String)value;
+    }
+    private static int toolIndex(JSONObject object, String field) {
+        Object value=object.opt(field);
+        return ToolContract.index(value);
+    }
+    private static void uniqueToolId(Set<String> ids, String id) {
+        if (!ids.add(id)) throw new IllegalArgumentException("duplicate tool call id");
+    }
     static JSONObject chatToResponses(JSONObject chat, String model) throws Exception {
         try { return chatToResponsesChecked(chat, model); }
         catch (org.json.JSONException e) { throw new IllegalArgumentException("Invalid Chat request: " + e.getMessage(), e); }
@@ -334,7 +360,7 @@ final class ResponsesBridge {
                 if (instructions.length()>0) instructions.append("\n\n"); instructions.append(m.optString("content")); continue;
             }
             if ("tool".equals(role)) {
-                input.put(new JSONObject().put("type", "function_call_output").put("call_id", m.getString("tool_call_id")).put("output", m.optString("content", ""))); continue;
+                input.put(new JSONObject().put("type", "function_call_output").put("call_id", toolString(m,"tool_call_id")).put("output", m.optString("content", ""))); continue;
             }
             Object content=m.opt("content");
             if (content != null && content != JSONObject.NULL) {
@@ -359,11 +385,13 @@ final class ResponsesBridge {
             }
             JSONArray calls=m.optJSONArray("tool_calls");
             if (m.has("tool_calls") && !m.isNull("tool_calls") && calls==null) throw new IllegalArgumentException("tool_calls must be an array");
+            Set<String> callIds = new HashSet<String>();
             for (int j=0;calls!=null && j<calls.length();j++) {
                 JSONObject c=calls.getJSONObject(j), fn=c.getJSONObject("function");
                 checkKeys(c,new String[]{"id","type","function"}); checkKeys(fn,new String[]{"name","arguments"});
                 if(!"function".equals(c.optString("type"))) throw new IllegalArgumentException("Unsupported Chat tool call");
-                input.put(new JSONObject().put("type","function_call").put("call_id",c.getString("id")).put("name",fn.getString("name")).put("arguments",fn.optString("arguments","{}")));
+                String id=toolString(c,"id"); uniqueToolId(callIds,id);
+                input.put(new JSONObject().put("type","function_call").put("call_id",id).put("name",toolString(fn,"name")).put("arguments",toolArguments(fn)));
             }
         }
         out.put("input",input);
@@ -401,7 +429,13 @@ final class ResponsesBridge {
         }
         else if (content != null && content != JSONObject.NULL) throw new IllegalArgumentException("Unsupported response content");
         JSONArray calls=msg.optJSONArray("tool_calls");
-        for(int i=0;calls!=null && i<calls.length();i++) { JSONObject c=calls.getJSONObject(i), fn=c.getJSONObject("function"); output.put(functionItem(c.optString("id"),fn.optString("name"),fn.optString("arguments"))); }
+        if (msg.has("tool_calls") && !msg.isNull("tool_calls") && calls==null) throw new IllegalArgumentException("tool_calls must be an array");
+        Set<String> callIds=new HashSet<String>();
+        for(int i=0;calls!=null && i<calls.length();i++) {
+            JSONObject c=calls.getJSONObject(i), fn=c.getJSONObject("function");
+            String id=toolString(c,"id"); uniqueToolId(callIds,id);
+            output.put(functionItem(id,toolString(fn,"name"),toolArguments(fn)));
+        }
         if (msg.has("refusal") && !msg.isNull("refusal")) {
             if (!(msg.opt("refusal") instanceof String)) throw new IllegalArgumentException("invalid refusal");
             output.put(refusalItem(msg.getString("refusal")));
@@ -433,8 +467,14 @@ final class ResponsesBridge {
         return new java.io.InputStream() {
             final java.io.BufferedReader in = new java.io.BufferedReader(new java.io.InputStreamReader(source, java.nio.charset.StandardCharsets.UTF_8));
             final java.util.ArrayList<JSONObject> items = new java.util.ArrayList<JSONObject>();
-            final java.util.Map<Integer,Integer> tools = new java.util.HashMap<Integer,Integer>();
+            // Responses has no ID/name delta event. Keep Chat tools until finish
+            // rather than publish a partial identity in output_item.added.
             final java.util.Map<Integer,JSONObject> waitingTools = new java.util.LinkedHashMap<Integer,JSONObject>();
+            int toolChars=0;
+            void reserveTool(int size) throws java.io.IOException {
+                if(size<0 || size>1024*1024-toolChars) throw new java.io.IOException("upstream tool stream exceeded buffer limit");
+                toolChars+=size;
+            }
             final StringBuilder pending = new StringBuilder();
             JSONObject response, usage; int textIndex=-1, reasoningIndex=-1, refusalIndex=-1, sequence=0; String finish=null;
             byte[] bytes=new byte[0]; int at=0; boolean ended=false, started=false;
@@ -477,36 +517,40 @@ final class ResponsesBridge {
                     if (delta.has("refusal") && !delta.isNull("refusal")) { if (!(delta.opt("refusal") instanceof String)) throw new java.io.IOException("invalid refusal"); refusal(delta.getString("refusal")); }
                     text(delta.optString("reasoning_content", ""),true); text(delta.optString("content", ""),false);
                     JSONArray calls=delta.optJSONArray("tool_calls");
+                    if(delta.has("tool_calls") && !delta.isNull("tool_calls") && calls==null) throw new java.io.IOException("tool_calls must be an array");
                     for(int i=0;calls!=null && i<calls.length();i++) {
-                        JSONObject call=calls.getJSONObject(i), fn=call.optJSONObject("function"); int number=call.optInt("index",i); Integer index=tools.get(number);
-                        JSONObject item;
-                        if(index==null) {
-                            item=waitingTools.get(number);
-                            if(item==null) { item=functionItem("","",""); waitingTools.put(number,item); }
-                        } else item=items.get(index);
-                        if(call.has("id") && !call.isNull("id")) item.put("call_id",call.getString("id"));
-                        String args="";
-                        if(fn!=null) {
-                            if(fn.has("name") && !fn.isNull("name")) item.put("name",item.getString("name")+fn.getString("name"));
-                            if(fn.has("arguments") && !fn.isNull("arguments")) args=fn.getString("arguments");
+                        JSONObject call=calls.getJSONObject(i), fn=call.optJSONObject("function"); int number=toolIndex(call,"index");
+                        if(call.has("function") && !call.isNull("function") && fn==null) throw new java.io.IOException("tool call function must be an object");
+                        JSONObject item=waitingTools.get(number);
+                        if(item==null) {
+                            if(waitingTools.size()>=1024) throw new java.io.IOException("too many upstream tool calls");
+                            item=functionItem("","",""); waitingTools.put(number,item);
                         }
-                        if(index==null) {
-                            item.put("arguments",item.getString("arguments")+args);
-                            if(!item.getString("call_id").isEmpty() && !item.getString("name").isEmpty()) {
-                                String buffered=item.getString("arguments"); item.put("arguments","");
-                                index=add(item); tools.put(number,index); waitingTools.remove(number);
-                                args=buffered;
-                            } else continue;
-                        }
-                        if(!args.isEmpty()) { item.put("arguments",item.getString("arguments")+args); event("response.function_call_arguments.delta",new JSONObject().put("item_id",item.getString("id")).put("output_index",index).put("delta",args)); }
+                        String callId=toolFragment(call,"id"), name=toolFragment(fn,"name"), args=toolFragment(fn,"arguments");
+                        reserveTool(callId.length()); reserveTool(name.length()); reserveTool(args.length());
+                        // Chat fields are deltas, not cumulative snapshots. Do not
+                        // overwrite an earlier ID fragment or guess repeated text.
+                        item.put("call_id",item.getString("call_id")+callId);
+                        item.put("name",item.getString("name")+name);
+                        item.put("arguments",item.getString("arguments")+args);
                     }
                 }
                 if(!choice.isNull("finish_reason") && choice.has("finish_reason")) finish=choice.getString("finish_reason");
             }
             void complete() throws Exception {
                 if(finish==null) throw new java.io.IOException("upstream stream ended before finish_reason");
-                if(!waitingTools.isEmpty()) throw new java.io.IOException("function call missing id or name");
                 if(!Arrays.asList("stop","tool_calls","length","content_filter").contains(finish)) throw new java.io.IOException("Unsupported finish reason: "+finish);
+                Set<String> callIds=new HashSet<String>();
+                // Validate the complete set before publishing any executable tool.
+                for(JSONObject item:waitingTools.values()) {
+                    uniqueToolId(callIds,toolString(item,"call_id")); toolString(item,"name");
+                }
+                for(JSONObject item:waitingTools.values()) {
+                    String args=item.getString("arguments"); item.put("arguments",""); int index=add(item);
+                    item.put("arguments",args);
+                    if(!args.isEmpty()) event("response.function_call_arguments.delta",new JSONObject().put("item_id",item.getString("id")).put("output_index",index).put("delta",args));
+                }
+                waitingTools.clear();
                 JSONArray output=new JSONArray();
                 for(int i=0;i<items.size();i++) {
                     JSONObject item=items.get(i); String type=item.getString("type"), id=item.getString("id");
@@ -542,10 +586,14 @@ final class ResponsesBridge {
     static JSONObject responsesResponseToChat(JSONObject response,String model) throws Exception {
         if (!Arrays.asList("completed", "incomplete").contains(response.optString("status"))) throw new IllegalArgumentException("Responses response is not complete");
         StringBuilder text=new StringBuilder(), reasoning=new StringBuilder(), refusal=new StringBuilder(); JSONArray calls=new JSONArray(), output=response.optJSONArray("output");
+        Set<String> callIds=new HashSet<String>();
         for(int i=0;output!=null && i<output.length();i++) { JSONObject item=output.getJSONObject(i); String type=item.optString("type");
             if("message".equals(type)) { JSONArray parts=item.optJSONArray("content"); for(int j=0;parts!=null && j<parts.length();j++) { JSONObject part=parts.getJSONObject(j); if("output_text".equals(part.optString("type"))) text.append(part.optString("text")); else if("refusal".equals(part.optString("type"))) refusal.append(part.optString("refusal")); else throw new IllegalArgumentException("Unsupported Responses output content: "+part.optString("type")); } }
             else if("reasoning".equals(type)) { JSONArray parts=item.optJSONArray("summary"); for(int j=0;parts!=null && j<parts.length();j++) reasoning.append(parts.getJSONObject(j).optString("text")); }
-            else if("function_call".equals(type)) calls.put(new JSONObject().put("id",item.optString("call_id")).put("type","function").put("function",new JSONObject().put("name",item.optString("name")).put("arguments",item.optString("arguments"))));
+            else if("function_call".equals(type)) {
+                String callId=toolString(item,"call_id"); uniqueToolId(callIds,callId);
+                calls.put(new JSONObject().put("id",callId).put("type","function").put("function",new JSONObject().put("name",toolString(item,"name")).put("arguments",toolArguments(item))));
+            }
             else throw new IllegalArgumentException("Unsupported Responses output item: "+type);
         }
         JSONObject msg=new JSONObject().put("role","assistant").put("content",text.length()==0?JSONObject.NULL:text.toString());
@@ -559,6 +607,7 @@ final class ResponsesBridge {
         return new java.io.InputStream() {
             final java.io.BufferedReader in=new java.io.BufferedReader(new java.io.InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
             final java.util.Map<Integer,Integer> calls=new java.util.HashMap<Integer,Integer>();
+            final java.util.Map<Integer,String> callIds=new java.util.HashMap<Integer,String>();
             final java.util.Map<Integer,String> callNames=new java.util.HashMap<Integer,String>();
             final java.util.Map<Integer,String> callArgs=new java.util.HashMap<Integer,String>();
             final java.util.Map<String,String> content=new java.util.HashMap<String,String>();
@@ -578,28 +627,43 @@ final class ResponsesBridge {
             String addCall(int output,JSONObject item) throws Exception {
                 if(calls.containsKey(output)) return "";
                 int idx=calls.size(); calls.put(output,idx);
-                String name=item.optString("name"), args=item.optString("arguments"), callId=item.optString("call_id");
-                callNames.put(output,name); callArgs.put(output,args);
-                JSONObject fn=new JSONObject().put("name",name).put("arguments",args);
-                JSONObject call=new JSONObject().put("index",idx).put("id",callId).put("type","function").put("function",fn);
+                String name=toolFragment(item,"name"), args=toolFragment(item,"arguments"), callId=toolFragment(item,"call_id");
+                callIds.put(output,callId); callNames.put(output,name); callArgs.put(output,args);
+                JSONObject fn=new JSONObject().put("arguments",args);
+                if(!name.isEmpty()) fn.put("name",name);
+                JSONObject call=new JSONObject().put("index",idx).put("type","function").put("function",fn);
+                if(!callId.isEmpty()) call.put("id",callId);
                 return chunk(new JSONObject().put("tool_calls",new JSONArray().put(call)),null,null);
             }
             String reconcileCall(int output,JSONObject item) throws Exception {
                 String result=addCall(output,item); Integer idx=calls.get(output);
-                String oldName=callNames.get(output), name=item.optString("name",oldName);
-                String oldArgs=callArgs.get(output), args=item.optString("arguments",oldArgs);
-                if(!name.startsWith(oldName) || !args.startsWith(oldArgs)) throw new java.io.IOException("function call changed in final response");
-                JSONObject fn=new JSONObject();
+                String oldId=callIds.get(output), callId=item.has("call_id")?toolFragment(item,"call_id"):oldId;
+                String oldName=callNames.get(output), name=item.has("name")?toolFragment(item,"name"):oldName;
+                String oldArgs=callArgs.get(output), args=item.has("arguments")?toolFragment(item,"arguments"):oldArgs;
+                // Responses done/final fields are cumulative snapshots. Only emit
+                // the missing suffix, including late IDs; conflicting IDs fail.
+                if(!callId.startsWith(oldId) || !name.startsWith(oldName) || !args.startsWith(oldArgs)) throw new java.io.IOException("function call changed in final response");
+                JSONObject fn=new JSONObject(), call=new JSONObject().put("index",idx);
+                if(callId.length()>oldId.length()) call.put("id",callId.substring(oldId.length()));
                 if(name.length()>oldName.length()) fn.put("name",name.substring(oldName.length()));
                 if(args.length()>oldArgs.length()) fn.put("arguments",args.substring(oldArgs.length()));
-                callNames.put(output,name); callArgs.put(output,args);
-                if(fn.length()>0) result+=chunk(new JSONObject().put("tool_calls",new JSONArray().put(new JSONObject().put("index",idx).put("function",fn))),null,null);
+                callIds.put(output,callId); callNames.put(output,name); callArgs.put(output,args);
+                if(fn.length()>0) call.put("function",fn);
+                if(fn.length()>0 || call.has("id")) result+=chunk(new JSONObject().put("tool_calls",new JSONArray().put(call)),null,null);
                 return result;
+            }
+            void validateCalls() throws java.io.IOException {
+                Set<String> ids=new HashSet<String>();
+                for(Integer output:calls.keySet()) {
+                    String callId=callIds.get(output), name=callNames.get(output);
+                    if(callId.trim().isEmpty() || name.trim().isEmpty()) throw new java.io.IOException("function call missing id or name");
+                    if(!ids.add(callId)) throw new java.io.IOException("duplicate tool call id");
+                }
             }
             String reconcileItem(int output,JSONObject item) throws Exception {
                 String type=item.optString("type"), result="";
                 if("function_call".equals(type)) {
-                    if (!(item.opt("call_id") instanceof String) || item.optString("call_id").isEmpty() || !(item.opt("name") instanceof String) || item.optString("name").isEmpty()) throw new java.io.IOException("function call missing id or name");
+                    toolString(item,"call_id"); toolString(item,"name"); toolArguments(item);
                     return reconcileCall(output,item);
                 }
                 if("message".equals(type)) {
@@ -626,23 +690,23 @@ final class ResponsesBridge {
                             else if("response.reasoning_summary_text.delta".equals(type) || "response.reasoning_text.delta".equals(type)) { result=appendContent("reasoning_content",event.optInt("output_index"),event.optInt("summary_index"),event.optString("delta")); }
                             else if("response.output_item.added".equals(type)) {
                                 JSONObject item=event.optJSONObject("item");
-                                if(item!=null && "function_call".equals(item.optString("type"))) result=addCall(event.optInt("output_index"),item);
+                                if(item!=null && "function_call".equals(item.optString("type"))) result=reconcileCall(toolIndex(event,"output_index"),item);
                                 else if(item!=null && !"message".equals(item.optString("type")) && !"reasoning".equals(item.optString("type"))) throw new java.io.IOException("Unsupported output item");
                             }
                             else if("response.output_item.done".equals(type)) {
-                                JSONObject item=event.optJSONObject("item"); if(item!=null) result=reconcileItem(event.optInt("output_index"),item);
+                                JSONObject item=event.optJSONObject("item"); if(item!=null) result=reconcileItem(toolIndex(event,"output_index"),item);
                             }
                             else if("response.function_call_arguments.delta".equals(type)) {
-                                int output=event.optInt("output_index"); Integer idx=calls.get(output); if(idx==null) throw new java.io.IOException("function arguments before item");
-                                String args=event.optString("delta"); callArgs.put(output,callArgs.get(output)+args);
+                                int output=toolIndex(event,"output_index"); Integer idx=calls.get(output); if(idx==null) throw new java.io.IOException("function arguments before item");
+                                String args=toolFragment(event,"delta"); callArgs.put(output,callArgs.get(output)+args);
                                 JSONObject call=new JSONObject().put("index",idx).put("function",new JSONObject().put("arguments",args));
                                 result=chunk(new JSONObject().put("tool_calls",new JSONArray().put(call)),null,null);
                             }
                             else if("response.function_call_arguments.done".equals(type)) {
-                                int output=event.optInt("output_index"); if(!calls.containsKey(output)) throw new java.io.IOException("function arguments before item");
-                                result=reconcileCall(output,new JSONObject().put("arguments",event.optString("arguments")));
+                                int output=toolIndex(event,"output_index"); if(!calls.containsKey(output)) throw new java.io.IOException("function arguments before item");
+                                result=reconcileCall(output,new JSONObject().put("arguments",toolArguments(event)));
                             }
-                            else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); if(r==null || !type.substring(9).equals(r.optString("status"))) throw new java.io.IOException("invalid Responses terminal status"); JSONArray finalOutput=r.optJSONArray("output"); for(int i=0;finalOutput!=null && i<finalOutput.length();i++) result+=reconcileItem(i,finalOutput.getJSONObject(i)); JSONObject u=r.optJSONObject("usage"); JSONObject details=r.optJSONObject("incomplete_details"); String reason="response.incomplete".equals(type)?(details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"):calls.isEmpty()?"stop":"tool_calls"; result+=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
+                            else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); if(r==null || !type.substring(9).equals(r.optString("status"))) throw new java.io.IOException("invalid Responses terminal status"); JSONArray finalOutput=r.optJSONArray("output"); for(int i=0;finalOutput!=null && i<finalOutput.length();i++) result+=reconcileItem(i,finalOutput.getJSONObject(i)); validateCalls(); JSONObject u=r.optJSONObject("usage"); JSONObject details=r.optJSONObject("incomplete_details"); String reason="response.incomplete".equals(type)?(details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"):calls.isEmpty()?"stop":"tool_calls"; result+=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
                             else if("response.failed".equals(type)||"error".equals(type)) { result="data: "+new JSONObject().put("error",event.opt("error") == null ? event : event.opt("error")).toString()+"\n\n"; ended=true; }
                         }
                     } catch(Exception ex) { ended=true; result="data: {\"error\":{\"message\":\"Invalid Responses stream\"}}\n\n"; }

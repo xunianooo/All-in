@@ -132,6 +132,8 @@ public class UsageLedger {
         /** Bounded transport metadata, never prompt/header/credential material. */
         public long outboundAt, queuedMs;
         public String failureKind="", upstreamErrorCode="", upstreamRetryAfter="";
+        public RequestDiagnostics.Snapshot diagnostics;
+        transient RequestDiagnostics.Observation diagnosticObservation;
         public boolean isLegacy() { return requestId == null || requestId.isEmpty(); }
         public boolean isTerminal() { return isLegacy() || terminal; }
         public boolean isAttempt() { return isLegacy() || attempt > 0; }
@@ -410,6 +412,7 @@ public class UsageLedger {
 
     public static void record(Row r) {
         if (r == null) return;
+        RequestDiagnostics.freeze(r);
         if (r.recentUsageLease != null) r.recentUsageLease.complete(r);
         if (r.t <= 0) r.t = System.currentTimeMillis();
         if (r.hour < 0) {
@@ -483,6 +486,7 @@ public class UsageLedger {
     private static String toJsonLine(Row r) {
         JSONObject o = new JSONObject();
         try {
+            if(r.diagnostics!=null) o.put("diagnostics",r.diagnostics.json());
             if (!r.isLegacy()) {
                 o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.terminal);
                 if (r.credentialId != null && !r.credentialId.isEmpty()) o.put("credentialId", r.credentialId);
@@ -526,6 +530,7 @@ public class UsageLedger {
         try {
             JSONObject o = new JSONObject(line);
             Row r = new Row();
+            r.diagnostics=RequestDiagnostics.Snapshot.parse(o.optJSONObject("diagnostics"));
             r.requestId = o.optString("requestId", "");
             r.credentialId = o.optString("credentialId", "");
             r.outboundAt=o.optLong("outboundAt",0); r.queuedMs=o.optLong("queuedMs",0);
@@ -721,6 +726,7 @@ public class UsageLedger {
                 Row r = all.get(i);
                 JSONObject o = new JSONObject();
                 o.put("t", r.t);
+                o.put("diagnostics",RequestDiagnostics.json(r));
                 o.put("prov", r.prov);
                 o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.isTerminal());
                 o.put("credentialId", r.credentialId); o.put("usageSource", r.effectiveUsageSource());
@@ -942,6 +948,7 @@ public class UsageLedger {
             Row r = all.get(i);
             JSONObject o = new JSONObject();
             o.put("timestamp", r.t);
+            o.put("diagnostics",RequestDiagnostics.json(r));
             o.put("statusCode", r.status);
             o.put("model", r.model == null || r.model.isEmpty() ? r.req : r.model);
             o.put("provider", r.prov);

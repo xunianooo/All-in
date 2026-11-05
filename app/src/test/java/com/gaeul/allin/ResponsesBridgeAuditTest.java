@@ -23,7 +23,7 @@ public class ResponsesBridgeAuditTest {
         String raw=sse("{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"look\",\"arguments\":\"{\"}}]}}]}","{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"up\",\"arguments\":\"}\"}}]}}]}","{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}","[DONE]");
         String responses=read(ResponsesBridge.chatStreamToResponses(new ByteArrayInputStream(raw.getBytes(StandardCharsets.UTF_8)),"m"));
         String chat=read(ResponsesBridge.responsesStreamToChat(new ByteArrayInputStream(responses.getBytes(StandardCharsets.UTF_8)),"m"));
-        check(chat.contains("\"name\":\"up\""),"name suffix lost: "+chat);
+        check(chat.contains("\"name\":\"lookup\"") && chat.contains("\"arguments\":\"{}\""),"complete name/arguments lost: "+chat);
     }
     static void prematureDone() throws Exception {
         String raw=sse("{\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}");

@@ -46,6 +46,8 @@ jobs:
           node tests/dashboard-network.cjs
           node tests/dashboard-usage-routing.cjs
           node tests/dashboard-outbound.cjs
+          node tests/dashboard-resilience.cjs
+          node tests/dashboard-diagnostics.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |

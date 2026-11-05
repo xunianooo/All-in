@@ -244,11 +244,11 @@ public final class GatewayStreamingHttpTest {
     static void gated(String label, String uri, boolean nativeResponses) throws Exception { gated(label, uri, nativeResponses, "identity"); }
     static void gated(String label, String uri, boolean nativeResponses, String encoding) throws Exception {
         try (Upstream upstream = new Upstream(nativeResponses, true); Fixture fixture = new Fixture(upstream.server.getLocalPort(), nativeResponses ? "responses" : "openai")) {
-            // Messages intentionally defers tool blocks until fragmented identities
-            // are complete. Preserve that compatibility; only text pacing and final
-            // tool integrity are promised for this adapter. Chat/Responses must
-            // expose the first argument while the upstream still holds the rest.
-            boolean early = !uri.endsWith("/messages");
+            // Chat tool identities are deltas with no identity-complete marker.
+            // Messages and Chat-to-Responses defer tools until finish so added/done
+            // identities cannot diverge. Text pacing is tested separately above.
+            // Native Responses has complete item identities and still streams args.
+            boolean early = !uri.endsWith("/messages") && !(uri.endsWith("/responses") && !nativeResponses);
             if (!early) upstream.gate.countDown();
             try (Client client = new Client(fixture.getListeningPort(), uri, encoding)) {
             StringBuilder arguments = new StringBuilder(), all = new StringBuilder(); boolean opened = false; String data;
@@ -264,7 +264,7 @@ public final class GatewayStreamingHttpTest {
                 }
                 if (!part.isEmpty()) { arguments.append(part); if (!opened && arguments.toString().contains(FIRST)) { opened = true; upstream.gate.countDown(); } }
             }
-            check(opened, label + " first tool arguments did not reach client before gate");
+            check(opened, label + (early ? " first tool arguments did not reach client before gate" : " deferred tool arguments missing"));
             check(arguments.toString().equals(FIRST + REST), label + " tool arguments " + arguments);
             check(all.toString().contains("lookup") && all.toString().contains("call1"), label + " tool identity missing");
             String terminal = uri.endsWith("/responses") ? "response.completed" : uri.endsWith("/messages") ? "message_stop" : "[DONE]";
