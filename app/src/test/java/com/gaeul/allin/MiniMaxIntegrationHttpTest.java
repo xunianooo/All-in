@@ -13,7 +13,8 @@ public class MiniMaxIntegrationHttpTest {
   GatewayServer g=ResponsesGatewayOfflineTest.gateway(port,"minimax");
   JSONObject config=ResponsesGatewayOfflineTest.config(g), p=config.getJSONArray("providers").getJSONObject(0);
   p.put("id","minimax-code").put("accounts",new JSONArray().put(new JSONObject().put("id","a").put("access","old").put("token","old").put("refresh","one").put("expires",expires)));
-  ResponsesGatewayOfflineTest.set(g,"configFile",path.toFile()); Files.write(path,config.toString().getBytes("UTF-8")); return g;
+  ResponsesGatewayOfflineTest.set(g,"configFile",path.toFile()); Files.write(path,config.toString().getBytes("UTF-8"));
+  ResponsesGatewayOfflineTest.set(g,"miniMaxJournal",MiniMaxTestJournal.fixture(path.getParent().toFile())); return g;
  }
  static JSONObject account(GatewayServer g) throws Exception {return ResponsesGatewayOfflineTest.config(g).getJSONArray("providers").getJSONObject(0).getJSONArray("accounts").getJSONObject(0);}
  static Object lease(GatewayServer g,JSONObject a) throws Exception {Method m=GatewayServer.class.getDeclaredMethod("miniLease",JSONObject.class,boolean.class,MiniMaxLifecycle.Lease.class);m.setAccessible(true);return m.invoke(g,a,false,null);}
@@ -28,7 +29,7 @@ public class MiniMaxIntegrationHttpTest {
    String body=ResponsesGatewayOfflineTest.read(result.getData()); check(result.getStatus().getRequestStatus()==200,"forward "+body);
    check(calls.get()==1 && account(g).getString("refresh").equals("two") && new JSONObject(new String(Files.readAllBytes(file),"UTF-8")).getJSONArray("providers").getJSONObject(0).getJSONArray("accounts").getJSONObject(0).getString("refresh").equals("two"),"durable rotation");
   }
-  GatewayServer failed=setup(1,file,1); ResponsesGatewayOfflineTest.set(failed,"configFile",dir.resolve("missing").resolve("config.json").toFile());
+  GatewayServer failed=setup(1,file,1); ResponsesGatewayOfflineTest.set(failed,"configFile",dir.resolve("missing").resolve("config.json").toFile()); ResponsesGatewayOfflineTest.set(failed,"miniMaxJournal",null);
   AtomicInteger calls=new AtomicInteger();failed.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();MiniMaxAuth.SignIn x=new MiniMaxAuth.SignIn();x.access="new";x.refresh="two";x.expires=9;return x;});
   try {lease(failed,account(failed));throw new AssertionError("expected failure");} catch(InvocationTargetException expected) {}
   check(account(failed).getString("refresh").equals("one"),"old in memory");

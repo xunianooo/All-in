@@ -30,15 +30,20 @@ public final class MiniMaxCompetitionTest {
  }
  static void restartAndFailures() throws Exception {
   Path dir=Files.createTempDirectory("mini-restart"), file=dir.resolve("config.json");
-  if (System.getProperty("os.name", "").startsWith("Windows")) {
-   try { new MiniMaxRefreshJournal(dir.toFile()).syncDirectory(); System.out.println("Windows directory sync probe succeeded"); }
-   catch (IOException e) { System.out.println("Windows directory sync probe failed: " + e.getClass().getName() + " / cause=" + (e.getCause()==null?"none":e.getCause().getClass().getName())); }
+  if (MiniMaxTestJournal.unsupported(dir.toFile())) {
+   GatewayServer closed=MiniMaxIntegrationHttpTest.setup(1,file,1); ResponsesGatewayOfflineTest.set(closed,"miniMaxJournal",null);
+   byte[] before=Files.readAllBytes(file); AtomicInteger attempts=new AtomicInteger();
+   closed.setMiniMaxRefreshForTests(rt->{attempts.incrementAndGet();return null;}); expectFailure(closed);
+   GatewayServer reopened=MiniMaxIntegrationHttpTest.setup(1,file,1); ResponsesGatewayOfflineTest.set(reopened,"miniMaxJournal",null);
+   reopened.setMiniMaxRefreshForTests(rt->{attempts.incrementAndGet();return null;}); expectFailure(reopened);
+   check(attempts.get()==0 && Arrays.equals(before,Files.readAllBytes(file)),"unsupported directory sync must fail closed before refresh and after restart");
+   System.out.println("Windows directory sync AccessDeniedException: fail-closed verified; isolated lifecycle fixture follows");
   }
   GatewayServer g=MiniMaxIntegrationHttpTest.setup(1,file,1);AtomicInteger calls=new AtomicInteger();
   g.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(g);
   GatewayServer restart=MiniMaxIntegrationHttpTest.setup(1,file,1);MiniMaxIntegrationHttpTest.account(restart).put("id","renamed");restart.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(restart);check(calls.get()==1,"restarted renamed credential replayed");
   Files.write(dir.resolve("minimax-refresh.journal"),new byte[]{1});GatewayServer corrupt=MiniMaxIntegrationHttpTest.setup(1,file,1);corrupt.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(corrupt);check(calls.get()==1,"corrupt marker sent refresh");
-  Path missing=Files.createTempDirectory("mini-no-dir").resolve("missing").resolve("config.json"); GatewayServer noDir=MiniMaxIntegrationHttpTest.setup(1,dir.resolve("other.json"),1);ResponsesGatewayOfflineTest.set(noDir,"configFile",missing.toFile());noDir.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(noDir);check(calls.get()==1,"write failure sent refresh");
+  Path missing=Files.createTempDirectory("mini-no-dir").resolve("missing").resolve("config.json"); GatewayServer noDir=MiniMaxIntegrationHttpTest.setup(1,dir.resolve("other.json"),1);ResponsesGatewayOfflineTest.set(noDir,"configFile",missing.toFile());ResponsesGatewayOfflineTest.set(noDir,"miniMaxJournal",null);noDir.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(noDir);check(calls.get()==1,"write failure sent refresh");
  }
  static void persistenceFailure() throws Exception {
   Path dir=Files.createTempDirectory("mini-save-fail"), file=dir.resolve("config.json"); GatewayServer g=MiniMaxIntegrationHttpTest.setup(1,file,1);AtomicInteger calls=new AtomicInteger();

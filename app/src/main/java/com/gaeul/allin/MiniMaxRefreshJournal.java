@@ -13,7 +13,7 @@ import javax.crypto.spec.SecretKeySpec;
 /** Durable uncertainty fence for one-use MiniMax refresh credentials.
  * All calls must also be serialized with the authoritative configuration transaction.
  * Never put credentials or account identifiers in logs or filenames. */
-final class MiniMaxRefreshJournal {
+class MiniMaxRefreshJournal {
     private static final Object PROCESS_LOCK = new Object();
     private static final int MAX_RECORDS=512, MAX_BYTES=128*1024;
     private final File directory, keyFile, stateFile, lockFile;
