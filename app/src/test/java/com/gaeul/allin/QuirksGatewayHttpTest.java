@@ -18,7 +18,7 @@ public final class QuirksGatewayHttpTest {
   check(g.serve(session("GET","/api/quirks",null)).getStatus().getRequestStatus()==401);
   check(g.serve(session("POST","/api/quirks/check",null)).getStatus().getRequestStatus()==401);
   NanoHTTPD.Response response=g.serve(session("GET","/api/quirks","secret"));check(response.getStatus().getRequestStatus()==200);
-  JSONObject json=new JSONObject(ResponsesGatewayOfflineTest.read(response.getData()));check(json.getString("version").equals("1.0.0"));check(json.getString("source").equals("builtin"));check(json.getInt("schema")==1);check(!json.getJSONObject("update").getBoolean("enabled"));
+  JSONObject json=new JSONObject(ResponsesGatewayOfflineTest.read(response.getData()));check(json.getString("version").equals("1.0.2"));check(json.getString("source").equals("builtin"));check(json.getInt("schema")==1);check(!json.getJSONObject("update").getBoolean("enabled"));
   response=g.serve(session("POST","/api/quirks/check","secret"));check(response.getStatus().getRequestStatus()==200);json=new JSONObject(ResponsesGatewayOfflineTest.read(response.getData()));check(json.getString("result").equals("disabled"));
   check(g.serve(session("GET","/api/quirks/check","secret")).getStatus().getRequestStatus()==405);g.stop();System.out.println("QuirksGatewayHttpTest PASS");
  }

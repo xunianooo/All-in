@@ -1,6 +1,5 @@
 package com.gaeul.allin;
 
-import android.util.Base64;
 
 import org.json.JSONObject;
 
@@ -181,12 +180,50 @@ public class QoderAuth {
         return -1;
     }
 
-    private static String b64(byte[] data) {
-        return Base64.encodeToString(data, Base64.NO_WRAP);
-    }
+    private static final String BASE64_STANDARD = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    private static final String BASE64_URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-    private static String b64urlNoPad(byte[] data) {
-        return Base64.encodeToString(data, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+    private static String base64Encode(byte[] data, String alphabet, boolean padding) {
+        StringBuilder out = new StringBuilder(((data.length + 2) / 3) * 4);
+        for (int i = 0; i < data.length; i += 3) {
+            int remain = data.length - i;
+            int n = (data[i] & 255) << 16;
+            if (remain > 1) n |= (data[i + 1] & 255) << 8;
+            if (remain > 2) n |= data[i + 2] & 255;
+            out.append(alphabet.charAt((n >>> 18) & 63)).append(alphabet.charAt((n >>> 12) & 63));
+            if (remain > 1) out.append(alphabet.charAt((n >>> 6) & 63)); else if (padding) out.append('=');
+            if (remain > 2) out.append(alphabet.charAt(n & 63)); else if (padding) out.append('=');
+        }
+        return out.toString();
+    }
+    private static String b64(byte[] data) { return base64Encode(data, BASE64_STANDARD, true); }
+    private static String b64urlNoPad(byte[] data) { return base64Encode(data, BASE64_URL, false); }
+
+    private static byte[] decodePemBase64(String text) {
+        StringBuilder clean = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+            clean.append(c);
+        }
+        String s = clean.toString();
+        if (s.isEmpty() || s.length() % 4 != 0) throw new IllegalArgumentException("Invalid PEM base64");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (int i = 0; i < s.length(); i += 4) {
+            int a = BASE64_STANDARD.indexOf(s.charAt(i)), b = BASE64_STANDARD.indexOf(s.charAt(i + 1));
+            char cc = s.charAt(i + 2), dc = s.charAt(i + 3);
+            int c = cc == '=' ? -1 : BASE64_STANDARD.indexOf(cc);
+            int d = dc == '=' ? -1 : BASE64_STANDARD.indexOf(dc);
+            boolean last = i + 4 == s.length();
+            if (a < 0 || b < 0 || (cc != '=' && c < 0) || (dc != '=' && d < 0)
+                    || (c < 0 && d >= 0) || (!last && (c < 0 || d < 0))
+                    || (c < 0 && (b & 15) != 0) || (d < 0 && c >= 0 && (c & 3) != 0))
+                throw new IllegalArgumentException("Invalid PEM base64");
+            out.write((a << 2) | (b >>> 4));
+            if (c >= 0) out.write((b << 4) | (c >>> 2));
+            if (d >= 0) out.write((c << 6) | d);
+        }
+        return out.toByteArray();
     }
 
     private static String md5Hex(String s) throws Exception {
@@ -235,9 +272,8 @@ public class QoderAuth {
 
         // 用 Qoder 的 RSA 公钥以 PKCS1 包裹这把 AES key
         String pem = RSA_KEY.replace("-----BEGIN PUBLIC KEY-----", "")
-                .replace("-----END PUBLIC KEY-----", "")
-                .replaceAll("\\s", "");
-        byte[] der = Base64.decode(pem, Base64.DEFAULT);
+                .replace("-----END PUBLIC KEY-----", "");
+        byte[] der = decodePemBase64(pem);
         java.security.spec.X509EncodedKeySpec spec =
                 new java.security.spec.X509EncodedKeySpec(der);
         java.security.PublicKey pub = java.security.KeyFactory.getInstance("RSA")
@@ -725,6 +761,21 @@ public class QoderAuth {
      * 返回 OpenAI 风格的 piece 数组：{text}/{reasoning}/{tool}/{error}。
      */
     public static org.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody) throws Exception {
+        return chatEvents(si, qoderBody, url -> NetworkPolicy.openHttp(url));
+    }
+
+    public interface ConnectionFactory { HttpURLConnection open(String url) throws Exception; }
+    public static final class ChatTransportException extends Exception {
+        public final boolean sentOrUnknown;
+        ChatTransportException(boolean sentOrUnknown, Exception cause) {
+            super("Qoder transport failed", cause); this.sentOrUnknown = sentOrUnknown;
+        }
+    }
+    public static org.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody, ConnectionFactory factory) throws Exception {
+        return chatEvents(si, qoderBody, factory, null);
+    }
+    public static org.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody, ConnectionFactory factory,
+                                                 RequestContext context) throws Exception {
         org.json.JSONArray pieces = new org.json.JSONArray();
         String wire = encodeBody(qoderBody.toString());
         String mkey = qoderBody.optJSONObject("model_config") == null ? ""
@@ -733,61 +784,87 @@ public class QoderAuth {
                 : qoderBody.optJSONObject("model_config").optString("source", "");
         java.util.Map<String, String> h = chatHeaders(CHAT_URL, si, wire, mkey, msrc);
 
-        HttpURLConnection conn = NetworkPolicy.openHttp(CHAT_URL);
+        HttpURLConnection conn = null;
+        boolean sentOrUnknown = false;
+        try {
+        if (context != null) context.check();
+        conn = factory.open(CHAT_URL);
+        if (context != null) { context.attach(conn); context.check(); }
+        conn.setInstanceFollowRedirects(false);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(300000);
+        int budget = context == null ? 300000 : (int)Math.max(1, Math.min(300000L, context.remainingMillis()));
+        conn.setConnectTimeout(Math.min(15000, budget));
+        conn.setReadTimeout(budget);
+        byte[] wireBytes = wire.getBytes("UTF-8");
+        conn.setFixedLengthStreamingMode(wireBytes.length);
         conn.setRequestProperty("Content-Type", "application/json");
         for (java.util.Map.Entry<String, String> e : h.entrySet()) {
             conn.setRequestProperty(e.getKey(), e.getValue());
         }
-        OutputStream os = conn.getOutputStream();
-        os.write(wire.getBytes("UTF-8"));
-        os.flush();
-        os.close();
+        if (context != null) context.check();
+        sentOrUnknown = true;
+        try (OutputStream os = conn.getOutputStream()) {
+            if (context != null) context.check();
+            os.write(wireBytes);
+            os.flush();
+            if (context != null) context.check();
+        }
 
+        if (context != null) {
+            context.check();
+            conn.setReadTimeout((int)Math.max(1, Math.min(300000L, context.remainingMillis())));
+        }
         int code = conn.getResponseCode();
         InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        if (is != null && context != null) is = contextInput(is, conn, context);
         if (code < 200 || code >= 300) {
-            String body = readAll(is);
-            conn.disconnect();
-            JSONObject err = new JSONObject();
-            err.put("error", "HTTP " + code + ": " + trim(body, 300));
-            pieces.put(err);
+            String body = readBoundedError(is);
+            pieces.put(QoderFailurePolicy.failure(code, body));
             return pieces;
         }
 
-        BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"))) {
         String line;
-        while ((line = br.readLine()) != null) {
+        boolean terminal = false;
+        int eventChars = 0;
+        while ((line = readSseLine(br, context)) != null) {
+            if (line.isEmpty()) { eventChars = 0; continue; }
+            eventChars += line.length() + 1;
+            if (eventChars > MAX_SSE_EVENT_CHARS) throw new java.io.IOException("Qoder SSE event too large");
             if (!line.startsWith("data:")) continue;
             String payload = line.substring(5).trim();
+            if ("[DONE]".equals(payload)) { terminal = true; break; }
             JSONObject env;
             try {
                 env = new JSONObject(payload);
             } catch (Exception e) {
-                continue;
+                throw new java.io.IOException("Invalid Qoder SSE envelope", e);
             }
-            String inner = env.optString("body", "");
+            Object bodyValue = env.opt("body");
+            String inner = bodyValue instanceof String ? (String)bodyValue : "";
             Object scv = env.opt("statusCodeValue");
             if (scv != null && scv != JSONObject.NULL) {
-                int sc = 0;
-                try { sc = Integer.parseInt(String.valueOf(scv)); } catch (Exception ignored) {}
+                int sc;
+                try { sc = Integer.parseInt(String.valueOf(scv)); }
+                catch (Exception invalid) { throw new java.io.IOException("Invalid Qoder SSE status", invalid); }
                 if (sc != 200) {
-                    JSONObject err = new JSONObject();
-                    err.put("error", trim(inner.isEmpty() ? payload : inner, 400));
-                    pieces.put(err);
+                    pieces.put(QoderFailurePolicy.failure(sc, inner.isEmpty() ? payload : inner));
                     return pieces;
                 }
             }
-            if (inner.trim().equals("[DONE]")) break;
+            if (inner.trim().equals("[DONE]")) { terminal = true; break; }
             JSONObject chunk;
             try {
                 chunk = new JSONObject(inner.trim());
             } catch (Exception e) {
-                continue;
+                throw new java.io.IOException("Invalid Qoder SSE body", e);
             }
+            if (chunk.optJSONArray("choices") == null && (chunk.has("error") || (chunk.has("code") && chunk.has("message")))) {
+                pieces.put(QoderFailurePolicy.failure(502, inner));
+                return pieces;
+            }
+            if (chunk.optJSONArray("choices") == null) throw new java.io.IOException("Invalid Qoder SSE chunk");
             JSONObject delta = chunk.optJSONArray("choices") == null ? null
                     : chunk.optJSONArray("choices").optJSONObject(0) == null ? null
                     : chunk.optJSONArray("choices").optJSONObject(0).optJSONObject("delta");
@@ -828,11 +905,64 @@ public class QoderAuth {
             Object fr = chunk.optJSONArray("choices") == null ? null
                     : chunk.optJSONArray("choices").optJSONObject(0) == null ? null
                     : chunk.optJSONArray("choices").optJSONObject(0).opt("finish_reason");
-            if (fr != null && !JSONObject.NULL.equals(fr) && !String.valueOf(fr).isEmpty()) break;
+            if (fr instanceof String && !((String)fr).isEmpty()) { terminal = true; break; }
+            if (fr != null && !JSONObject.NULL.equals(fr) && !(fr instanceof String))
+                throw new java.io.IOException("Invalid Qoder finish reason");
         }
-        br.close();
-        conn.disconnect();
+        if (!terminal) throw new java.io.IOException("Incomplete Qoder SSE stream");
+        }
         return pieces;
+        } catch (Exception e) {
+            throw new ChatTransportException(sentOrUnknown, e);
+        } finally {
+            if (context != null && conn != null) context.detach(conn);
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static final int MAX_SSE_EVENT_CHARS = 1024 * 1024;
+    private static String readSseLine(BufferedReader reader, RequestContext context) throws java.io.IOException {
+        StringBuilder line = new StringBuilder();
+        int ch;
+        while (true) {
+            if (context != null) context.check();
+            ch = reader.read();
+            if (ch == -1 || ch == '\n') break;
+            if (line.length() >= MAX_SSE_EVENT_CHARS) throw new java.io.IOException("Qoder SSE line too large");
+            line.append((char)ch);
+        }
+        if (ch == -1 && line.length() == 0) return null;
+        if (line.length() > 0 && line.charAt(line.length() - 1) == '\r') line.setLength(line.length() - 1);
+        return line.toString();
+    }
+    private static InputStream contextInput(InputStream input, HttpURLConnection conn, RequestContext context) {
+        return new java.io.FilterInputStream(input) {
+            private void beforeRead() throws java.io.IOException {
+                context.check();
+                conn.setReadTimeout((int)Math.max(1, Math.min(300000L, context.remainingMillis())));
+            }
+            @Override public int read() throws java.io.IOException {
+                beforeRead(); int n = in.read(); context.check(); return n;
+            }
+            @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+                beforeRead(); int n = in.read(b, off, len); context.check(); return n;
+            }
+        };
+    }
+
+    private static String readBoundedError(InputStream stream) throws Exception {
+        if (stream == null) return "";
+        try (InputStream in = stream; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[2048];
+            int remaining = QoderFailurePolicy.MAX_ERROR_BYTES;
+            while (remaining > 0) {
+                int n = in.read(buf, 0, Math.min(buf.length, remaining));
+                if (n < 0) break;
+                if (n == 0) break;
+                out.write(buf, 0, n); remaining -= n;
+            }
+            return out.toString("UTF-8");
+        }
     }
 
     /**

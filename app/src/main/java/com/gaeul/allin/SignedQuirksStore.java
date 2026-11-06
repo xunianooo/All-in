@@ -12,6 +12,9 @@ import java.util.Arrays;
 /** Offline signed rules and last-known-good store. No configured key means disabled. */
 @TargetApi(26)
 final class SignedQuirksStore {
+    static final class OlderRulesException extends IllegalArgumentException {
+        OlderRulesException() { super("verified rules are older than current rules"); }
+    }
     private static final int MAGIC = 0x51524b31, MAX_SIGNATURE = 512;
     private static final byte[] DOMAIN = new byte[]{'A','l','l','I','n','-','Q','2',0,1};
     private final File cache;
@@ -32,7 +35,7 @@ final class SignedQuirksStore {
     synchronized boolean install(byte[] envelope) throws Exception {
         Verified v=verify(envelope);
         int cmp=compare(v.snapshot.ruleVersion,current.ruleVersion);
-        if(cmp<0) throw new IllegalArgumentException("rollback");
+        if(cmp<0) throw new OlderRulesException();
         if(cmp==0) {
             if(!Arrays.equals(v.payload,currentPayload)) throw new IllegalArgumentException("version collision");
             return false;
@@ -47,7 +50,7 @@ final class SignedQuirksStore {
         try (InputStream in=new FileInputStream(cache)) { bytes=readBounded(in, maxEnvelope()); }
         Verified v=verify(bytes);
         int cmp=compare(v.snapshot.ruleVersion,current.ruleVersion);
-        if(cmp<0) throw new IllegalArgumentException("cached rollback");
+        if(cmp<0) throw new OlderRulesException();
         if(cmp==0 && !Arrays.equals(currentPayload,v.payload)) throw new IllegalArgumentException("version collision");
         if(cmp==0) return false;
         currentPayload=v.payload.clone(); current=v.snapshot.withSource("verified-cache"); return true;

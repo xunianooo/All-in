@@ -67,14 +67,17 @@ final class ZhipuEnvelope {
             if (!(parsed instanceof JSONObject) || tokener.nextClean() != 0)
                 return new Result(replay, status, null, null, false);
             JSONObject obj = (JSONObject) parsed;
-            if (!Boolean.FALSE.equals(obj.opt("success")))
+            JSONObject nested=obj.optJSONObject("error");
+            if (!Boolean.FALSE.equals(obj.opt("success")) && nested==null)
                 return new Result(replay, status, null, null, false);
-            Object rawCode = obj.opt("code");
+            // An error envelope must never replace a normal model message or choices.
+            if(obj.has("choices") || obj.has("content") || obj.has("output"))return new Result(replay,status,null,null,false);
+            Object rawCode = nested==null?obj.opt("code"):nested.opt("code");
             int number = 0;
             if (rawCode instanceof String || rawCode instanceof Number) {
                 try { number = Integer.parseInt(rawCode.toString()); } catch (NumberFormatException ignored) { }
             }
-            Object rawMsg = obj.opt("msg");
+            Object rawMsg = nested==null?obj.opt("msg"):nested.opt("message");
             String message = rawMsg instanceof String ? ((String) rawMsg).trim() : "";
             if (number == 0 && message.isEmpty()) return new Result(replay, status, null, null, false);
             if (message.isEmpty()) message = "request failed";
@@ -99,12 +102,13 @@ final class ZhipuEnvelope {
         try {
             URI uri = new URI(url);
             String host = uri.getHost();
-            if (host == null || !("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))) return false;
+            if (host == null || (!trusted && !"https".equalsIgnoreCase(uri.getScheme())) || (trusted && !("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))) || uri.getUserInfo()!=null || uri.getRawQuery()!=null || uri.getRawFragment()!=null || (!trusted && uri.getPort()!=-1 && uri.getPort()!=443)) return false;
             host = host.toLowerCase(Locale.ROOT);
             if (!trusted && !host.equals("open.bigmodel.cn") && !host.equals("api.z.ai")) return false;
             String path = uri.getRawPath();
             return path != null && (path.equals("/api/v1") || path.equals("/api/v1/responses")
-                    || path.equals("/api/monitor") || path.startsWith("/api/monitor/"));
+                    || path.equals("/api/monitor") || path.startsWith("/api/monitor/")
+                    || path.equals("/api/anthropic/v1/messages") || path.equals("/api/coding/paas/v4/messages") || path.equals("/api/coding/paas/v4/chat/completions"));
         } catch (Exception e) { return false; }
     }
 
@@ -112,6 +116,7 @@ final class ZhipuEnvelope {
         if (code >= 1000 && code <= 1005) return 401;
         if (code == 1113 || code >= 1302 && code <= 1399) return 429;
         if (code == 1220) return 403;
+        if (code == 3012) return 405;
         if (code >= 1210 && code <= 1229 || code == 1261 || code == 1301) return 400;
         return 502;
     }

@@ -9,3 +9,5 @@ MagPocket-*.apk
 
 # Runtime usage ledgers are never source artifacts
 /app/ledger-*.jsonl
+
+/ledger-*.jsonl

@@ -58,7 +58,7 @@ final class QuirksUpdateController {
         config=androidApi>=26 ? cfg : TrustConfig.disabled(); factory=f;timeoutMs=timeout;
         store=new SignedQuirksStore(cache,config.key,builtin);
         String initial=store.enabled()?"ready":"disabled";
-        try { if(store.restore()) initial="cache_restored"; } catch(Exception e) { initial="cache_invalid"; }
+        try { if(store.restore()) initial="cache_restored"; } catch(SignedQuirksStore.OlderRulesException e) { initial="builtin_newer"; } catch(Exception e) { initial="cache_invalid"; }
         status=new Status(store.enabled(),initial,store.snapshot());
         executor=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"quirks-update");t.setDaemon(true);return t;});
     }
@@ -102,6 +102,7 @@ final class QuirksUpdateController {
                 boolean changed=store.install(body);
                 Status s=new Status(true,changed?"updated":"unchanged",store.snapshot());status=s;return s;
             }
-        } catch(Exception e) { synchronized(this) {return !closed && id==generation ? failed("failed") : new Status(true,"timeout",store.snapshot());} } finally {if(c!=null)try{c.close();}catch(IOException ignored){} if(active==c)active=null;}
+        } catch(SignedQuirksStore.OlderRulesException e) { synchronized(this) {return !closed && id==generation ? failed("newer_local") : new Status(true,"timeout",store.snapshot());} }
+        catch(Exception e) { synchronized(this) {return !closed && id==generation ? failed("failed") : new Status(true,"timeout",store.snapshot());} } finally {if(c!=null)try{c.close();}catch(IOException ignored){} if(active==c)active=null;}
     }
 }

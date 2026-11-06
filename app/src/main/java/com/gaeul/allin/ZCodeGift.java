@@ -272,7 +272,7 @@ final class ZCodeGift {
         JSONObject meta = body.optJSONObject("metadata");
         if (meta == null) meta = new JSONObject();
         try {
-            meta.put("user_id", userIdOf(device, session));
+            if (!meta.has("user_id") && device != null && !device.trim().isEmpty() && session != null && !session.trim().isEmpty()) meta.put("user_id", userIdOf(device, session));
             body.put("metadata", meta);
         } catch (Exception ignored) {}
         return body;
@@ -280,84 +280,66 @@ final class ZCodeGift {
 
     // ===================== 发请求 =====================
 
-    /** 一次调用的结果 */
+    private static final String POLICY_URL = START_BASE + "/v1/messages";
+    private static volatile String fixtureBase;
+    private static volatile ZCodeRefusalPolicy cooldown = new ZCodeRefusalPolicy();
+    private static final OutboundLimiter limiter = new OutboundLimiter(1, 32);
+    static {
+        java.util.Map<String, OutboundLimiter.Policy> policies = new java.util.HashMap<>();
+        policies.put("zcode-gift", new OutboundLimiter.Policy(0, 0, 8, 16, 30000));
+        limiter.configure(policies);
+    }
+    static void resetCooldownForTests() { cooldown = new ZCodeRefusalPolicy(); }
+    static void setCooldownClockForTests(ZCodeRefusalPolicy.Clock clock) { cooldown = new ZCodeRefusalPolicy(clock); }
+    static void setFixtureBase(String base) {
+        if (base == null) { fixtureBase = null; return; }
+        try {
+            java.net.URI uri = new java.net.URI(base);
+            String h = uri.getHost();
+            if (!"http".equals(uri.getScheme()) || uri.getUserInfo() != null || uri.getQuery() != null
+                    || uri.getFragment() != null || !("127.0.0.1".equals(h) || "localhost".equals(h) || "::1".equals(h)))
+                throw new IllegalArgumentException("loopback fixture required");
+            fixtureBase = base;
+        } catch (java.net.URISyntaxException e) { throw new IllegalArgumentException("invalid fixture"); }
+    }
+    /** Only call for a request known to use gift; this may suppress unrelated plan routing. */
+    static ZCodeRefusalPolicy.Hold hold(String jwt, String device, RequestContext ctx) {
+        NetworkPolicy.Snapshot network = ctx != null && ctx.network != null ? ctx.network : NetworkPolicy.capture();
+        return cooldown.before(POLICY_URL, accountScope(jwt, device), network.toJson().toString());
+    }
+    private static String accountScope(String jwt, String device) {
+        return jwt == null || jwt.trim().isEmpty() || device == null || device.trim().isEmpty() ? "" : jwt + "\0" + device;
+    }
+    private static void checkRead(HttpURLConnection conn, RequestContext ctx, int timeoutMs) throws java.io.IOException {
+        if (ctx != null) {
+            ctx.check();
+            conn.setReadTimeout((int)Math.max(1, Math.min(Math.max(1, timeoutMs), ctx.remainingMillis())));
+        }
+    }
     static class Answer {
-        int status;
-        String body = "";
-        /** 命中「账号被 ZCode 风控」或「网络被边缘防火墙拦」时为 true */
-        boolean refused;
-        boolean edge;
+        int status; String body = ""; boolean refused, edge, held, sent;
+        long retryAfterMillis; ZCodeRefusalPolicy.Kind classification = ZCodeRefusalPolicy.Kind.NONE;
         String error = "";
     }
-
-    /**
-     * 发一次 Start Plan / gift 请求。
-     * 注意 headers 是整组新建，不透传任何 agent 的头。
-     */
     static Answer send(String jwt, String device, String site, String model,
-                       JSONObject anthropicBody, String agentSessionId, int timeoutMs) {
+                       JSONObject body, String session, int timeoutMs) {
+        return send(jwt, device, site, model, body, session, timeoutMs, null);
+    }
+    static Answer send(String jwt, String device, String site, String model,
+                       JSONObject body, String session, int timeoutMs, RequestContext ctx) {
+        Stream stream = openStream(jwt, device, site, model, body, session, timeoutMs, true, ctx);
         Answer out = new Answer();
-        HttpURLConnection conn = null;
-        try {
-            String sid = sessionOf(agentSessionId, device);
-            JSONObject body = dress(anthropicBody, site, model, device, sid);
-
-            conn = NetworkPolicy.openHttp(START_BASE + "/v1/messages");
-            conn.setRequestMethod("POST");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(timeoutMs);
-            conn.setRequestProperty("content-type", "application/json");
-            conn.setRequestProperty("Authorization", "Bearer " + jwt);
-            conn.setRequestProperty("anthropic-version", "2023-06-01");
-            conn.setRequestProperty("HTTP-Referer", "https://zcode.z.ai");
-            conn.setRequestProperty("User-Agent", UA + " ai-sdk/anthropic/3.0.81");
-            conn.setRequestProperty("X-ZCode-App-Version", APP_VERSION);
-            conn.setRequestProperty("X-Title", "Z Code@cli");
-            conn.setRequestProperty("X-Release-Channel", "production");
-            conn.setRequestProperty("X-Client-Language", locale());
-            conn.setRequestProperty("X-Client-Timezone", timezone());
-            conn.setRequestProperty("X-ZCode-Agent", "glm");
-            conn.setRequestProperty("X-Platform", platform());
-            conn.setRequestProperty("X-Os-Category", osCategory());
-            conn.setRequestProperty("X-Os-Version", osRelease());
-            conn.setRequestProperty("x-request-id", UUID.randomUUID().toString());
-            conn.setRequestProperty("x-zcode-session-type", "main");
-            conn.setRequestProperty("x-zcode-trace-id", UUID.randomUUID().toString());
-            conn.setRequestProperty("x-zcode-query-source", "main_turn");
-            conn.setRequestProperty("x-session-id", sid);
-
-            OutputStream os = conn.getOutputStream();
-            os.write(body.toString().getBytes("UTF-8"));
-            os.flush();
-            os.close();
-
-            out.status = conn.getResponseCode();
-            InputStream is = (out.status >= 200 && out.status < 400)
-                    ? conn.getInputStream() : conn.getErrorStream();
-            if (is != null) {
-                ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = is.read(buf)) != -1) bo.write(buf, 0, n);
-                is.close();
-                out.body = new String(bo.toByteArray(), "UTF-8");
-            }
-            if (out.status >= 400) {
-                out.refused = out.status == 405
-                        || out.body.matches("(?is).*(unusual activity|request has been blocked|\"code\"\\s*:\\s*\"?3012\\b).*");
-                out.edge = out.body.matches("(?is).*(errors\\.aliyun\\.com|<html).*");
-                if (!out.refused) out.error = "HTTP " + out.status;
-            }
-        } catch (Exception e) {
-            out.status = -1;
-            out.error = e.getMessage() == null ? String.valueOf(e) : e.getMessage();
-        } finally {
-            if (conn != null) conn.disconnect();
-        }
+        out.status=stream.status; out.body=stream.errorBody; out.refused=stream.refused; out.edge=stream.edge;
+        out.held=stream.held; out.sent=stream.sent; out.retryAfterMillis=stream.retryAfterMillis;
+        out.classification=stream.classification; out.error=stream.error;
+        if (stream.is != null) try {
+            byte[] bytes = readBounded(stream.is, 8 * 1024 * 1024);
+            if (bytes == null) { out.status=-1; out.body=""; out.error="Response exceeds local limit"; }
+            else out.body = new String(bytes, "UTF-8");
+        } catch (Exception ignored) { out.status=-1; out.error="ZCode transport failed"; }
+        finally { try { stream.is.close(); } catch (Exception ignored) {} }
         return out;
     }
-
 
     // ===================== 额度支持的模型 =====================
 
@@ -384,91 +366,124 @@ final class ZCodeGift {
         return out;
     }
 
-    /** 打开一条流式请求：返回的连接由调用方读 InputStream 并负责 disconnect */
     static class Stream {
-        HttpURLConnection conn;
-        int status;
-        InputStream is;
-        String errorBody = "";
-        boolean refused;
-        boolean edge;
+        HttpURLConnection conn; int status; InputStream is; String errorBody = "";
+        boolean refused, edge, held, sent; long retryAfterMillis;
+        ZCodeRefusalPolicy.Kind classification = ZCodeRefusalPolicy.Kind.NONE;
         String error = "";
     }
-
+    private static byte[] readBounded(InputStream in, int limit) throws java.io.IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] buf = new byte[4096]; int n;
+        while ((n=in.read(buf)) != -1) { if (out.size() + n > limit) return null; out.write(buf,0,n); }
+        return out.toByteArray();
+    }
+    private static InputStream decoded(final HttpURLConnection c, InputStream input, final RequestContext ctx, final int timeoutMs) throws java.io.IOException {
+        if (input == null) return null;
+        InputStream guarded = new java.io.FilterInputStream(input) {
+            @Override public int read() throws java.io.IOException {
+                checkRead(c, ctx, timeoutMs); int n = in.read(); if (ctx != null) ctx.check(); return n;
+            }
+            @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+                checkRead(c, ctx, timeoutMs); int n = in.read(b, off, len); if (ctx != null) ctx.check(); return n;
+            }
+        };
+        return "gzip".equalsIgnoreCase(c.getContentEncoding()) ? new java.util.zip.GZIPInputStream(guarded) : guarded;
+    }
+    private static String localError(String message, long retry) {
+        JSONObject error = new JSONObject(); JSONObject root = new JSONObject();
+        try { error.put("type", "local_cooldown"); error.put("message", message); error.put("retry_after_ms", retry); root.put("error", error); }
+        catch (Exception ignored) {} return root.toString();
+    }
     static Stream openStream(String jwt, String device, String site, String model,
-                             JSONObject anthropicBody, String agentSessionId, int timeoutMs,
-                             boolean dressBody) {
-        Stream out = new Stream();
+                             JSONObject body, String session, int timeoutMs, boolean dressBody) {
+        return openStream(jwt, device, site, model, body, session, timeoutMs, dressBody, null);
+    }
+    static Stream openStream(String jwt, String device, String site, String model,
+                             JSONObject request, String session, int timeoutMs, boolean dressBody, RequestContext ctx) {
+        Stream out = new Stream(); HttpURLConnection conn = null; OutboundLimiter.Ticket ticket = null;
+        Runnable cleanup = null; boolean owned = false;
         try {
-            String sid = sessionOf(agentSessionId, device);
-            JSONObject body = dressBody
-                    ? dress(anthropicBody, site, model, device, sid)
-                    : new JSONObject(anthropicBody.toString());
-            if (!dressBody) {
-                // 不 dress 时也要补 metadata.user_id：BigModel 的 prompt cache 靠它
-                JSONObject meta = body.optJSONObject("metadata");
-                if (meta == null) meta = new JSONObject();
-                meta.put("user_id", userIdOf(device, sid));
-                body.put("metadata", meta);
+            NetworkPolicy.Snapshot network = ctx != null && ctx.network != null ? ctx.network : NetworkPolicy.capture();
+            String account = accountScope(jwt, device);
+            String scope = network.toJson().toString();
+            ZCodeRefusalPolicy.Hold hold = cooldown.before(POLICY_URL, account, scope);
+            if (hold != null) {
+                out.status=429; out.held=true; out.retryAfterMillis=hold.retryAfterMillis; out.classification=hold.kind;
+                out.errorBody=localError(hold.message, hold.retryAfterMillis); out.error="Local cooldown"; return out;
             }
-
-            HttpURLConnection conn = NetworkPolicy.openHttp(START_BASE + "/v1/messages");
-            conn.setRequestMethod("POST");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(timeoutMs);
-            conn.setRequestProperty("content-type", "application/json");
-            conn.setRequestProperty("Authorization", "Bearer " + jwt);
-            conn.setRequestProperty("anthropic-version", "2023-06-01");
-            conn.setRequestProperty("HTTP-Referer", "https://zcode.z.ai");
-            conn.setRequestProperty("User-Agent", UA + " ai-sdk/anthropic/3.0.81");
-            conn.setRequestProperty("X-ZCode-App-Version", APP_VERSION);
-            conn.setRequestProperty("X-Title", "Z Code@cli");
-            conn.setRequestProperty("X-Release-Channel", "production");
-            conn.setRequestProperty("X-Client-Language", locale());
-            conn.setRequestProperty("X-Client-Timezone", timezone());
-            conn.setRequestProperty("X-ZCode-Agent", "glm");
-            conn.setRequestProperty("X-Platform", platform());
-            conn.setRequestProperty("X-Os-Category", osCategory());
-            conn.setRequestProperty("X-Os-Version", osRelease());
-            conn.setRequestProperty("x-request-id", UUID.randomUUID().toString());
-            conn.setRequestProperty("x-zcode-session-type", "main");
-            conn.setRequestProperty("x-zcode-trace-id", UUID.randomUUID().toString());
-            conn.setRequestProperty("x-zcode-query-source", "main_turn");
-            conn.setRequestProperty("x-session-id", sid);
-            if (body.optBoolean("stream", false)) {
-                conn.setRequestProperty("Accept", "text/event-stream");
+            if (ctx != null) ctx.check();
+            OutboundLimiter.Result admission = limiter.await(java.util.Collections.singleton("zcode-gift"),
+                    ctx == null ? System.nanoTime()+30000000000L : ctx.deadlineNanos, ctx);
+            if (admission.ticket == null) { out.status=429; out.error="Local outbound limit"; return out; }
+            ticket=admission.ticket; final OutboundLimiter.Ticket ownedTicket=ticket;
+            cleanup = () -> ownedTicket.close(); if (ctx != null) ctx.onClose(cleanup);
+            // Recheck after queueing, before touching request or opening a connection.
+            hold=cooldown.before(POLICY_URL,account,scope);
+            if (hold != null) { out.status=429; out.held=true; out.retryAfterMillis=hold.retryAfterMillis;
+                out.classification=hold.kind; out.errorBody=localError(hold.message,hold.retryAfterMillis); out.error="Local cooldown"; return out; }
+            String sid=sessionOf(session,device);
+            JSONObject body=dressBody ? dress(new JSONObject(request.toString()),site,model,device,sid) : ZCodeRequestPolicy.marked(request,device,sid);
+            byte[] bytes=body.toString().getBytes("UTF-8");
+            String base=fixtureBase; conn=network.openHttp(base == null ? POLICY_URL : base + "/v1/messages");
+            if (ctx != null) { ctx.attach(conn); ctx.check(); }
+            conn.setInstanceFollowRedirects(false); conn.setRequestMethod("POST"); conn.setDoOutput(true);
+            int budget=ctx == null ? Integer.MAX_VALUE : (int)Math.max(1,Math.min(Integer.MAX_VALUE,ctx.remainingMillis()));
+            conn.setConnectTimeout(Math.min(20000,budget)); conn.setReadTimeout(Math.max(1,Math.min(timeoutMs,budget)));
+            conn.setFixedLengthStreamingMode(bytes.length);
+            conn.setRequestProperty("content-type","application/json"); conn.setRequestProperty("Accept-Encoding","gzip");
+            conn.setRequestProperty("Authorization","Bearer " + jwt); conn.setRequestProperty("anthropic-version","2023-06-01");
+            conn.setRequestProperty("HTTP-Referer","https://zcode.z.ai"); conn.setRequestProperty("User-Agent",UA + " ai-sdk/anthropic/3.0.81");
+            conn.setRequestProperty("X-ZCode-App-Version",APP_VERSION); conn.setRequestProperty("X-Title","Z Code@cli");
+            conn.setRequestProperty("X-Release-Channel","production"); conn.setRequestProperty("X-Client-Language",locale());
+            conn.setRequestProperty("X-Client-Timezone",timezone()); conn.setRequestProperty("X-ZCode-Agent","glm");
+            conn.setRequestProperty("X-Platform",platform()); conn.setRequestProperty("X-Os-Category",osCategory());
+            conn.setRequestProperty("X-Os-Version",osRelease()); conn.setRequestProperty("x-request-id",UUID.randomUUID().toString());
+            conn.setRequestProperty("x-zcode-session-type","main"); conn.setRequestProperty("x-zcode-trace-id",UUID.randomUUID().toString());
+            conn.setRequestProperty("x-zcode-query-source","main_turn"); conn.setRequestProperty("x-session-id",sid);
+            if (body.optBoolean("stream",false)) conn.setRequestProperty("Accept","text/event-stream");
+            if (ctx != null) ctx.check(); ticket.markSent(); out.sent=true;
+            try (OutputStream os=conn.getOutputStream()) { if (ctx != null) ctx.check(); os.write(bytes); if (ctx != null) ctx.check(); }
+            if (ctx != null) ctx.check();
+            if (ctx != null) { ctx.check(); conn.setReadTimeout((int)Math.max(1,Math.min(timeoutMs,ctx.remainingMillis()))); }
+            out.status=conn.getResponseCode();
+            if (out.status < 200 || out.status >= 300) {
+                InputStream es=decoded(conn,conn.getErrorStream(),ctx,timeoutMs); byte[] data=null;
+                if (es != null) try (InputStream input=es) { data=readBounded(input,65536); }
+                out.errorBody=data == null ? "" : new String(data,"UTF-8");
+                out.classification=cooldown.observe(POLICY_URL,account,scope,out.status,data == null ? null : out.errorBody);
+                out.refused=out.classification==ZCodeRefusalPolicy.Kind.ACCOUNT || out.classification==ZCodeRefusalPolicy.Kind.EDGE;
+                out.edge=out.classification==ZCodeRefusalPolicy.Kind.EDGE; out.error="HTTP " + out.status; return out;
             }
-
-            OutputStream os = conn.getOutputStream();
-            os.write(body.toString().getBytes("UTF-8"));
-            os.flush();
-            os.close();
-
-            out.conn = conn;
-            out.status = conn.getResponseCode();
-            if (out.status >= 200 && out.status < 400) {
-                out.is = conn.getInputStream();
-            } else {
-                InputStream es = conn.getErrorStream();
-                if (es != null) {
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    byte[] buf = new byte[4096];
-                    int n;
-                    while ((n = es.read(buf)) != -1) bo.write(buf, 0, n);
-                    es.close();
-                    out.errorBody = new String(bo.toByteArray(), "UTF-8");
+            InputStream input=decoded(conn,conn.getInputStream(),ctx,timeoutMs);
+            String contentType=conn.getContentType();
+            if (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("json")) {
+                byte[] data; try (InputStream read=input) { data=readBounded(read,8*1024*1024); }
+                if (data == null) { out.status=-1; out.error="Response exceeds local limit"; return out; }
+                String text=new String(data,"UTF-8");
+                if (data.length <= 65536 && ZCodeRefusalPolicy.classify(405,text)==ZCodeRefusalPolicy.Kind.ACCOUNT) {
+                    out.status=405; out.errorBody=text; out.classification=cooldown.observe(POLICY_URL,account,scope,405,text);
+                    out.refused=true; out.error="HTTP 405"; return out;
                 }
-                out.refused = out.status == 405
-                        || out.errorBody.matches("(?is).*(unusual activity|request has been blocked|\"code\"\\s*:\\s*\"?3012\\b).*");
-                out.edge = out.errorBody.matches("(?is).*(errors\\.aliyun\\.com|<html).*");
-                out.error = "HTTP " + out.status;
+                input=new java.io.ByteArrayInputStream(data);
             }
-        } catch (Exception e) {
-            out.status = -1;
-            out.error = e.getMessage() == null ? String.valueOf(e) : e.getMessage();
-        }
-        return out;
+            final HttpURLConnection c=conn; final Runnable release=cleanup; final RequestContext context=ctx;
+            out.conn=conn; out.is=new java.io.FilterInputStream(input) {
+                boolean closed;
+                private void release() { if (closed) return; closed=true; try { super.close(); } catch (Exception ignored) {}
+                    if (context != null) { context.detach(c); context.removeCleanup(release); } c.disconnect(); release.run(); }
+                @Override public int read() throws java.io.IOException {
+                    try { checkRead(c,context,timeoutMs); int n=in.read(); if (context != null) context.check(); if (n<0) release(); return n; }
+                    catch (java.io.IOException | RuntimeException e) { release(); throw e; }
+                }
+                @Override public int read(byte[] b,int off,int len) throws java.io.IOException {
+                    try { checkRead(c,context,timeoutMs); int n=in.read(b,off,len); if (context != null) context.check(); if (n<0) release(); return n; }
+                    catch (java.io.IOException | RuntimeException e) { release(); throw e; }
+                }
+                @Override public void close() { release(); }
+            }; owned=true; return out;
+        } catch (Exception e) { out.status=-1; out.error="ZCode transport failed"; return out; }
+        finally { if (!owned) { if (ctx != null && conn != null) ctx.detach(conn); if (conn != null) conn.disconnect();
+            if (ctx != null && cleanup != null) ctx.removeCleanup(cleanup); if (ticket != null) ticket.close(); out.conn=null; } }
     }
 
     /** 把 Anthropic 的 message 响应压成纯文本（给网关转 OpenAI 用） */

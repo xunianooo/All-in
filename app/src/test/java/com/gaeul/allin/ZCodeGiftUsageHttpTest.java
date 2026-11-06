@@ -128,6 +128,7 @@ public final class ZCodeGiftUsageHttpTest {
         SyntheticTransport(String mode) { this.mode = mode; }
         public JSONObject summary(String jwt, String device) {
             summaries++;
+            if (mode.equals("summary-fail")) return new JSONObject().put("ok", false).put("error", "fixture summary failure");
             return new JSONObject().put("ok", true).put("buckets", new JSONArray().put(new JSONObject().put("remaining", 1).put("capabilities", new JSONArray().put("model:" + UPSTREAM))));
         }
         public ZCodeGift.Stream open(String jwt, String device, String site, String model, JSONObject body, boolean dressed) {
@@ -260,7 +261,7 @@ public final class ZCodeGiftUsageHttpTest {
                 });
                 runCase("HTTP failure with usage", failures, () -> { mock.mode = "fail-usage"; int before = rows.size(); request(g, false, false, 503); idle(g); usage(verify(rows, before, 1, 503), "full"); });
                 runCase("HTTP failure", failures, () -> { mock.mode = "fail"; int before = rows.size(); request(g, false, false, 503); idle(g); verify(rows, before, 1, 503); });
-                runCase("405 retry", failures, () -> { mock.calls.set(0); mock.mode = "retry"; t.dressed.clear(); int before = rows.size(); request(g, false, false, 200); idle(g); usage(verify(rows, before, 2, 200), "full"); check(t.dressed.equals(Arrays.asList(false, true)), "retry dress flags"); });
+                runCase("405 is not replayed", failures, () -> { mock.calls.set(0); mock.mode = "retry"; t.dressed.clear(); int before = rows.size(); request(g, false, false, 405); idle(g); verify(rows, before, 1, 405);check(mock.calls.get()==1 && t.dressed.equals(Arrays.asList(true)),"single dressed request without replay"); });
                 for (boolean messages : new boolean[]{false, true}) {
                     final boolean m = messages;
                     runCase((m ? "messages" : "chat") + " truncated", failures, () -> { mock.mode = "truncated"; int before = rows.size(); request(g, m, true, 200); idle(g); verify(rows, before, 1, 502); });
@@ -298,13 +299,52 @@ public final class ZCodeGiftUsageHttpTest {
                         for (UsageLedger.Row row : snapshot(rows, before)) check(!"gift".equals(row.ep), "disabled path has no gift attempt");
                     });
                 }
-                runCase("refused HTTP 200 twice", failures, () -> {
+                runCase("refused HTTP 200 is not replayed", failures, () -> {
                     SyntheticTransport fake = new SyntheticTransport("refused"); Gateway synthetic = new Gateway(config(mock.port()), fake);
                     int before = rows.size();
                     NanoHTTPD.Response result = synthetic.gateway.serve(RoutingSetupOfflineTest.request("127.0.0.1", "/v1/chat/completions", "POST", body(false), null));
                     try { check(result.getStatus().getRequestStatus() == 405, "refusal returns 405"); } finally { result.close(); }
-                    check(fake.opens == 2, "exactly two attempts"); verify(rows, before, 2, 405); fake.checkClosed();
+                    check(fake.opens == 1, "refusal must not retry dressed request"); verify(rows, before, 1, 405); fake.checkClosed();
                 });
+                for (boolean messages : new boolean[]{false, true}) {
+                    final boolean m = messages;
+                    runCase((m ? "messages" : "chat") + " failed gift summary does not use paid plan", failures, () -> {
+                        SyntheticTransport synthetic = new SyntheticTransport("summary-fail"); g.gateway.setGiftTransportForTest(synthetic);
+                        int before = rows.size(), calls = mock.calls.get();
+                        try {
+                            request(g, m, false, 502); idle(g);
+                            check(synthetic.summaries == 1 && synthetic.opens == 0, "summary queried once; no gift send");
+                            check(mock.calls.get() == calls, "failed summary must not fall back to paid plan");
+                            check(snapshot(rows, before).isEmpty(), "no ledger charge for unsent request");
+                        } finally { g.gateway.setGiftTransportForTest(t); }
+                    });
+                }
+                for (boolean disableProvider : new boolean[]{true, false}) {
+                    final boolean provider = disableProvider;
+                    runCase("test-model disabled " + (provider ? "provider" : "account") + " does not probe gift", failures, () -> {
+                        JSONObject cfg = config(mock.port());
+                        JSONObject zcode = cfg.getJSONArray("providers").getJSONObject(0);
+                        if (provider) zcode.put("enabled", false);
+                        else { zcode.getJSONArray("accounts").getJSONObject(0).put("enabled", false); zcode.put("keys", new JSONArray()); }
+                        SyntheticTransport synthetic = new SyntheticTransport("summary-fail");
+                        Gateway disabled = new Gateway(cfg, synthetic); disabled.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
+                        int calls = mock.calls.get();
+                        try {
+                            HttpURLConnection c = (HttpURLConnection)new URL("http://127.0.0.1:" + disabled.getListeningPort() + "/api/test-model").openConnection();
+                            c.setConnectTimeout(3000); c.setReadTimeout(5000); c.setRequestMethod("POST"); c.setDoOutput(true);
+                            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("Authorization", "Bearer fixture-gateway");
+                            try {
+                                try (OutputStream out = c.getOutputStream()) { out.write(new JSONObject().put("model", MODEL).toString().getBytes(StandardCharsets.UTF_8)); }
+                                check(c.getResponseCode() == 200, "test-model response status");
+                                JSONObject response; try (InputStream in = c.getInputStream()) { response = new JSONObject(read(in)); }
+                                check(!response.optBoolean("ok", true), "disabled model must not succeed");
+                                check(!"gift".equals(response.optString("billing")), "disabled session must not enter gift probe");
+                                check(synthetic.summaries == 0 && synthetic.opens == 0, "no injected gift calls");
+                                check(mock.calls.get() == calls, "disabled model made no generic call");
+                            } finally { c.disconnect(); }
+                        } finally { disabled.stop(); }
+                    });
+                }
                 for (String mode : new String[]{"null-stream", "read-failure"}) {
                     runCase("pre-handoff cleanup " + mode, failures, () -> {
                         SyntheticTransport fake = new SyntheticTransport(mode); Gateway synthetic = new Gateway(config(mock.port()), fake);

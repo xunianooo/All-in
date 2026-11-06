@@ -713,6 +713,10 @@ public class MiniMaxAuth {
         return out;
     }
 
+    static int timezoneOffsetSeconds(java.util.TimeZone timezone, long timestampMillis) {
+        return timezone.getOffset(timestampMillis) / 1000;
+    }
+
     /** 聊天必需头（Authorization 由调用方加） */
     public static java.util.Map<String, String> chatHeaders(String sessionId) {
         java.util.Map<String, String> h = new java.util.LinkedHashMap<String, String>();
@@ -721,7 +725,7 @@ public class MiniMaxAuth {
         h.put("User-Agent", "MiniMaxAgent");
         h.put("X-Mavis-Agent-Id", "main");
         java.util.TimeZone tz = java.util.TimeZone.getDefault();
-        int offsetSec = (tz.getOffset(System.currentTimeMillis())) / 1000;
+        int offsetSec = timezoneOffsetSeconds(tz, System.currentTimeMillis());
         h.put("X-Mavis-Timezone-Offset", String.valueOf(offsetSec));
         if (sessionId == null || sessionId.isEmpty()) {
             sessionId = "magpie-" + Long.toHexString(System.currentTimeMillis());

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "minimumEngineVersion": 1,
-  "ruleVersion": "1.0.0",
+  "ruleVersion": "1.0.2",
   "rules": [
     {
       "id": "workbuddy-headers",
@@ -10,12 +10,11 @@
       "origin": "https://copilot.tencent.com",
       "path": "/v2/chat/completions",
       "headers": {
-        "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+        "User-Agent": "WorkBuddy/5.9.3 CLI/2.165.0",
         "X-Requested-With": "XMLHttpRequest",
         "X-Product": "SaaS",
         "X-Agent-Intent": "craft",
         "X-Agent-Purpose": "conversation",
-        "X-Conversation-ID": "00000000-0000-0000-0000-000000000000",
         "X-Agent-Type": "main",
         "X-Auth-Refresh-Source": "workbuddy"
       }
@@ -27,12 +26,11 @@
       "origin": "https://www.workbuddy.ai",
       "path": "/v2/chat/completions",
       "headers": {
-        "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+        "User-Agent": "WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0",
         "X-Requested-With": "XMLHttpRequest",
         "X-Product": "SaaS",
         "X-Agent-Intent": "craft",
         "X-Agent-Purpose": "conversation",
-        "X-Conversation-ID": "00000000-0000-0000-0000-000000000000",
         "X-Agent-Type": "main",
         "X-Auth-Refresh-Source": "workbuddy-ai"
       }

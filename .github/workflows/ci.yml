@@ -51,6 +51,8 @@ jobs:
           node tests/dashboard-combined.cjs
           node tests/dashboard-q2.cjs
           node tests/dashboard-image-body.cjs
+          node tests/dashboard-trae.cjs
+          node tests/trae-login-recovery.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |

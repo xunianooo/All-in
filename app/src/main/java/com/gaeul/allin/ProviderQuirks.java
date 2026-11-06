@@ -79,7 +79,9 @@ final class ProviderQuirks {
             // Java fingerprints. Credentials and interpolation are unrepresentable.
             Set<String> expected = rac ? new HashSet<>(Arrays.asList("User-Agent", "Accept"))
                     : new HashSet<>(Arrays.asList("User-Agent", "X-Requested-With", "X-Product", "X-Agent-Intent",
-                            "X-Agent-Purpose", "X-Conversation-ID", "X-Agent-Type", "X-Auth-Refresh-Source"));
+                            "X-Agent-Purpose", "X-Agent-Type", "X-Auth-Refresh-Source"));
+            // Signed legacy rules included a static conversation ID; accept both exact sets.
+            if (!rac && map.containsKey("X-Conversation-ID")) expected.add("X-Conversation-ID");
             if(!map.keySet().equals(expected)) throw new IllegalArgumentException("unapproved header set");
             rules.add(new Rule(id,p,proto,origin,path,map));
         }

@@ -36,7 +36,7 @@ public final class ProviderQuirksHttpTest {
         f.set(g,null); release.countDown();ByteArrayOutputStream wire=new ByteArrayOutputStream();Method send=AllInTrackedResponse.class.getDeclaredMethod("send",OutputStream.class);send.setAccessible(true);send.invoke(response,wire);
         worker.join(5000);server.close();g.stop();if(failure.get()!=null)throw new AssertionError(failure.get());
         check(new String(wire.toByteArray(),StandardCharsets.UTF_8).contains("[DONE]"));
-        boolean found=false;try(java.util.stream.Stream<Path> paths=Files.list(dir.resolve("usage"))) { for(Path path:(Iterable<Path>)paths::iterator) for(String line:Files.readAllLines(path)) {JSONObject row=new JSONObject(line);JSONObject diag=row.optJSONObject("diagnostics");if(diag!=null && "1.0.0".equals(diag.optString("rulesVersion")))found=true;} }
+        boolean found=false;try(java.util.stream.Stream<Path> paths=Files.list(dir.resolve("usage"))) { for(Path path:(Iterable<Path>)paths::iterator) for(String line:Files.readAllLines(path)) {JSONObject row=new JSONObject(line);JSONObject diag=row.optJSONObject("diagnostics");if(diag!=null && "1.0.2".equals(diag.optString("rulesVersion")))found=true;} }
         check(found);
     }
     public static void main(String[] args) throws Exception {
@@ -49,7 +49,7 @@ public final class ProviderQuirksHttpTest {
         Conn c=new Conn(); c.setRequestProperty("Authorization","Bearer synthetic"); apply.invoke(null,c,matched);
         check(!c.getInstanceFollowRedirects() && "Bearer synthetic".equals(c.h.get("Authorization")) && c.h.containsKey("User-Agent"));
         Conn fallback=new Conn(); fallback.setInstanceFollowRedirects(true); apply.invoke(null,fallback,Collections.emptyMap()); check(fallback.getInstanceFollowRedirects() && fallback.h.isEmpty());
-        RequestContext held=new RequestContext("/v1/messages",NetworkPolicy.capture(),60000,q,"s","a",1); check(held.quirks==q && "1.0.0".equals(held.quirks.ruleVersion)); held.close();
+        RequestContext held=new RequestContext("/v1/messages",NetworkPolicy.capture(),60000,q,"s","a",1); check(held.quirks==q && "1.0.2".equals(held.quirks.ruleVersion)); held.close();
         heldWorker(q);
         System.out.println("ProviderQuirksHttpTest PASS");
     }

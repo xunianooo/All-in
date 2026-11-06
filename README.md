@@ -8,7 +8,7 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.2.14（versionCode 20）
+- 当前版本：1.2.17（versionCode 23）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
@@ -46,14 +46,23 @@ MAGPIE_KEY_ALIAS=gaeul \
 
 ## 手机端自编译（Termux / Alpine chroot）
 
-保留历史能力：`./app/build.sh` 仍可独立出包（依赖 `/workspace/tools` 下的
-工具 jar 与 keystore），与本 Gradle 构建双轨并存，产物同源。
+手机端可在配置好 JDK 17、Android SDK 和签名凭据的 Linux 环境中使用同一套 Gradle 工程构建；签名密钥与口令仅保存在本机，不进入仓库。
 
 ## 协议自动转换
 
 网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
 
 Responses 兼容完整 Agent 请求中的 `user`、`stream_options`、`text.verbosity`、常见可空默认值及普通 reasoning／工具历史。未知顶层扩展字段在副本上忽略，类型错误仍返回 400；非空服务器端会话、模板和异步执行不会静默丢弃。跨协议展示选项降级通过兼容性响应头提示，详见 [字段兼容表](docs/responses-agent-compatibility.md)。
+
+## 1.2.17 Trae CN 与供应商兼容性
+
+- 新增 Trae CN 个人账号授权、账号池、动态模型同步和签到，支持工具往返与流式响应；完善登录恢复、辅助事件、历史字段和思考档位兼容。
+- WorkBuddy 工具轮次复用请求 ID，并保持客户端的流式/非流式意图；无可靠会话信息时保守使用独立 ID。
+- Qoder 排队业务码与鉴权错误分开处理，排队及执行结果未知时不自动重放；输出上限不足 64 时发送前明确拒绝。
+- ZCode 增加 ToolSearch 请求别名与响应还原，完善 gift 用量、拒绝冷却及账号缓存隔离；Cline 图片路由保留用户选项。
+- 内置兼容规则更新至 1.0.2，较旧有效签名缓存保留，但不覆盖较新内置规则。线上规则源独立维护。
+
+本批电脑功能验收通过；本地集中回归覆盖 86 个离线套件、17 个独立 HTTP 任务、17 个前端脚本及 Android 原生隔离验证。真实厂商计费策略、所有模型和旧版 Android 实机不据此宣称全面验证。Trae 企业/Global/Max 等未实现能力保持明确边界。
 
 ## 1.2.14 供应商管理、网络配置与连接可靠性
 

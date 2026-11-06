@@ -5,7 +5,7 @@ import org.json.*;
 
 /** Validates consumed configuration fields while preserving unrelated legacy fields. */
 final class BackupConfigSchema {
-    private static final Set<String> PROTOCOLS = new HashSet<>(Arrays.asList("openai","anthropic","responses","gemini","antigravity","qoder","codex","copilot","minimax","deepseek-web","cline","catpaw"));
+    private static final Set<String> PROTOCOLS = new HashSet<>(Arrays.asList("openai","anthropic","responses","gemini","antigravity","qoder","codex","copilot","minimax","deepseek-web","cline","catpaw","trae"));
     static void validate(JSONObject root) throws Exception {
         JSONObject server = object(root, "server", true);
         optionalString(server, "authKey"); optionalString(server, "host");
@@ -19,6 +19,13 @@ final class BackupConfigSchema {
             JSONArray models=array(p,"models",false), keys=array(p,"keys",false), accounts=array(p,"accounts",false);
             if (models!=null) for(int j=0;j<models.length();j++) if (!(models.opt(j) instanceof String)) bad();
             if (accounts!=null) for(int j=0;j<accounts.length();j++) if (!(accounts.opt(j) instanceof JSONObject)) bad();
+            if ("trae-cn".equals(id) && "trae".equals(p.optString("protocol")) && accounts!=null) {
+                Set<String> accountIds=new HashSet<>();
+                for(int j=0;j<accounts.length();j++) {JSONObject a=accounts.getJSONObject(j);
+                    if(a.optString("id").isEmpty() || !accountIds.add(a.optString("id")) || a.optString("generation").isEmpty())bad();
+                    TraeDevice.validate(a);
+                }
+            }
             if (keys!=null) for(int j=0;j<keys.length();j++) {
                 Object k=keys.opt(j);
                 if (k instanceof String) { if (((String)k).length()>16384) bad(); }

@@ -1568,22 +1568,28 @@
               <span data-provider-logo="trae-cn"></span>
               <div>
                 <b style="font-size: 1.05rem; color: #fff; display: block;">Trae</b>
-                <span style="font-size: 0.75rem; color: var(--text-muted);">网页登录 · Claude 3.5 / GPT-4o</span>
+                <span style="font-size: 0.75rem; color: var(--text-muted);">系统浏览器登录 · 设备绑定</span>
               </div>
             </div>
-            <span id="badge-count-trae-cn" class="badge" style="background: rgba(255, 255, 255, 0.08); color: var(--text-muted); font-size: 0.75rem; padding: 3px 10px; border-radius: 12px;; cursor: pointer;" onclick="manageProviderAccounts('trae-cn')">账号 0</span><span class="badge badge-muted" style="margin-left:6px;">未实装</span>
+            <span id="badge-count-trae-cn" class="badge" style="background: rgba(255, 255, 255, 0.08); color: var(--text-muted); font-size: 0.75rem; padding: 3px 10px; border-radius: 12px;; cursor: pointer;" onclick="manageProviderAccounts('trae-cn')">账号 0</span><span class="badge badge-success" style="margin-left:6px;">已接入</span>
           </div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="triggerPlatformLogin('trae-cn')">登录账号</button>
-            <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="promptImportAccount('trae-cn')">导入账号</button>
-            <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('trae-cn')">导出账号</button>
+            <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" disabled title="Trae 需要完整设备身份，请使用浏览器登录或加密备份恢复">设备绑定登录</button>
+            <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" disabled title="完整设备身份请使用加密备份">加密备份迁移</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('trae-cn')">移除账号</button>
           </div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
-            <span id="model-pool-summary-trae" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
+            <span id="model-pool-summary-trae-cn" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <button class="btn btn-outline" style="font-size: 0.7rem; padding: 3px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="syncUniversalModels('trae-cn')">🔄 同步官方模型</button>
           </div>
-          <div id="models-tags-trae" style="display: flex; gap: 6px; flex-wrap: wrap; max-height: 128px; overflow-y: auto; padding: 2px;">
+          <div id="trae-checkin-controls" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+            <label for="trae-account-select">签到账号</label><select id="trae-account-select" aria-label="Trae 签到账号"></select>
+            <button type="button" class="btn btn-outline" data-trae-action="status">查看签到状态</button>
+            <button type="button" class="btn btn-outline" data-trae-action="checkin">主动签到</button>
+            <span id="trae-checkin-status" role="status"></span>
+          </div>
+          <div id="models-tags-trae-cn" style="display: flex; gap: 6px; flex-wrap: wrap; max-height: 128px; overflow-y: auto; padding: 2px;">
             <span style="font-size: 0.72rem; color: var(--text-muted);">⚡ 正在加载模型池...</span>
           </div>
         </div>
@@ -4601,7 +4607,7 @@
         try { renderGroups(); bindGroupEvents(); } catch (e) {}
         try { renderWbAccounts(); } catch (e) {}
         try { renderWbModelTags(); } catch (e) {}
-        try { renderAllProvidersCards(); renderProviderList(); applyProviderView(); } catch (e) {}
+        try { renderAllProvidersCards(); renderProviderList(); applyProviderView(); renderTraeAccounts(); } catch (e) {}
         try { refreshProviderBadges(); } catch (e) {}
         try { applyPlaceholderGuard(); } catch (e) {}
         try { renderCredentials(); } catch (e) {}
@@ -4674,15 +4680,45 @@
       }
     }
 
+    function renderTraeAccounts() {
+      const select = document.getElementById('trae-account-select'); if (!select) return;
+      const provider = (appConfig.providers || []).find(p => p.id === 'trae-cn');
+      const accounts = provider && Array.isArray(provider.accounts) ? provider.accounts : [];
+      const rows = accounts.filter(a => a && typeof a.id === 'string' && a.id).map((a, i) => ({id:a.id, label: String(a.name || ('账号 ' + (i + 1)))}));
+      const signature = JSON.stringify(rows); if (select.dataset.signature === signature) return;
+      const previous = select.value; select.replaceChildren();
+      if (!rows.length) { const opt = document.createElement('option'); opt.value = ''; opt.textContent = '暂无账号'; select.appendChild(opt); }
+      rows.forEach(row => { const opt = document.createElement('option'); opt.value = row.id; opt.textContent = row.label; select.appendChild(opt); });
+      if (rows.some(row => row.id === previous)) select.value = previous;
+      select.dataset.signature = signature;
+    }
+    let traeCheckinBusy = false;
+    async function traeCheckinAction(action) {
+      const select = document.getElementById('trae-account-select'), status = document.getElementById('trae-checkin-status');
+      const id = select && select.value; if (!id || traeCheckinBusy) { if (!id && status) status.textContent = '请先登录账号'; return; }
+      traeCheckinBusy = true; if (status) status.textContent = action === 'checkin' ? '正在签到…' : '正在查询…';
+      try {
+        const url = action === 'checkin' ? '/api/trae/checkin' : '/api/trae/checkin-status?accountId=' + encodeURIComponent(id);
+        const options = action === 'checkin' ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({accountId:id})} : undefined;
+        const response = await fetch(API_BASE + url, options), data = await response.json();
+        if (status) status.textContent = data.ok ? ('结果：' + ({status: data.status && data.status.checked_in ? '今日已签到' : '今日未签到',done:'今日已签到',inactive:'签到活动未开放',unknown:'结果尚未确认，请查询状态',ineligible:'上游拒绝领取，请稍后查看',rejected:'领取被拒绝'}[data.outcome] || '结果未知') + (typeof data.credits === 'number' ? ' · 积分 ' + data.credits : '')) : ('操作失败：' + errText(data.error));
+      } catch (_) { if (status) status.textContent = '请求失败，请检查网关连接'; }
+      finally { traeCheckinBusy = false; }
+    }
+    document.addEventListener('click', function (event) {
+      const button = event.target.closest && event.target.closest('[data-trae-action]');
+      if (button && (button.dataset.traeAction === 'status' || button.dataset.traeAction === 'checkin')) traeCheckinAction(button.dataset.traeAction);
+    });
+
     async function syncUniversalModels(providerId, silent) {
       const pName = getProviderName(providerId);
       try {
         if (!silent) showToast('正在向 ' + pName + ' 云端同步最新模型...');
         else showToast('已登录，正在自动拉取 ' + pName + ' 可用模型…');
-        const res = await fetch(API_BASE + '/api/auth/' + providerId + '/sync-models');
+        const res = await fetch(API_BASE + '/api/auth/' + providerId + '/sync-models', providerId === 'trae-cn' ? {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'} : undefined);
         const data = await res.json();
         if (data.ok) {
-          showToast('🎉 ' + data.message);
+          showToast(providerId === 'trae-cn' ? ('同步模型 ' + (data.count == null ? (Array.isArray(data.models) ? data.models.length : 0) : data.count) + ' 个' + (data.partial ? '（部分结果）' : '')) : ('🎉 ' + data.message));
           await loadConfig();
           renderAllModelsTags();
         } else {
@@ -6041,7 +6077,7 @@
         const d=await r.json(); if(rev!==quirksReadRevision)return;
         if(d.loadError || typeof d.version!=='string' || !Number.isInteger(d.ruleCount))throw Error('内置规则未加载，保留原兼容处理');
         const update=d.update||{}, source=({'builtin':'内置','verified-cache':'已验证缓存','verified-update':'已验证更新'})[d.source]||'未知来源';
-        const results={disabled:'可信分发未激活',unsupported:'此 Android 版本不支持规则更新',configuration_invalid:'可信配置无效，更新已禁用',ready:'尚未检查',cache_restored:'已恢复缓存',cache_invalid:'缓存无效，保留内置规则',updated:'更新成功',unchanged:'规则无变化',http_error:'服务器拒绝或重定向，保留现有规则',invalid_response:'响应无效，保留现有规则',failed:'检查失败，保留现有规则',timeout:'检查超时，保留现有规则',busy:'前次检查尚未结束',network_unavailable:'网络安全状态无法确认',retired:'服务已停止'};
+        const results={disabled:'可信分发未激活',unsupported:'此 Android 版本不支持规则更新',configuration_invalid:'可信配置无效，更新已禁用',ready:'尚未检查',cache_restored:'已恢复缓存',cache_invalid:'缓存无效，保留内置规则',builtin_newer:'当前内置规则较新，暂无可用更新',newer_local:'当前规则较新，暂无可用更新',updated:'更新成功',unchanged:'规则无变化',http_error:'服务器拒绝或重定向，保留现有规则',invalid_response:'响应无效，保留现有规则',failed:'检查失败，保留现有规则',timeout:'检查超时，保留现有规则',busy:'前次检查尚未结束',network_unavailable:'网络安全状态无法确认',retired:'服务已停止'};
         quirksEnabled=update.enabled===true; quirksUnknown=false;
         node.textContent=source+'版本 '+d.version+' · '+d.ruleCount+' 条精确规则 · '+(results[update.result]||'状态未知')+' · 请求期间固定快照';
       } catch(e) { if(rev===quirksReadRevision) {quirksEnabled=false;if(node)node.textContent='读取失败：'+e.message;} }
@@ -6705,7 +6741,7 @@
     const PLATFORM_PRESETS = [
       { id: 'workbuddy', name: 'WorkBuddy (腾讯 CodeBuddy)', icon: '🤖', badge: '17个模型已实测', testModel: 'workbuddy/hy3', desc: '支持手机短信验证码与微信一键登录，已实测支持 17 个官方云端模型！' },
       { id: 'deepseek_web', name: 'DeepSeek (网页模式)', icon: '🐳', badge: '文本 + 工具桥', testModel: 'deepseek_web/deepseek-chat', desc: '网页模式支持文本和社区提示词工具桥，不支持图片和文件。deepseek-chat / deepseek-reasoner 分别对应网页 default / expert 模式，不代表底层模型名称。' },
-      { id: 'trae-cn', name: 'Trae CN (字节 AI IDE)', icon: '⚡', badge: '未实装', testModel: '', desc: 'packages/trae 未移植（设备证明 + ExchangeToken + 自有 SSE），当前只是占位，不要当真。' },
+      { id: 'trae-cn', name: 'Trae CN (字节 AI IDE)', icon: '⚡', badge: '已接入', testModel: '', desc: '系统浏览器登录，支持模型同步与手动签到。' },
       { id: 'catpaw', name: 'CatPaw (美团爪子 AI)', icon: '🐾', badge: '美团代码模型', testModel: 'catpaw/longcat-2.0', desc: '美团内部开发者模型，手机验证码登录后自动登记凭据。' },
       { id: 'wenxin_web', name: '百度文心一言 (免Key池)', icon: '🐻', badge: 'ERNIE 4.0 Turbo', testModel: 'wenxin_web/ernie-4.0-turbo', desc: '支持百度统一账号与手机短信登录，一键吸纳进池。' },
       { id: 'raccoon', name: '商汤小浣熊', icon: '🦝', badge: '商汤编程大模型', testModel: 'raccoon/raccoon-code', desc: '商汤科技代码助手，支持手机验证码登录入池。' },
