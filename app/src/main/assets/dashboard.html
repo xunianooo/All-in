@@ -1141,6 +1141,25 @@
         </div>
       </div>
 
+      <details class="card" id="card-affinity"><summary class="card-title">🔗 会话软亲和</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。客户端提供明确会话标识时，成功交付后尽量沿用商业供应商与凭据。冷却、禁用、移除或出站限制优先，手动路由优先；不同会话仍按原策略分流。进程重启和配置变化会清空绑定，不保证厂商缓存命中。</p>
+        <label style="display:flex;gap:10px;align-items:center"><input id="affinity-enabled" type="checkbox" onchange="affinityEdited()">启用可选会话软亲和</label>
+        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">只使用显式会话请求头，不从提示词推断。绑定保存在有界进程内存中，默认30分钟有效，首次请求预约最长60秒；容量不足时保可用性。订阅、gift及未覆盖特殊通道不承诺绑定。</p>
+        <button id="affinity-save" class="btn" onclick="saveAffinity()">保存</button> <button class="btn btn-outline" onclick="loadAffinity()">读取当前设置</button>
+        <div id="affinity-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+      <details class="card" id="card-quirks"><summary class="card-title">🧩 供应商兼容规则</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">内置规则只迁移已有 WorkBuddy、WorkBuddy AI 与小浣熊指定接口的静态请求头，精确匹配供应商、协议和地址。凭据处理、智谱错误信封、正文和流式解析保持原逻辑。规则更新由用户主动检查；未配置可信分发源时使用内置规则。</p>
+        <div id="quirks-status" role="status" style="font-size:0.78rem;overflow-wrap:anywhere;">尚未读取</div>
+        <button class="btn btn-outline" onclick="loadQuirks()">读取规则状态</button> <button id="quirks-check" class="btn" onclick="checkQuirks()" disabled>检查更新</button>
+      </details>
+      <details class="card" id="card-backup"><summary class="card-title">🔐 本地加密备份与恢复</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">导出密码加密的完整配置，包含账号令牌、API密钥、服务与路由设置；不含用量账本、隐私脱敏密钥或会话映射。密码在原生窗口输入，不发送给页面。仅 Android 8.0 以上应用内可用。</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn" onclick="openLocalBackup('export')">导出加密备份</button><button class="btn btn-outline" onclick="openLocalBackup('import')">导入并预览</button><button class="btn btn-outline" onclick="openLocalBackup('rollback')">恢复本机回退快照</button></div>
+        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">恢复前先预览数量与服务设置变化，明确确认后替换全部配置并停止当前请求。恢复前配置保存为本机密文快照，使用本次导入密码解密。请保存密码；密码遗失无法解密。浏览器页面不能调用原生备份。</p>
+        <div id="backup-status" role="status" style="font-size:0.75rem;color:var(--text-muted);"></div>
+      </details>
+
       <details class="card" id="card-resilience"><summary class="card-title">⏳ 请求耐受与流心跳</summary>
         <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。先尝试可用备选，只有明确的短暂限流或过载拒绝才可等待后重试；额度、鉴权、小浣熊账号吞吐墙、代理与执行结果未知不进入耐受重试。等待和重试仍受总尝试次数与请求截止时间约束。</p>
         <label for="resilience-patience">候选耗尽后的最长耐受（毫秒，0关闭，最大60000）</label>
@@ -1894,6 +1913,7 @@
           <button class="btn" style="font-size:0.78rem;padding:7px 18px;background:rgba(255,255,255,0.08);" onclick="previewGuard()">🔍 预览裁剪效果</button>
         </div>
         <div id="guard-status" style="font-size:0.8rem;line-height:1.9;margin-top:12px;"></div>
+        <p id="guard-image-note" style="font-size:0.76rem;color:var(--text-muted);line-height:1.7">图片与关联工具回合保留；预算不足时拒绝请求，不自动删图、缩图或下载图片。文字历史仍按设置裁剪。图片请求的 Token 数只估算非图片部分，图片 Token 未计量；字节上限仍计算完整请求。</p>
         <div id="guard-preview" style="font-size:0.78rem;line-height:1.8;margin-top:6px;"></div>
       </div>
 
@@ -2340,11 +2360,17 @@
         + ' · 保留最近 <b style="color:#38bdf8;">' + (g.keepRecent || 0) + '</b> 条'
         + ' · 读超时 <b style="color:#38bdf8;">' + (g.requestTimeoutSeconds || 120) + 's</b></div>';
       const ls = g.lastStats;
-      if (ls && ls.changed) {
-        html += '<div style="color:var(--text-muted);">最近一次裁剪：' + ls.originalTokens + ' → ' + ls.finalTokens + ' tokens，丢弃 '
-          + ls.dropped + ' 条、截断 ' + ls.truncated + ' 条（' + (ls.originalBytes / 1024).toFixed(0) + 'KB → ' + (ls.finalBytes / 1024).toFixed(0) + 'KB）</div>';
+      const count = v => Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : 0;
+      if (ls && (ls.changed || ls.error || count(ls.imageCount)>0)) {
+        const rejected = !!ls.error;
+        html += '<div style="color:var(--text-muted);">' + (rejected ? '最近一次请求已拒绝，未转发；预算处理结果：' : '最近一次预算处理：')
+          + count(ls.originalTokens) + ' → ' + count(ls.finalTokens) + (ls.imageTokenEstimateKnown===false ? ' 非图片部分估算 tokens' : ' 估算 tokens')
+          + '，丢弃 ' + count(ls.dropped) + ' 条、截断 ' + count(ls.truncated) + ' 条（' + (count(ls.originalBytes)/1024).toFixed(0)
+          + 'KB → ' + (count(ls.finalBytes)/1024).toFixed(0) + 'KB）</div>';
+        if (count(ls.imageCount)>0) html += '<div style="color:var(--text-muted);">保留图片 ' + count(ls.imageCount)
+          + ' 张 · 图片载荷/URL ' + (count(ls.imageBytes)/1024).toFixed(1) + 'KB · 图片 Token 未计量，不能据此保证模型上下文预算。</div>';
       } else {
-        html += '<div style="color:var(--text-muted);">还没有触发过裁剪，请求都在上限内。</div>';
+        html += '<div style="color:var(--text-muted);">尚无需要展示的预算处理记录；图片 Token 不包含在文本估算中。</div>';
       }
       st.innerHTML = html;
     }
@@ -3102,7 +3128,7 @@
         if (!d.ok || !box) return;
         const r = d.result || {};
         const pct = r.originalTokens ? Math.max(0, Math.round((1 - r.finalTokens / r.originalTokens) * 100)) : 0;
-        box.innerHTML = '<div style="color:var(--accent);">样例对话：' + d.messagesBefore + ' 条消息 / ' + r.originalTokens + ' tokens → '
+        box.innerHTML = '<div style="color:var(--accent);">' + (r.error ? '样例超出可安全适配范围，将拒绝转发。' : '') + '样例对话：' + d.messagesBefore + ' 条消息 / ' + r.originalTokens + ' tokens → '
           + d.messagesAfter + ' 条 / ' + r.finalTokens + ' tokens，压缩 ' + pct + '%（丢弃 ' + r.dropped + ' 条，截断 ' + r.truncated + ' 条）</div>'
           + (r.appliedMaxOutputTokens ? '<div style="color:var(--text-muted);">max_tokens 将被封顶为 ' + r.appliedMaxOutputTokens + '</div>' : '');
       } catch (e) {
@@ -5969,6 +5995,81 @@
       finally{resiliencePending=false;document.getElementById('resilience-save').disabled=false;}
     }
 
+    let affinityToken=null,affinityBaseline=null,affinityDirty=false,affinityRev=0,affinityRead=0,affinityPending=false,affinityUnknown=false,affinityConflict=false;
+    function affinityStatus(text) { const n=document.getElementById('affinity-status');if(n)n.textContent=text; }
+    function affinityEdited() { if(!affinityDirty)affinityBaseline=affinityToken;affinityDirty=true;++affinityRev; }
+    function affinityValue() { return {enabled:document.getElementById('affinity-enabled').checked}; }
+    function affinityValid(v) { return v && Object.keys(v).length===1 && typeof v.enabled==='boolean'; }
+    async function loadAffinity() {
+      if(affinityPending)return;const seq=++affinityRead,rev=affinityRev;
+      try {
+        const r=await fetch(API_BASE+'/api/affinity');if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();
+        if(!d || d.ok!==true || !affinityValid(d.settings) || typeof d.stateToken!=='string' || !d.stateToken)throw Error('响应无效');
+        if(seq!==affinityRead || affinityPending)return;
+        affinityToken=d.stateToken;affinityUnknown=false;
+        if(!affinityDirty && rev===affinityRev) {document.getElementById('affinity-enabled').checked=d.settings.enabled;affinityBaseline=d.stateToken;affinityStatus('已读取当前设置');}
+        else if(affinityConflict) {affinityConflict=false;affinityBaseline=d.stateToken;affinityStatus('已读取当前设置；草稿保留，请核对后保存');}
+        else {affinityStatus('已读取当前设置；草稿保留。若设置已改变，保存会提示冲突');}
+      }catch(e){if(seq===affinityRead)affinityStatus('读取失败：'+e.message+'；草稿保留');}
+    }
+    async function saveAffinity() {
+      if(affinityPending)return;
+      if(affinityUnknown || affinityConflict) {affinityStatus('请先读取当前设置并核对草稿');return;}
+      if(affinityToken===null) {affinityStatus('请先成功读取当前设置');return;}
+      const value=affinityValue();
+      if(!affinityValid(value)) {affinityStatus('设置无效');return;}
+      const rev=affinityRev,expected=affinityDirty && affinityBaseline!==null?affinityBaseline:affinityToken;
+      affinityPending=true;++affinityRead;document.getElementById('affinity-save').disabled=true;
+      try {
+        let r;try {r=await fetch(API_BASE+'/api/affinity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings:value,expectedStateToken:expected})});}catch(e){affinityUnknown=true;throw Error('保存结果未确认，请读取核对');}
+        if(r.status===409){affinityConflict=true;throw Error('设置冲突，请读取并核对');}
+        if(r.status===400 || r.status===500)throw Error('保存被拒绝（HTTP '+r.status+'）');
+        let d;try{d=await r.json();}catch(e){affinityUnknown=true;throw Error('响应未确认，请读取核对');}
+        if(!r.ok || !d || d.ok!==true || !affinityValid(d.settings) || d.settings.enabled!==value.enabled || typeof d.stateToken!=='string') {affinityUnknown=true;throw Error('保存结果未确认');}
+        affinityToken=d.stateToken;affinityBaseline=d.stateToken;
+        if(rev===affinityRev)affinityDirty=false;
+        affinityStatus(rev===affinityRev?'保存成功':'保存成功；后续输入草稿保留');
+      }catch(e){affinityStatus(e.message+'；草稿保留');}
+      finally{affinityPending=false;document.getElementById('affinity-save').disabled=false;}
+    }
+
+    let quirksReadRevision=0, quirksPending=false, quirksEnabled=false, quirksUnknown=false;
+    async function loadQuirks() {
+      const rev=++quirksReadRevision,node=document.getElementById('quirks-status'),button=document.getElementById('quirks-check');
+      try {
+        const r=await fetch(API_BASE+'/api/quirks'); if(!r.ok)throw Error('HTTP '+r.status);
+        const d=await r.json(); if(rev!==quirksReadRevision)return;
+        if(d.loadError || typeof d.version!=='string' || !Number.isInteger(d.ruleCount))throw Error('内置规则未加载，保留原兼容处理');
+        const update=d.update||{}, source=({'builtin':'内置','verified-cache':'已验证缓存','verified-update':'已验证更新'})[d.source]||'未知来源';
+        const results={disabled:'可信分发未激活',unsupported:'此 Android 版本不支持规则更新',configuration_invalid:'可信配置无效，更新已禁用',ready:'尚未检查',cache_restored:'已恢复缓存',cache_invalid:'缓存无效，保留内置规则',updated:'更新成功',unchanged:'规则无变化',http_error:'服务器拒绝或重定向，保留现有规则',invalid_response:'响应无效，保留现有规则',failed:'检查失败，保留现有规则',timeout:'检查超时，保留现有规则',busy:'前次检查尚未结束',network_unavailable:'网络安全状态无法确认',retired:'服务已停止'};
+        quirksEnabled=update.enabled===true; quirksUnknown=false;
+        node.textContent=source+'版本 '+d.version+' · '+d.ruleCount+' 条精确规则 · '+(results[update.result]||'状态未知')+' · 请求期间固定快照';
+      } catch(e) { if(rev===quirksReadRevision) {quirksEnabled=false;if(node)node.textContent='读取失败：'+e.message;} }
+      finally {if(rev===quirksReadRevision && button)button.disabled=quirksPending||!quirksEnabled||quirksUnknown;}
+    }
+    async function checkQuirks() {
+      if(quirksPending || !quirksEnabled || quirksUnknown)return;
+      quirksPending=true; ++quirksReadRevision;
+      const button=document.getElementById('quirks-check'),node=document.getElementById('quirks-status');
+      if(button)button.disabled=true; if(node)node.textContent='正在检查规则更新…';
+      try {
+        const r=await fetch(API_BASE+'/api/quirks/check',{method:'POST'}); if(!r.ok)throw Error('检查未确认');
+        const d=await r.json(); if(!d || typeof d.result!=='string')throw Error('检查未确认');
+        await loadQuirks();
+      } catch(e) {
+        quirksUnknown=true;quirksEnabled=false;
+        if(node)node.textContent='检查结果未确认，请读取规则状态核对；不会自动重试。';
+      } finally {quirksPending=false;if(button)button.disabled=!quirksEnabled||quirksUnknown;}
+    }
+    function openLocalBackup(action) {
+      const node=document.getElementById('backup-status');
+      if(!['export','import','rollback'].includes(action))return;
+      try {if(!window.AllInNative || typeof window.AllInNative.openEncryptedBackup!=='function')throw Error('请在 Android 应用内使用备份功能');
+        if(window.AllInNative.openEncryptedBackup(action)!==true)throw Error('无法打开，请在应用内重新进入此页');
+        if(node)node.textContent='已请求打开原生备份窗口，请按系统提示操作；操作结果以原生提示为准。';
+      }catch(e){if(node)node.textContent=e.message;}
+    }
+
     // 页面启动初始化
     window.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { queryGatewayState(); }, 200);
@@ -5977,6 +6078,8 @@
       loadNetwork();
       loadOutbound();
       loadResilience();
+      loadAffinity();
+      loadQuirks();
       try { loadRoutingState(); } catch (e) {}
       try { loadEtaCard(); } catch (e) {}
       try { loadAuthKey(); } catch (e) {}

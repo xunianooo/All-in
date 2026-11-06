@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "minimumEngineVersion": 1,
+  "ruleVersion": "1.0.0",
+  "rules": [
+    {
+      "id": "workbuddy-headers",
+      "provider": "workbuddy",
+      "protocol": "openai",
+      "origin": "https://copilot.tencent.com",
+      "path": "/v2/chat/completions",
+      "headers": {
+        "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Product": "SaaS",
+        "X-Agent-Intent": "craft",
+        "X-Agent-Purpose": "conversation",
+        "X-Conversation-ID": "00000000-0000-0000-0000-000000000000",
+        "X-Agent-Type": "main",
+        "X-Auth-Refresh-Source": "workbuddy"
+      }
+    },
+    {
+      "id": "workbuddy-ai-headers",
+      "provider": "workbuddy-ai",
+      "protocol": "openai",
+      "origin": "https://www.workbuddy.ai",
+      "path": "/v2/chat/completions",
+      "headers": {
+        "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Product": "SaaS",
+        "X-Agent-Intent": "craft",
+        "X-Agent-Purpose": "conversation",
+        "X-Conversation-ID": "00000000-0000-0000-0000-000000000000",
+        "X-Agent-Type": "main",
+        "X-Auth-Refresh-Source": "workbuddy-ai"
+      }
+    },
+    {
+      "id": "raccoon-headers",
+      "provider": "raccoon",
+      "protocol": "openai",
+      "origin": "https://xiaohuanxiong.com",
+      "path": "/api/web/llm/v2/chat/completions",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/event-stream, application/json"
+      }
+    }
+  ]
+}

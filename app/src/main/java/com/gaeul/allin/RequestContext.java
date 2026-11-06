@@ -12,6 +12,10 @@ public final class RequestContext implements OutboundLimiter.Cancellation, AutoC
     public final String protocol;
     public final NetworkPolicy.Snapshot network;
     public final long deadlineNanos;
+    final ProviderQuirks.Snapshot quirks;
+    final String explicitSession, authScope;
+    final long affinityEpoch;
+    volatile AtomicBoolean affinitySemantic = new AtomicBoolean();
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private final Set<HttpURLConnection> connections = new HashSet<>();
     private final Set<Runnable> cleanups = new HashSet<>();
@@ -22,7 +26,11 @@ public final class RequestContext implements OutboundLimiter.Cancellation, AutoC
     private boolean diagnosticHeadersSeen;
     public synchronized String diagnosticResponsePhase() { return diagnosticHeadersSeen ? "headers" : "uncommitted"; }
     public RequestContext(String protocol, NetworkPolicy.Snapshot network, long durationMillis) {
+        this(protocol, network, durationMillis, null, "", "", 0);
+    }
+    RequestContext(String protocol, NetworkPolicy.Snapshot network, long durationMillis, ProviderQuirks.Snapshot quirks, String explicitSession, String authScope, long affinityEpoch) {
         this.protocol = protocol; this.network = network;
+        this.quirks=quirks; this.explicitSession=explicitSession; this.authScope=authScope; this.affinityEpoch=affinityEpoch;
         this.deadlineNanos = System.nanoTime() + Math.max(1, Math.min(300000, durationMillis)) * 1000000L;
     }
     public long remainingMillis() { return Math.max(0, (deadlineNanos-System.nanoTime()+999999L)/1000000L); }

@@ -55,7 +55,10 @@ final class ZCodeAnthropic {
             JSONObject m = msgs.optJSONObject(i);
             if (m == null) continue;
             if (!"system".equals(m.optString("role"))) continue;
-            String t = flattenContent(m.opt("content"));
+            Object sys=m.opt("content");
+            if (sys instanceof JSONArray) { JSONArray parts=(JSONArray)sys; for(int k=0;k<parts.length();k++) {JSONObject part=parts.optJSONObject(k); if(part==null || !"text".equals(part.optString("type"))) throw new IllegalArgumentException("Unsupported system content"); ImageContent.keys(part,"type","text"); if(!(part.opt("text") instanceof String)) throw new IllegalArgumentException("Invalid system text");} }
+            else if(!(sys instanceof String)) throw new IllegalArgumentException("Invalid system content");
+            String t = flattenContent(sys);
             if (t.trim().isEmpty()) continue;
             if (system.length() > 0) system.append("\n\n");
             system.append(t);
@@ -73,8 +76,14 @@ final class ZCodeAnthropic {
                 // 工具结果必须落在 user 消息里；同一 turn 的多个结果合并进同一条
                 JSONObject block = new JSONObject();
                 block.put("type", "tool_result");
-                block.put("tool_use_id", m.optString("tool_call_id", ""));
-                block.put("content", flattenContent(m.opt("content")));
+                if (!(m.opt("tool_call_id") instanceof String) || m.optString("tool_call_id").isEmpty()) throw new IllegalArgumentException("Tool call ID required");
+                ImageContent.keys(m, "role", "tool_call_id", "content", "is_error");
+                block.put("tool_use_id", m.optString("tool_call_id"));
+                Object toolContent=m.opt("content");
+                if(toolContent instanceof String) block.put("content",toolContent);
+                else if(toolContent instanceof JSONArray) block.put("content",convertParts((JSONArray)toolContent));
+                else throw new IllegalArgumentException("Invalid tool content");
+                if(m.has("is_error") && !(m.opt("is_error") instanceof Boolean)) throw new IllegalArgumentException("Invalid tool is_error");
                 if (m.has("is_error") && !m.isNull("is_error")) block.put("is_error", m.optBoolean("is_error"));
 
                 JSONObject last = conv.length() > 0 ? conv.optJSONObject(conv.length() - 1) : null;
@@ -97,6 +106,7 @@ final class ZCodeAnthropic {
             JSONArray content = new JSONArray();
 
             Object c = m.opt("content");
+            if("assistant".equals(role) && c instanceof JSONArray) { JSONArray parts=(JSONArray)c; for(int k=0;k<parts.length();k++) {JSONObject part=parts.optJSONObject(k); if(part!=null && "image_url".equals(part.optString("type"))) throw new IllegalArgumentException("Assistant image cannot be represented by Anthropic");} }
             if (c instanceof String) {
                 String s = (String) c;
                 if (!s.isEmpty()) {
@@ -107,22 +117,8 @@ final class ZCodeAnthropic {
                 }
             } else if (c instanceof JSONArray) {
                 JSONArray arr = (JSONArray) c;
-                for (int k = 0; k < arr.length(); k++) {
-                    JSONObject part = arr.optJSONObject(k);
-                    if (part == null) continue;
-                    String type = part.optString("type", "text");
-                    if ("text".equals(type)) {
-                        JSONObject t = new JSONObject();
-                        t.put("type", "text");
-                        t.put("text", part.optString("text", ""));
-                        content.put(t);
-                    } else if ("image_url".equals(type)) {
-                        JSONObject url = part.optJSONObject("image_url");
-                        String u = url == null ? part.optString("image_url", "") : url.optString("url", "");
-                        JSONObject img = toImageBlock(u);
-                        if (img != null) content.put(img);
-                    }
-                }
+                JSONArray converted=convertParts(arr);
+                for(int k=0;k<converted.length();k++) content.put(converted.get(k));
             }
 
             JSONArray calls = m.optJSONArray("tool_calls");
@@ -229,29 +225,16 @@ final class ZCodeAnthropic {
         return out;
     }
 
-    private static JSONObject toImageBlock(String url) {
-        if (url == null || url.isEmpty()) return null;
-        try {
-            JSONObject src = new JSONObject();
-            if (url.startsWith("data:")) {
-                int comma = url.indexOf(',');
-                if (comma < 0) return null;
-                String head = url.substring(5, comma);
-                String mediaType = head.split(";")[0];
-                src.put("type", "base64");
-                src.put("media_type", mediaType.isEmpty() ? "image/png" : mediaType);
-                src.put("data", url.substring(comma + 1));
-            } else {
-                src.put("type", "url");
-                src.put("url", url);
-            }
-            JSONObject img = new JSONObject();
-            img.put("type", "image");
-            img.put("source", src);
-            return img;
-        } catch (Exception e) {
-            return null;
+    private static JSONArray convertParts(JSONArray arr) throws Exception {
+        JSONArray result=new JSONArray();
+        for(int i=0;i<arr.length();i++) {
+            JSONObject part=arr.optJSONObject(i); if(part==null) throw new IllegalArgumentException("Invalid content part");
+            String type=part.optString("type");
+            if("text".equals(type)) {ImageContent.keys(part,"type","text"); if(!(part.opt("text") instanceof String)) throw new IllegalArgumentException("Text content required"); result.put(new JSONObject().put("type","text").put("text",part.getString("text")));}
+            else if("image_url".equals(type)) result.put(ImageContent.toAnthropic(part));
+            else throw new IllegalArgumentException("Unsupported content part: "+type);
         }
+        return result;
     }
 
     private static JSONObject parseArgs(String args) {

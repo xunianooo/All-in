@@ -170,7 +170,11 @@ public class MiniMaxAuth {
 
     /** 表单 POST；返回 {code, body(JSONObject|null), raw, error} */
     private static JSONObject postForm(String url, String form, int[] codeOut, String[] rawOut) throws Exception {
+        return postForm(url,form,codeOut,rawOut,false);
+    }
+    private static JSONObject postForm(String url, String form, int[] codeOut, String[] rawOut, boolean oneShot) throws Exception {
         HttpURLConnection conn = open(url);
+        if(oneShot) { conn.setInstanceFollowRedirects(false); conn.setFixedLengthStreamingMode(form.getBytes("UTF-8").length); }
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
@@ -352,7 +356,7 @@ public class MiniMaxAuth {
             JSONObject j = postForm(ACCOUNT + "/oauth2/token",
                     form("grant_type", "refresh_token", "refresh_token", refreshToken,
                             "client_id", CLIENT_ID, "scope", SCOPE, "audience", AUDIENCE),
-                    code, raw);
+                    code, raw, true);
             if (j == null) return null;
             String access = j.optString("access_token", "");
             if (access.isEmpty()) return null;

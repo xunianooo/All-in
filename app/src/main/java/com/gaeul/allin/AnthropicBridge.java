@@ -59,7 +59,10 @@ final class AnthropicBridge {
 
     // ===================== 请求：Anthropic → OpenAI =====================
 
-    static JSONObject requestToOpenAI(JSONObject a) throws Exception {
+    static JSONObject requestToOpenAI(JSONObject a) throws Exception { return requestToOpenAI(a, false); }
+    // Only for native pass-through pipelines that enforce NativeAnthropicPolicy before dispatch.
+    static JSONObject projectNativeRequest(JSONObject a) throws Exception { return requestToOpenAI(a, true); }
+    private static JSONObject requestToOpenAI(JSONObject a, boolean projection) throws Exception {
         JSONObject out = new JSONObject();
         out.put("model", a.optString("model", ""));
 
@@ -109,7 +112,7 @@ final class AnthropicBridge {
                         throw new IllegalArgumentException("messages[" + i + "].content[" + j + "] must be an object");
             }
             if (!assistant) {
-                addUserContent(messages, c);
+                addUserContent(messages, c, projection);
                 continue;
             }
             JSONObject msg = new JSONObject().put("role", "assistant");
@@ -120,6 +123,10 @@ final class AnthropicBridge {
             for (int k = 0; k < blocks.length(); k++) {
                 JSONObject b = blocks.optJSONObject(k);
                 if (b == null) continue;
+                if ("image".equals(b.optString("type"))) {
+                    if (!projection) throw new IllegalArgumentException("Assistant image cannot be represented by Chat");
+                    ImageContent.projectNative(b);
+                }
                 if ("text".equals(b.optString("type"))) text.append(b.optString("text", ""));
                 if ("tool_use".equals(b.optString("type"))) {
                     String id = toolString(b, "id"), name = toolString(b, "name");
@@ -178,7 +185,7 @@ final class AnthropicBridge {
         return out;
     }
 
-    private static void addUserContent(JSONArray messages, Object content) throws Exception {
+    private static void addUserContent(JSONArray messages, Object content, boolean projection) throws Exception {
         if (content instanceof String) { messages.put(new JSONObject().put("role", "user").put("content", content)); return; }
         JSONArray blocks = content instanceof JSONArray ? (JSONArray)content : new JSONArray();
         JSONArray parts = new JSONArray();
@@ -196,16 +203,24 @@ final class AnthropicBridge {
                 for (int j = 0; result != null && j < result.length(); j++) {
                     JSONObject item = result.optJSONObject(j);
                     if (item != null && "image".equals(item.optString("type"))) {
-                        JSONObject image = imageBlockToOpenAI(item);
+                        JSONObject image = projection ? ImageContent.projectNative(item) : imageBlockToOpenAI(item);
                         if (image == null) throw new IllegalArgumentException("invalid tool result image");
                         images.put(image);
                     }
                 }
-                if (images.length() > 0) { body += "\n[Images from this tool result follow.]"; tool.put("_images", images); }
+                if (images.length() > 0) {
+                    if (!projection) ImageContent.keys(b, "type", "tool_use_id", "content", "is_error");
+                    for(int j=0;j<result.length();j++) {
+                        JSONObject part=result.optJSONObject(j);
+                        if(part==null) throw new IllegalArgumentException("Unsupported tool result content");
+                        if("text".equals(part.optString("type"))) { if(!projection) ImageContent.keys(part,"type","text"); if(!(part.opt("text") instanceof String)) throw new IllegalArgumentException("Invalid tool result text"); }
+                        else if(!"image".equals(part.optString("type"))) throw new IllegalArgumentException("Unsupported tool result content");
+                    }
+                    body += "\n[Images from this tool result follow.]"; tool.put("_images", images); }
                 tool.put("content", body); results.put(tool);
             } else if ("text".equals(type)) parts.put(new JSONObject().put("type", "text").put("text", b.optString("text", "")));
             else if ("image".equals(type)) {
-                JSONObject image = imageBlockToOpenAI(b);
+                JSONObject image = projection ? ImageContent.projectNative(b) : imageBlockToOpenAI(b);
                 if (image == null) throw new IllegalArgumentException("invalid user image");
                 parts.put(image);
             }
@@ -333,7 +348,7 @@ final class AnthropicBridge {
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject b = arr.optJSONObject(i);
                 if (b == null) continue;
-                if (!"text".equals(b.optString("type", "text"))) continue;
+                if (!"text".equals(b.optString("type", "text"))) throw new IllegalArgumentException("Unsupported system content");
                 String t = b.optString("text", "");
                 if (t.trim().isEmpty()) continue;
                 if (sb.length() > 0) sb.append("\n\n");
@@ -364,27 +379,8 @@ final class AnthropicBridge {
         return String.valueOf(content);
     }
 
-    private static JSONObject imageBlockToOpenAI(JSONObject block) {
-        try {
-            JSONObject src = block.optJSONObject("source");
-            if (src == null) return null;
-            String url;
-            if ("base64".equals(src.optString("type"))) {
-                String media = src.optString("media_type", "image/png");
-                url = "data:" + media + ";base64," + src.optString("data", "");
-            } else {
-                url = src.optString("url", "");
-            }
-            if (url.isEmpty()) return null;
-            JSONObject imgUrl = new JSONObject();
-            imgUrl.put("url", url);
-            JSONObject part = new JSONObject();
-            part.put("type", "image_url");
-            part.put("image_url", imgUrl);
-            return part;
-        } catch (Exception e) {
-            return null;
-        }
+    private static JSONObject imageBlockToOpenAI(JSONObject block) throws Exception {
+        return ImageContent.fromAnthropic(block);
     }
 
     // ===================== 响应：OpenAI → Anthropic =====================

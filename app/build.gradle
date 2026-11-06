@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 21
-        versionName '1.2.15'
+        versionCode 22
+        versionName '1.2.16'
     }
 
     signingConfigs {
@@ -78,6 +78,19 @@ def offlineTestMains = [
         'com.gaeul.allin.ToolCallContractOfflineTest',
         'com.gaeul.allin.ToolContractStrictOfflineTest',
         'com.gaeul.allin.RequestDiagnosticsOfflineTest',
+        'com.gaeul.allin.ProviderQuirksOfflineTest',
+        'com.gaeul.allin.SignedQuirksStoreOfflineTest',
+        'com.gaeul.allin.QuirksUpdateControllerOfflineTest',
+        'com.gaeul.allin.QuirksHttpsTransportOfflineTest',
+        'com.gaeul.allin.MiniMaxLifecycleOfflineTest',
+        'com.gaeul.allin.MiniMaxRefreshJournalOfflineTest',
+        'com.gaeul.allin.MiniMaxIntegrationHttpTest',
+        'com.gaeul.allin.MiniMaxUnknownHttpTest',
+        'com.gaeul.allin.MiniMaxCompetitionTest',
+        'com.gaeul.allin.SessionAffinityOfflineTest',
+        'com.gaeul.allin.EncryptedConfigBackupOfflineTest',
+        'com.gaeul.allin.BackupRestoreTransactionOfflineTest',
+        'com.gaeul.allin.BackupOwnedTaskOfflineTest',
         'com.gaeul.allin.NetworkSettingsOfflineTest',
         'com.gaeul.allin.ProviderKeysOfflineTest',
         'com.gaeul.allin.GatewayAddressOfflineTest',
@@ -91,6 +104,11 @@ def offlineTestMains = [
         'com.gaeul.allin.AnthropicBridgeStreamOfflineTest',
         'com.gaeul.allin.ContextGuardOfflineTest',
         'com.gaeul.allin.ContextGuardProtectionTest',
+        'com.gaeul.allin.ImageContentOfflineTest',
+        'com.gaeul.allin.ImageNativeContractOfflineTest',
+        'com.gaeul.allin.ImageContextGuardOfflineTest',
+        'com.gaeul.allin.IngressBodyOfflineTest',
+        'fi.iki.elonen.AllInRawHeaderTcpTest',
         'com.gaeul.allin.ZCodeAnthropicOfflineTest',
         'com.gaeul.allin.GatewayProtocolOfflineTest',
         'com.gaeul.allin.DeepSeekWebTest',
@@ -227,7 +245,7 @@ tasks.register('patienceRoutingHttpTests', JavaExec) {
 tasks.named('streamingHttpTests') { dependsOn 'patienceRoutingHttpTests' }
 
 // Protocol contract and diagnostic loopback regressions share the existing local HTTP gate.
-['ProtocolDiagnosticsHttpTest', 'ToolContractFailoverHttpTest'].each { name ->
+['ProtocolDiagnosticsHttpTest', 'ToolContractFailoverHttpTest', 'SessionAffinityHttpTest', 'ProviderQuirksHttpTest', 'QuirksGatewayHttpTest', 'MiniMaxIntegrationHttpTest', 'IngressBodyHttpTest', 'IngressGatewayHttpTest', 'ImageGatewayHttpTest'].each { name ->
     def taskName = name.substring(0, 1).toLowerCase() + name.substring(1)
     tasks.register(taskName, JavaExec) {
         dependsOn 'compileOfflineTests'

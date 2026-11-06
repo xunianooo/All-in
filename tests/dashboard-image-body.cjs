@@ -1,0 +1,18 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('path');
+const html=fs.readFileSync(path.join(__dirname,'../app/src/main/assets/dashboard.html'),'utf8');
+const start=html.indexOf('    function renderGuardStatus(g) {');
+const end=html.indexOf('    // ============ 隐私脱敏开关',start);
+assert(start>=0&&end>start);
+const element={innerHTML:''};const context={document:{getElementById:id=>id==='guard-status'?element:null}};
+vm.createContext(context);vm.runInContext(html.slice(start,end),context);
+context.renderGuardStatus({maxBodyBytes:1024,keepRecent:0,lastStats:{changed:false,imageCount:1,imageBytes:1048576,imageTokenEstimateKnown:false,originalTokens:20,finalTokens:20,originalBytes:1049000,finalBytes:1049000,dropped:0,truncated:0}});
+assert(element.innerHTML.includes('非图片部分估算 tokens'));
+assert(element.innerHTML.includes('图片 Token 未计量'));
+assert(element.innerHTML.includes('保留图片 1 张'));
+context.renderGuardStatus({lastStats:{error:'budget_exceeded',originalTokens:20,finalTokens:20,imageCount:1,imageBytes:100,imageTokenEstimateKnown:false,dropped:0,truncated:0}});
+assert(element.innerHTML.includes('已拒绝，未转发'));
+context.renderGuardStatus({lastStats:{changed:true,originalTokens:'<img src=x>',finalTokens:1,dropped:0,truncated:1,originalBytes:20,finalBytes:10}});
+assert(!element.innerHTML.includes('<img'));
+assert(html.includes('id="guard-image-note"')&&html.includes('预算不足时拒绝请求'));
+for(const part of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new vm.Script(part[1]);
+console.log('dashboard image/body budget status checks passed');

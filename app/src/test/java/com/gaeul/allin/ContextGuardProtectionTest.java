@@ -16,12 +16,14 @@ public final class ContextGuardProtectionTest {
         ok(shrink.truncated > 0);
         c.maxBodyBytes = 500; c.keepRecent = 1;
         JSONArray pair = new JSONArray().put(new JSONObject().put("role", "user").put("content", repeat("x", 1500)))
-          .put(new JSONObject("{\"role\":\"assistant\",\"content\":\"preserve\",\"tool_calls\":[{\"id\":\"a\"},{\"id\":\"b\"}]}"))
+          .put(new JSONObject("{\"role\":\"assistant\",\"content\":\"preserve\",\"tool_calls\":[{\"id\":\"a\"},{\"id\":\"b\"}]}").put("metadata", repeat("x", 1000)))
           .put(new JSONObject("{\"role\":\"tool\",\"tool_call_id\":\"a\",\"content\":\"one\"}"))
           .put(new JSONObject("{\"role\":\"tool\",\"tool_call_id\":\"b\",\"content\":\"two\"}"));
         ContextGuard.Result paired = ContextGuard.fit(new JSONObject().put("messages", pair), c);
-        ok(paired.payload.getJSONArray("messages").length() == 3);
-        ok(paired.payload.getJSONArray("messages").getJSONObject(0).getJSONArray("tool_calls").length() == 2);
+        // Latest user and the tool group remain present; callers must reject an over-budget result.
+        ok("budget_exceeded".equals(paired.error) && paired.budgetExceeded);
+        ok(paired.payload.getJSONArray("messages").length() == 4);
+        ok(paired.payload.getJSONArray("messages").getJSONObject(1).getJSONArray("tool_calls").length() == 2);
         System.out.println("ContextGuard protection checks passed");
     }
 }

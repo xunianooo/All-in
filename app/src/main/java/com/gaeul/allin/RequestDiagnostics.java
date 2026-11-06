@@ -18,6 +18,9 @@ public final class RequestDiagnostics {
         for (int i = 0; i < value.length(); i++) if (Character.isISOControl(value.charAt(i))) return null;
         return value;
     }
+    private static String ruleVersion(String value) {
+        return value != null && value.length()<=64 && value.matches("[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.]+)?") ? value : null;
+    }
     private static Object nullable(Object value) { return value == null ? JSONObject.NULL : value; }
     private static String enumValue(String value, Set<String> allowed) { return allowed.contains(value) ? value : null; }
     static long elapsedMillis(long start, long end) { return Math.max(0, end - start) / 1000000L; }
@@ -31,10 +34,16 @@ public final class RequestDiagnostics {
     /** Immutable after settlement; JSON projections always return a new whitelist object. */
     public static final class Snapshot {
         final String requestedModel, provider, model, failureKind, responsePhase, executionState;
+        final String rulesVersion;
         final Long logicalDurationMs, queuedMs, patienceWaitMs;
         final Boolean deliveryConfirmed;
         Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
                  String failure, String phase, String execution, Boolean delivery) {
+            this(requested, provider, model, duration, queue, patience, failure, phase, execution, delivery, null);
+        }
+        Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
+                 String failure, String phase, String execution, Boolean delivery, String version) {
+            rulesVersion = ruleVersion(version);
             requestedModel = identifier(requested); this.provider = identifier(provider); this.model = identifier(model);
             logicalDurationMs = duration; queuedMs = queue; patienceWaitMs = patience;
             failureKind = enumValue(failure, FAILURES);
@@ -47,15 +56,16 @@ public final class RequestDiagnostics {
                     .put("logicalDurationMs", nullable(logicalDurationMs)).put("queuedMs", nullable(queuedMs))
                     .put("patienceWaitMs", nullable(patienceWaitMs)).put("failureKind", nullable(failureKind))
                     .put("responsePhase", nullable(responsePhase)).put("executionState", nullable(executionState))
-                    .put("deliveryConfirmed", nullable(deliveryConfirmed)).put("rulesVersion", JSONObject.NULL);
+                    .put("deliveryConfirmed", nullable(deliveryConfirmed)).put("rulesVersion", nullable(rulesVersion));
         }
         static Snapshot parse(JSONObject json) {
             if (json == null || json.optInt("schemaVersion", 0) != 1) return null;
             JSONObject target = json.optJSONObject("target"); Object delivered = json.opt("deliveryConfirmed");
-            return new Snapshot(json.optString("requestedModel", null), target == null ? null : target.optString("provider", null),
+            Snapshot parsed = new Snapshot(json.optString("requestedModel", null), target == null ? null : target.optString("provider", null),
                     target == null ? null : target.optString("model", null), number(json,"logicalDurationMs"), number(json,"queuedMs"),
                     number(json,"patienceWaitMs"), json.optString("failureKind",null), json.optString("responsePhase",null),
-                    json.optString("executionState",null), delivered instanceof Boolean ? (Boolean)delivered : null);
+                    json.optString("executionState",null), delivered instanceof Boolean ? (Boolean)delivered : null, json.optString("rulesVersion",null));
+            return parsed;
         }
     }
 
@@ -175,7 +185,8 @@ public final class RequestDiagnostics {
             Long duration=row.isTerminal() && o.logical!=null?elapsedMillis(o.logical.started,o.logical.clock.nanoTime()):null;
             Long patience=row.isTerminal() && o.logical!=null?o.logical.patienceMillis():null;
             row.diagnostics=new Snapshot(row.req,provider,model,duration,o.queuedMs,patience,failure,
-                    o.context==null?null:o.context.diagnosticResponsePhase(),execution,o.deliveryConfirmed);
+                    o.context==null?null:o.context.diagnosticResponsePhase(),execution,o.deliveryConfirmed,
+                    o.context==null || o.context.quirks==null?null:o.context.quirks.ruleVersion);
         }
     }
     public static JSONObject json(UsageLedger.Row row) { return (row.diagnostics==null?unobserved(row):row.diagnostics).json(); }

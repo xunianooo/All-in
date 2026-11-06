@@ -284,7 +284,8 @@ final class ResponsesBridge {
             } else if ("input_image".equals(type)) {
                 if (!(p.opt("image_url") instanceof String)) throw new IllegalArgumentException("input_image requires image_url");
                 String url=p.getString("image_url");
-                if (!(url.startsWith("https://") || url.startsWith("http://") || url.startsWith("data:image/"))) throw new IllegalArgumentException("Unsupported image_url");
+                ImageContent.validateUrl(url);
+                if(p.has("detail") && (!(p.opt("detail") instanceof String) || !Arrays.asList("auto","low","high").contains(p.opt("detail")))) throw new IllegalArgumentException("Invalid image detail");
                 JSONObject img = new JSONObject().put("url", url);
                 copy(p, img, "detail", "detail");
                 result.put(new JSONObject().put("type", "image_url").put("image_url", img));
@@ -360,6 +361,7 @@ final class ResponsesBridge {
                 if (instructions.length()>0) instructions.append("\n\n"); instructions.append(m.optString("content")); continue;
             }
             if ("tool".equals(role)) {
+                if (!(m.opt("content") instanceof String)) throw new IllegalArgumentException("Chat tool output must be a string for Responses");
                 input.put(new JSONObject().put("type", "function_call_output").put("call_id", toolString(m,"tool_call_id")).put("output", m.optString("content", ""))); continue;
             }
             Object content=m.opt("content");
@@ -373,6 +375,7 @@ final class ResponsesBridge {
                         checkKeys(part,"image_url".equals(type)?new String[]{"type","image_url"}:new String[]{"type","text"});
                         if ("text".equals(type)) parts.put(new JSONObject().put("type", "assistant".equals(role)?"output_text":"input_text").put("text", part.getString("text")));
                         else if ("image_url".equals(type)) {
+                            ImageContent.chatUrl(part,false);
                             Object image=part.opt("image_url"); JSONObject item=new JSONObject().put("type", "input_image");
                             if (image instanceof String) item.put("image_url",image);
                             else if (image instanceof JSONObject) { JSONObject im=(JSONObject)image; checkKeys(im,new String[]{"url","detail"}); item.put("image_url", im.getString("url")); copy(im,item,"detail","detail"); }

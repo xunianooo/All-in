@@ -16,7 +16,8 @@ import java.util.List;
  *  2. 按「最大输出 token」给请求里的 max_tokens 封顶。
  *
  * 设计原则：
- *  - system 消息保留；最近 keepRecent 条消息优先保留，超限时仍可能被截断或丢弃；
+ *  - system、最新 user 和带图片消息及关联工具组不得丢弃；可截断的文字仍可能被截断；
+ *  - 图片 token 未计量，文本估算不保证完整模型上下文在预算内；
  *  - 只裁掉较早的历史，或截断超长文本，不改变消息的角色顺序；
  *  - 不修改用户本地会话，裁剪情况通过响应头 X-Magpie-Context-* 回传。
  */
@@ -89,6 +90,10 @@ public class ContextGuard {
         /** Non-null means the gateway must reject this request instead of forwarding it. */
         public String error;
         public boolean budgetExceeded;
+        public int textTokenEstimate;
+        public int imageCount;
+        public long imageBytes;
+        public boolean imageTokenEstimateKnown = true;
 
         public JSONObject toJson() {
             JSONObject o = new JSONObject();
@@ -102,6 +107,10 @@ public class ContextGuard {
             o.put("budgetTokens", budgetTokens);
             o.put("budgetBytes", budgetBytes);
             o.put("budgetExceeded", budgetExceeded);
+            o.put("textTokenEstimate", textTokenEstimate);
+            o.put("imageCount", imageCount);
+            o.put("imageBytes", imageBytes);
+            o.put("imageTokenEstimateKnown", imageTokenEstimateKnown);
             if (error != null) o.put("error", error);
             if (appliedMaxOutputTokens != null) o.put("appliedMaxOutputTokens", appliedMaxOutputTokens.intValue());
             return o;
@@ -138,7 +147,9 @@ public class ContextGuard {
         r.payload = payload;
         String serialized = payload.toString();
         r.originalBytes = bytes(serialized);
-        r.originalTokens = estimateTokens(serialized);
+        serialized = null;
+        r.originalTokens = textTokens(payload);
+        updateImageStats(r, payload);
         r.finalBytes = r.originalBytes;
         r.finalTokens = r.originalTokens;
         r.budgetBytes = (cfg != null) ? cfg.maxBodyBytes : 0;
@@ -173,11 +184,11 @@ public class ContextGuard {
         }
         if (r.error == null && msgs != null && msgs.length() > 0) {
             // 除 messages 之外的基础开销（tools / 参数等）
-            JSONObject shell = new JSONObject(out.toString());
+            JSONObject shell = shallowCopy(out);
             shell.put("messages", new JSONArray());
             String shellStr = shell.toString();
             long baseBytes = bytes(shellStr);
-            int baseTokens = estimateTokens(shellStr);
+            int baseTokens = textTokens(shell);
 
             int n = msgs.length();
             List<Integer> systemIdx = new ArrayList<Integer>();
@@ -194,16 +205,36 @@ public class ContextGuard {
             for (Integer i : systemIdx) {
                 keep[i.intValue()] = true;
                 usedBytes += bytes(msgs.optJSONObject(i.intValue()).toString());
-                usedTokens += estimateTokens(msgs.optJSONObject(i.intValue()).toString());
+                usedTokens += textTokens(msgs.optJSONObject(i.intValue()));
             }
 
+            // Images and the latest user turn are mandatory regardless of keepRecent.
+            boolean[] mandatory = new boolean[n];
+            int latestUser = -1;
+            for (int i = 0; i < n; i++) {
+                JSONObject m = msgs.optJSONObject(i);
+                if ("user".equals(m.optString("role"))) latestUser = i;
+                mandatory[i] = hasImageContent(m.opt("content"));
+            }
+            if (latestUser >= 0) mandatory[latestUser] = true;
+            for (int i = 0; i < n; i++) {
+                JSONObject m = msgs.optJSONObject(i);
+                if (!"assistant".equals(m.optString("role")) || m.optJSONArray("tool_calls") == null) continue;
+                int end = i + 1;
+                boolean protect = mandatory[i];
+                while (end < n && "tool".equals(msgs.optJSONObject(end).optString("role"))) protect |= mandatory[end++];
+                if (protect) for (int j = i; j < end; j++) mandatory[j] = true;
+                i = end - 1;
+            }
             // 最近 keepRecent 条优先保留
             int recentStart = Math.max(0, otherIdx.size() - Math.max(0, cfg.keepRecent));
             for (int k = recentStart; k < otherIdx.size(); k++) {
                 int i = otherIdx.get(k).intValue();
-                keep[i] = true;
-                usedBytes += bytes(msgs.optJSONObject(i).toString());
-                usedTokens += estimateTokens(msgs.optJSONObject(i).toString());
+                if (!keep[i]) {
+                    keep[i] = true;
+                    usedBytes += bytes(msgs.optJSONObject(i).toString());
+                    usedTokens += textTokens(msgs.optJSONObject(i));
+                }
             }
 
             // 从最近往更早的方向补入，放不下就丢
@@ -212,8 +243,8 @@ public class ContextGuard {
                 JSONObject m = msgs.optJSONObject(i);
                 if (m == null) continue;
                 long mb = bytes(m.toString());
-                int mt = estimateTokens(m.toString());
-                if (usedBytes + mb <= byteBudget && usedTokens + mt <= tokenBudget) {
+                int mt = textTokens(m);
+                if (mandatory[i] || (usedBytes + mb <= byteBudget && usedTokens + mt <= tokenBudget)) {
                     keep[i] = true;
                     usedBytes += mb;
                     usedTokens += mt;
@@ -254,8 +285,8 @@ public class ContextGuard {
                 JSONObject shrunk = null;
                 for (int i = 0; i < cur.length(); i++) {
                     JSONObject m = cur.optJSONObject(i);
-                    if (m == null || "system".equals(m.optString("role"))) continue;
-                    int len = estimateTokens(m.toString());
+                    if (m == null || "system".equals(m.optString("role")) || protectedToolGroup(cur, i)) continue;
+                    int len = truncatableTokens(m);
                     JSONObject candidate = truncateMessage(m, Math.max(16, truncatableTokens(m) / 2));
                     if (candidate != null && candidate.toString().length() < m.toString().length() && len > longestLen) {
                         longestLen = len;
@@ -276,10 +307,23 @@ public class ContextGuard {
                 int dropIdx = -1;
                 for (int i = 0; i < cur.length() - 1; i++) {
                     JSONObject m = cur.optJSONObject(i);
-                    if (m != null && !"system".equals(m.optString("role"))) {
-                        dropIdx = i;
-                        break;
+                    if (m == null || "system".equals(m.optString("role")) || hasImageContent(m.opt("content")) || protectedToolGroup(cur, i)) continue;
+                    int end = i + 1;
+                    if ("assistant".equals(m.optString("role")) && m.optJSONArray("tool_calls") != null) {
+                        while (end < cur.length() && "tool".equals(cur.optJSONObject(end).optString("role"))) end++;
                     }
+                    boolean protectedGroup = false;
+                    for (int j = i; j < end; j++) {
+                        JSONObject member = cur.optJSONObject(j);
+                        if (hasImageContent(member.opt("content"))) protectedGroup = true;
+                        if ("user".equals(member.optString("role"))) {
+                            boolean laterUser = false;
+                            for (int k = j + 1; k < cur.length(); k++) if ("user".equals(cur.optJSONObject(k).optString("role"))) laterUser = true;
+                            if (!laterUser) protectedGroup = true;
+                        }
+                    }
+                    if (!protectedGroup && end < cur.length()) { dropIdx = i; break; }
+                    i = end - 1;
                 }
                 if (dropIdx < 0) break;
                 int dropEnd = dropIdx + 1;
@@ -301,7 +345,8 @@ public class ContextGuard {
         r.payload = out;
         String finalStr = out.toString();
         r.finalBytes = bytes(finalStr);
-        r.finalTokens = estimateTokens(finalStr);
+        r.finalTokens = textTokens(out);
+        updateImageStats(r, out);
         r.budgetExceeded = overBudget(out, byteBudget, tokenBudget);
         if (r.error == null && r.budgetExceeded) r.error = "budget_exceeded";
         r.changed = r.dropped > 0 || r.truncated > 0 || r.originalBytes != r.finalBytes
@@ -312,7 +357,146 @@ public class ContextGuard {
     private static boolean overBudget(JSONObject payload, long byteBudget, int tokenBudget) {
         String s = payload.toString();
         if (bytes(s) > byteBudget) return true;
-        return estimateTokens(s) > tokenBudget;
+        return textTokens(payload) > tokenBudget;
+    }
+
+    private static boolean protectedToolGroup(JSONArray messages, int index) {
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject m = messages.optJSONObject(i);
+            if (m == null || !"assistant".equals(m.optString("role")) || m.optJSONArray("tool_calls") == null) continue;
+            int end = i + 1;
+            boolean image = hasImageContent(m.opt("content"));
+            while (end < messages.length() && "tool".equals(messages.optJSONObject(end).optString("role")))
+                image |= hasImageContent(messages.optJSONObject(end++).opt("content"));
+            if (index >= i && index < end) return image;
+            i = end - 1;
+        }
+        return false;
+    }
+
+    // Only inspect protocol content positions; tool arguments are opaque JSON/text.
+    private static boolean imageType(JSONObject p) {
+        String t = p.optString("type", "");
+        return "image_url".equals(t) || "image".equals(t) || "input_image".equals(t);
+    }
+
+    private static boolean hasImageContent(Object content) {
+        if (content instanceof JSONArray) {
+            JSONArray a = (JSONArray) content;
+            for (int i = 0; i < a.length(); i++) if (hasImageContent(a.opt(i))) return true;
+        } else if (content instanceof JSONObject) {
+            JSONObject p = (JSONObject) content;
+            if (imageType(p)) return true;
+            if ("tool_result".equals(p.optString("type", ""))) return hasImageContent(p.opt("content"));
+        }
+        return false;
+    }
+
+    // The projection counts the JSON representation while replacing only recognized
+    // image payload strings with empty strings. It never copies the image strings.
+    private static class Projection {
+        long cjk, other, imageBytes;
+        int imageCount;
+        final java.util.IdentityHashMap<JSONObject, java.util.Set<String>> masks =
+                new java.util.IdentityHashMap<JSONObject, java.util.Set<String>>();
+        void mark(JSONObject o, String key) {
+            Object value = o.opt(key);
+            if (!(value instanceof String)) return;
+            java.util.Set<String> keys = masks.get(o);
+            if (keys == null) { keys = new java.util.HashSet<String>(); masks.put(o, keys); }
+            if (keys.add(key)) imageBytes = saturatedAdd(imageBytes, utf8Bytes((String) value));
+        }
+        void images(Object value) {
+            if (value instanceof JSONArray) {
+                JSONArray a = (JSONArray) value;
+                for (int i = 0; i < a.length(); i++) images(a.opt(i));
+            } else if (value instanceof JSONObject) {
+                JSONObject p = (JSONObject) value;
+                if (imageType(p)) {
+                    if (imageCount < Integer.MAX_VALUE) imageCount++;
+                    Object url = p.opt("image_url");
+                    if (url instanceof String) mark(p, "image_url");
+                    else if (url instanceof JSONObject) mark((JSONObject) url, "url");
+                    JSONObject source = p.optJSONObject("source");
+                    if (source != null) { mark(source, "data"); mark(source, "url"); }
+                } else if ("tool_result".equals(p.optString("type", ""))) images(p.opt("content"));
+            }
+        }
+        void count(String s) {
+            for (int i = 0; i < s.length(); i++) {
+                if (s.charAt(i) >= 0x2E80) cjk++; else other++;
+            }
+        }
+        void json(Object value) {
+            if (value instanceof JSONObject) {
+                JSONObject o = (JSONObject) value;
+                count("{"); boolean first = true;
+                java.util.Iterator<String> it = o.keys();
+                while (it.hasNext()) {
+                    String key = it.next();
+                    if (!first) count(","); first = false;
+                    count(JSONObject.quote(key)); count(":");
+                    java.util.Set<String> keys = masks.get(o);
+                    if (keys != null && keys.contains(key)) count("\"\"");
+                    else json(o.opt(key));
+                }
+                count("}");
+            } else if (value instanceof JSONArray) {
+                JSONArray a = (JSONArray) value; count("[");
+                for (int i = 0; i < a.length(); i++) { if (i > 0) count(","); json(a.opt(i)); }
+                count("]");
+            } else if (value instanceof String) count(JSONObject.quote((String) value));
+            else {
+                // Android's public JSONObject API does not expose valueToString.
+                // Serialize only the scalar through the public JSONArray API.
+                String scalar = new JSONArray().put(value).toString();
+                count(scalar.substring(1, scalar.length() - 1));
+            }
+        }
+        int tokens() { return (int) Math.min(Integer.MAX_VALUE, cjk + (other + 3) / 4); }
+    }
+    private static long saturatedAdd(long a, long b) { return Long.MAX_VALUE - a < b ? Long.MAX_VALUE : a + b; }
+    private static long utf8Bytes(String s) {
+        long n = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x80) n++;
+            else if (c < 0x800) n += 2;
+            else if (Character.isHighSurrogate(c) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) { n += 4; i++; }
+            else if (Character.isSurrogate(c)) n++;
+            else n += 3;
+        }
+        return n;
+    }
+    private static JSONObject shallowCopy(JSONObject source) {
+        JSONObject copy = new JSONObject();
+        java.util.Iterator<String> it = source.keys();
+        while (it.hasNext()) { String key = it.next(); copy.put(key, source.opt(key)); }
+        return copy;
+    }
+    private static Projection project(JSONObject payload) {
+        Projection p = new Projection();
+        JSONArray messages = payload.optJSONArray("messages");
+        if (messages != null) for (int i = 0; i < messages.length(); i++) {
+            JSONObject m = messages.optJSONObject(i);
+            if (m != null) p.images(m.opt("content"));
+        }
+        JSONArray input = payload.optJSONArray("input");
+        if (input != null) for (int i = 0; i < input.length(); i++) {
+            JSONObject item = input.optJSONObject(i);
+            if (item != null) { if (imageType(item)) p.images(item); else p.images(item.opt("content")); }
+        }
+        if (payload.has("content")) p.images(payload.opt("content"));
+        p.json(payload);
+        return p;
+    }
+    private static int textTokens(JSONObject payload) { return project(payload).tokens(); }
+    private static void updateImageStats(Result r, JSONObject payload) {
+        Projection p = project(payload);
+        r.imageCount = p.imageCount;
+        r.imageBytes = p.imageBytes;
+        r.imageTokenEstimateKnown = p.imageCount == 0;
+        r.textTokenEstimate = p.tokens();
     }
 
     /** 给 max_tokens / max_completion_tokens 封顶（只改副本，不影响原 payload） */
@@ -414,7 +598,7 @@ public class ContextGuard {
 
     private static JSONObject truncateMessage(JSONObject msg, int maxTokens) {
         try {
-            JSONObject clone = new JSONObject(msg.toString());
+            JSONObject clone = shallowCopy(msg);
             Object content = clone.opt("content");
             if (content instanceof String) {
                 String text = (String) content;
@@ -423,7 +607,9 @@ public class ContextGuard {
                 return clone;
             }
             if (content instanceof JSONArray) {
-                JSONArray arr = (JSONArray) content;
+                JSONArray old = (JSONArray) content;
+                JSONArray arr = new JSONArray();
+                for (int i = 0; i < old.length(); i++) arr.put(old.opt(i));
                 int best = -1;
                 int bestLen = 0;
                 for (int i = 0; i < arr.length(); i++) {
@@ -437,7 +623,7 @@ public class ContextGuard {
                     }
                 }
                 if (best < 0 || bestLen <= maxTokens) return null;
-                JSONObject part = arr.optJSONObject(best);
+                JSONObject part = shallowCopy(arr.optJSONObject(best));
                 String t = part.optString("text", "");
                 part.put("text", cutText(t, maxTokens) + TRUNCATE_MARKER);
                 arr.put(best, part);

@@ -16,6 +16,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class GatewayServer extends NanoHTTPD {
+    /** Shared with loopback fixtures so they exercise the production raw-header guard. */
+    static InputStream validateRawHeaders(Socket socket, InputStream input) throws IOException {
+        return new fi.iki.elonen.AllInRawHeaderInputStream(input, socket.getOutputStream());
+    }
+    @Override protected ClientHandler createClientHandler(Socket socket, InputStream input) {
+        try { return super.createClientHandler(socket, validateRawHeaders(socket, input)); }
+        catch (IOException failure) { throw new IllegalStateException("Unable to initialize client connection", failure); }
+    }
     private static final ThreadLocal<RequestContext> REQUEST_CONTEXT = new ThreadLocal<>();
     private volatile OutboundLimiter outboundLimiter;
     private java.util.concurrent.ThreadPoolExecutor heldWorkers;
@@ -30,6 +38,10 @@ public class GatewayServer extends NanoHTTPD {
     private static final ThreadLocal<String> PREPARED_BODY=new ThreadLocal<>();
     private static final ThreadLocal<PatiencePolicy> RESILIENCE_SCOPE=new ThreadLocal<>();
     private PatiencePolicy resiliencePolicy() { return PatiencePolicy.parse(configJson.optJSONObject("resilience")); }
+    private synchronized JSONObject affinitySettingsResponse() throws Exception {
+        JSONObject settings=new JSONObject().put("enabled",configJson.optJSONObject("affinity")!=null && configJson.optJSONObject("affinity").optBoolean("enabled",false));
+        return new JSONObject().put("ok",true).put("settings",settings).put("stateToken",providerStateToken(new JSONObject().put("id","affinity-settings").put("settings",settings)));
+    }
     private synchronized String resilienceStateToken() throws Exception {
         return providerStateToken(new JSONObject().put("id","resilience-settings").put("settings",resiliencePolicy().json()));
     }
@@ -69,9 +81,12 @@ public class GatewayServer extends NanoHTTPD {
         List<RequestContext> requests;
         synchronized(this) {
             stopping=true;
+            minimaxLifecycle().retire();
+            backupRetired=true;
             requests=activeContexts==null?Collections.emptyList():new ArrayList<>(activeContexts);
             if(requestWatchdog!=null) { requestWatchdog.shutdownNow(); requestWatchdog=null; }
         }
+        GatewayQuirksBridge bridge=quirksBridge; if(bridge!=null) bridge.close();
         if(outboundLimiter!=null) outboundLimiter.stop();
         if(heldWorkers!=null) heldWorkers.shutdownNow();
         for(RequestContext r:requests) r.cancel("service stopped");
@@ -136,6 +151,182 @@ public class GatewayServer extends NanoHTTPD {
     private DeepSeekWeb.Transport deepSeekTransport = new DeepSeekWeb.HttpTransport();
     void setDeepSeekTransportForTests(DeepSeekWeb.Transport transport) { deepSeekTransport=transport; }
     private final File configFile;
+    private volatile boolean backupRetired;
+    private volatile ProviderQuirks.Snapshot quirksSnapshot;
+    private volatile GatewayQuirksBridge quirksBridge;
+    private volatile String quirksUpdateUnavailable="disabled";
+    private volatile String quirksLoadError;
+    private volatile SessionAffinity affinity = new SessionAffinity();
+    private synchronized SessionAffinity affinity() { if(affinity==null) affinity=new SessionAffinity(); return affinity; }
+    private volatile long affinityEpoch;
+    synchronized byte[] backupDurableConfig() throws IOException {
+        if (configFile == null || !configFile.isFile()) throw new IOException("config missing");
+        try (InputStream in = new FileInputStream(configFile); java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] buf=new byte[8192]; int n,total=0;
+            while ((n=in.read(buf))!=-1) { total+=n; if(total>4*1024*1024) throw new IOException("config too large"); out.write(buf,0,n); }
+            return out.toByteArray();
+        }
+    }
+    private MiniMaxLifecycle minimaxLifecycle;
+    private java.util.Map<String,String> minimaxStates = new java.util.HashMap<>();
+    interface MiniMaxRefreshTransport { MiniMaxAuth.SignIn refresh(String token); }
+    private MiniMaxRefreshTransport miniMaxRefreshTransport = MiniMaxAuth::refresh;
+    void setMiniMaxRefreshForTests(MiniMaxRefreshTransport transport) { miniMaxRefreshTransport=transport; }
+    interface MiniMaxAuxTransport { java.util.List<String> models(String token) throws Exception; JSONObject checkin(String token,String uid) throws Exception; }
+    private MiniMaxAuxTransport miniMaxAuxTransport;
+    void setMiniMaxAuxForTests(MiniMaxAuxTransport transport) { miniMaxAuxTransport=transport; }
+    private MiniMaxRefreshJournal miniMaxJournal;
+    private synchronized MiniMaxRefreshJournal miniMaxJournal() throws IOException {
+        if(configFile==null || configFile.getParentFile()==null) throw new IOException("MiniMax private storage unavailable");
+        if(miniMaxJournal==null) miniMaxJournal=new MiniMaxRefreshJournal(configFile.getParentFile());
+        return miniMaxJournal;
+    }
+    private boolean minimaxPublishing;
+    private synchronized MiniMaxLifecycle minimaxLifecycle() {
+        if (minimaxLifecycle == null) minimaxLifecycle = new MiniMaxLifecycle(System::currentTimeMillis);
+        return minimaxLifecycle;
+    }
+    synchronized void retireForRestore() { backupRetired=true; minimaxLifecycle().retire(); affinityEpoch++; affinity().clear(); }
+
+    private static JSONObject miniAccount(JSONObject config, String id) {
+        JSONArray providers=config.optJSONArray("providers"); JSONObject provider=null;
+        for(int i=0;providers!=null && i<providers.length();i++) {
+            JSONObject p=providers.optJSONObject(i);
+            if(p!=null && "minimax-code".equals(p.optString("id"))) { if(provider!=null) return null; provider=p; }
+        }
+        if(provider==null || !provider.optBoolean("enabled",true)) return null;
+        JSONArray accounts=provider.optJSONArray("accounts"); JSONObject found=null;
+        for(int i=0;accounts!=null && i<accounts.length();i++) {
+            JSONObject a=accounts.optJSONObject(i);
+            if(a!=null && id.equals(a.optString("id"))) { if(found!=null) return null; found=a; }
+        }
+        return found!=null && found.optBoolean("enabled",true) ? found : null;
+    }
+    private static String miniState(JSONObject a) {
+        return a.optString("access",a.optString("token",""))+"\n"+a.optString("refresh","")+"\n"+a.optLong("expires",0);
+    }
+    private synchronized void reconcileMiniMax() {
+        if(minimaxPublishing || configJson==null) return;
+        if(minimaxStates==null) minimaxStates=new java.util.HashMap<>();
+        java.util.Map<String,String> now=new java.util.HashMap<>();
+        JSONObject p=getProviderById("minimax-code");
+        JSONArray accounts=p==null || !p.optBoolean("enabled",true)?null:p.optJSONArray("accounts");
+        java.util.Set<String> duplicates=new java.util.HashSet<>();
+        for(int i=0;accounts!=null && i<accounts.length();i++) {
+            JSONObject a=accounts.optJSONObject(i); if(a==null || !a.optBoolean("enabled",true)) continue;
+            String id=a.optString("id",""); if(id.isEmpty()) continue;
+            if(now.put(id,miniState(a))!=null) duplicates.add(id);
+        }
+        for(String id:duplicates) now.remove(id);
+        for(String id:new java.util.ArrayList<>(minimaxStates.keySet())) if(!now.containsKey(id) || !now.get(id).equals(minimaxStates.get(id))) {
+            minimaxLifecycle().invalidate(id); minimaxStates.remove(id);
+        }
+        for(java.util.Map.Entry<String,String> item:now.entrySet()) if(!minimaxStates.containsKey(item.getKey())) {
+            JSONObject a=miniAccount(configJson,item.getKey());
+            String access=a.optString("access",a.optString("token","")), refresh=a.optString("refresh","");
+            if(access.isEmpty() || refresh.isEmpty()) continue;
+            minimaxLifecycle().register(item.getKey(),new MiniMaxLifecycle.Credentials(access,refresh,a.optLong("expires",0)));
+            minimaxStates.put(item.getKey(),item.getValue());
+        }
+    }
+    private MiniMaxLifecycle.Lease miniLease(JSONObject account, boolean force, MiniMaxLifecycle.Lease observed) throws Exception {
+        String id=account==null?"":account.optString("id","");
+        MiniMaxLifecycle.Lease lease;
+        synchronized(this) {
+            if(backupRetired) throw new IOException("MiniMax account unavailable");
+            if(id.isEmpty()) {
+                JSONObject provider=getProviderById("minimax-code"); JSONArray accounts=provider==null?null:provider.optJSONArray("accounts");
+                int index=-1; for(int i=0;accounts!=null && i<accounts.length();i++) if(accounts.optJSONObject(i)==account) { index=i; break; }
+                if(index<0) throw new IOException("MiniMax account identity missing");
+                JSONObject copy=new JSONObject(configJson.toString()); JSONArray providers=copy.optJSONArray("providers"); JSONObject clone=null;
+                for(int i=0;providers!=null && i<providers.length();i++) { JSONObject candidate=providers.optJSONObject(i); if(candidate!=null && "minimax-code".equals(candidate.optString("id"))) { if(clone!=null) throw new IOException("duplicate provider"); clone=candidate; } }
+                if(clone==null) throw new IOException("MiniMax account missing");
+                id="minimax_"+java.util.UUID.randomUUID(); clone.getJSONArray("accounts").getJSONObject(index).put("id",id);
+                persistConfigStrict(copy);
+            }
+            if(miniAccount(configJson,id)==null) throw new IOException("MiniMax account unavailable");
+            reconcileMiniMax();
+            lease=observed==null?minimaxLifecycle().acquire(id):observed;
+        }
+        final MiniMaxRefreshJournal.Ticket[] ticket=new MiniMaxRefreshJournal.Ticket[1];
+        try { return minimaxLifecycle().refresh(lease,force,600000, old -> {
+            synchronized(GatewayServer.this) {
+                JSONObject current=miniAccount(configJson,lease.id);
+                if(backupRetired || current==null || !minimaxLifecycle().isCurrent(lease) || !miniState(current).equals(old.access+"\n"+old.refresh+"\n"+old.expires)) throw new IOException("MiniMax account changed");
+                ticket[0]=miniMaxJournal().begin(lease.id,old.refresh);
+            }
+            MiniMaxAuth.SignIn next=(miniMaxRefreshTransport==null?MiniMaxAuth.refresh(old.refresh):miniMaxRefreshTransport.refresh(old.refresh));
+            if(next==null || old.refresh.equals(next.refresh)) throw new IOException("MiniMax refresh outcome uncertain; sign in again");
+            return new MiniMaxLifecycle.Credentials(next.access,next.refresh,next.expires);
+        }, (key,generation,old,next) -> {
+            synchronized(GatewayServer.this) {
+                JSONObject current=miniAccount(configJson,key);
+                if(backupRetired || current==null || !minimaxLifecycle().isCurrent(lease) || !miniState(current).equals(old.access+"\n"+old.refresh+"\n"+old.expires)) return false;
+                JSONObject copy=new JSONObject(configJson.toString()); JSONObject target=miniAccount(copy,key);
+                target.put("access",next.access); target.put("token",next.access); target.put("refresh",next.refresh); target.put("expires",next.expires);
+                minimaxPublishing=true;
+                try {
+                    persistConfigStrict(copy); minimaxStates.put(key,miniState(target));
+                    // Establish config directory durability before marking the fingerprint spent.
+                    miniMaxJournal().syncDirectory();
+                    try { miniMaxJournal().complete(ticket[0]); } catch(IOException ignored) { /* durable rotated credential is authoritative */ }
+                    return true;
+                } finally { minimaxPublishing=false; }
+            }
+        }); } catch(Exception failed) {
+            try { android.util.Log.w("Magpie", "MiniMax refresh unavailable; sign-in may be required"); } catch(Throwable ignored) {}
+            throw failed;
+        }
+    }
+
+    private synchronized void removeMiniMaxAccount(String id) throws Exception {
+        JSONObject copy=new JSONObject(configJson.toString()); JSONArray providers=copy.optJSONArray("providers"); JSONObject provider=null;
+        for(int i=0;providers!=null && i<providers.length();i++) { JSONObject p=providers.optJSONObject(i); if(p!=null && "minimax-code".equals(p.optString("id"))) { if(provider!=null) throw new IOException("duplicate provider"); provider=p; } }
+        if(provider==null) return;
+        JSONArray accounts=provider.optJSONArray("accounts"), kept=new JSONArray();
+        for(int i=0;accounts!=null && i<accounts.length();i++) { JSONObject a=accounts.optJSONObject(i); if(a!=null && !id.equals(a.optString("id"))) kept.put(a); }
+        provider.put("accounts",kept); persistConfigStrict(copy);
+        // Keep every attempted refresh fingerprint across account deletion.
+    }
+    private synchronized void persistMiniMaxAux(MiniMaxLifecycle.Lease lease, JSONArray models, JSONObject result) throws Exception {
+        if(backupRetired || !minimaxLifecycle().isCurrent(lease) || miniAccount(configJson,lease.id)==null) throw new IOException("MiniMax account changed");
+        JSONObject copy=new JSONObject(configJson.toString()); JSONObject account=miniAccount(copy,lease.id);
+        if(result!=null && result.optBoolean("ok",false)) {
+            String outcome=result.optString("outcome","");
+            if(!"failed".equals(outcome)) { account.put("checkinDate",todayStamp()); account.put("checkinOutcome",outcome); account.put("checkinCredit",result.optInt("credit",0)); }
+            String uid=result.optString("uid",""); if(!uid.isEmpty()) account.put("uid",uid);
+        }
+        if(models!=null) {
+            JSONArray providers=copy.optJSONArray("providers"); JSONObject provider=null;
+            for(int i=0;providers!=null && i<providers.length();i++) { JSONObject p=providers.optJSONObject(i); if(p!=null && "minimax-code".equals(p.optString("id"))) { if(provider!=null) throw new IOException("duplicate provider"); provider=p; } }
+            if(provider==null || !provider.optBoolean("enabled",true)) throw new IOException("MiniMax provider changed");
+            provider.put("models",models); provider.put("modelMeta",new JSONObject());
+        }
+        persistConfigStrict(copy);
+    }
+
+    private synchronized void loadBuiltinQuirks() {
+        if (quirksSnapshot!=null || quirksLoadError!=null || stopping) return;
+        if (context==null) { quirksLoadError="context unavailable"; return; }
+        try (InputStream in=context.getAssets().open("default_quirks.json"); java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()) {
+            byte[] buf=new byte[4096]; int n,total=0;
+            while((n=in.read(buf))!=-1) { total+=n; if(total>ProviderQuirks.MAX_BYTES) throw new IOException("rules too large"); out.write(buf,0,n); }
+            byte[] builtin=out.toByteArray();
+            quirksSnapshot=ProviderQuirks.parse(builtin);
+            if(android.os.Build.VERSION.SDK_INT<26) quirksUpdateUnavailable="unsupported";
+            else try { quirksBridge=GatewayQuirksBridge.create(context,builtin); }
+            catch(Exception invalid) { quirksUpdateUnavailable="configuration_invalid"; }
+        } catch(Exception e) { quirksLoadError="builtin rules unavailable or invalid"; }
+    }
+    private ProviderQuirks.Snapshot currentQuirksSnapshot() {
+        GatewayQuirksBridge bridge=quirksBridge; return bridge==null?quirksSnapshot:bridge.snapshot();
+    }
+    private JSONObject quirksUpdateStatus() throws Exception {
+        GatewayQuirksBridge bridge=quirksBridge;
+        return bridge==null?new JSONObject().put("enabled",false).put("result",quirksUpdateUnavailable):bridge.status();
+    }
+    private synchronized void configChangedAffinity() { affinityEpoch++; affinity().clear(); }
+
 
     public final AtomicInteger totalRequests = new AtomicInteger(0);
     public final AtomicLong totalTokens = new AtomicLong(0);
@@ -189,6 +380,7 @@ public class GatewayServer extends NanoHTTPD {
         this.context = context;
         initializePrivacy(context.getFilesDir());
         this.configFile = new File(context.getFilesDir(), "config.json");
+        loadBuiltinQuirks();
         this.watchdogFile = new File(context.getFilesDir(), "watchdog.json");
         GatewayAuthKeyHolder.init(context.getFilesDir());
         loadWatchdogState();
@@ -640,13 +832,15 @@ public class GatewayServer extends NanoHTTPD {
 
     /** Write and fsync a sibling temporary file; publish only after replacement succeeds. */
     private synchronized boolean saveConfig(JSONObject newConfig) {
-        if (newConfig == null) return false;
+        if (newConfig == null || backupRetired) return false;
         try {
             NetworkPolicy.parse(networkFromConfig(newConfig));
             AtomicConfigFile.write(configFile, newConfig.toString(2));
             NetworkPolicy.configure(networkFromConfig(newConfig));
             configJson = newConfig;
+            reconcileMiniMax();
             GatewayAuthKeyHolder.invalidate();
+            configChangedAffinity();
             return true;
         } catch (Exception e) {
             try { android.util.Log.e("Magpie", "保存配置失败: " + e.getMessage()); } catch (Throwable ignored) {}
@@ -676,7 +870,7 @@ public class GatewayServer extends NanoHTTPD {
     // Authorization: Bearer <authKey> 或 x-api-key。
 
     /** 读 body 时的错误（超限等），供 serve 返回 413 而不是静默空 body */
-    private static final ThreadLocal<String> BODY_ERROR = new ThreadLocal<String>();
+    private static final ThreadLocal<IngressBody.Result> BODY_ERROR = new ThreadLocal<IngressBody.Result>();
 
     /** 当前请求的 Origin，供 addCorsHeaders 回显（NanoHTTPD 每次请求一个线程，覆盖式 set 即可） */
     private static final ThreadLocal<String> CURRENT_ORIGIN = new ThreadLocal<String>();
@@ -969,6 +1163,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private Response serveWithNetworkScope(IHTTPSession session) {
+        if (backupRetired) return errorResponse(503,"Gateway retired for restore");
         if ("/api/health".equals(session.getUri())) {
             if (!isLocalRequest(session)) return newFixedLengthResponse(Status.FORBIDDEN, "text/plain", "Loopback only");
             if (session.getMethod() != Method.GET) return newFixedLengthResponse(Status.METHOD_NOT_ALLOWED, "text/plain", "GET required");
@@ -984,7 +1179,7 @@ public class GatewayServer extends NanoHTTPD {
                 "{\"error\":{\"message\":\"Gateway listener is recovering; retry shortly\"}}");
         JSONObject failover=failoverJson();
         RequestContext request=new RequestContext(session.getUri(),NetworkPolicy.capture(),
-                Math.max(1000,Math.min(300000,failover.optLong("attemptBudgetMs",60000))));
+                Math.max(1000,Math.min(300000,failover.optLong("attemptBudgetMs",60000))), currentQuirksSnapshot(), affinity().fingerprint(pickSession(session.getHeaders())), affinity().fingerprint(presentedKey(session).isEmpty()?"local-anonymous":presentedKey(session)), affinityEpoch);
         if(!registerContext(request)) { gate.leave(); return errorResponse(503,"Gateway request capacity exhausted or stopping"); }
         REQUEST_CONTEXT.set(request);
         boolean heldDelivery=false;
@@ -1000,7 +1195,7 @@ public class GatewayServer extends NanoHTTPD {
                 if(!setupDone() && !isLocalRequest(session)) return errorResponse(403,"Complete local setup first");
                 if(!authorized(session,session.getUri())) return unauthorizedResponse();
                 String raw=readUtf8Body(session);
-                if(BODY_ERROR.get()!=null) return errorResponse(413,BODY_ERROR.get());
+                if(BODY_ERROR.get()!=null) return ingressErrorResponse(BODY_ERROR.get());
                 boolean streaming=false;
                 try { streaming=new JSONObject(raw).optBoolean("stream",false); } catch(Exception ignored) { }
                 if(streaming) {
@@ -1035,7 +1230,7 @@ public class GatewayServer extends NanoHTTPD {
             });
             handedOff = true;
             return tracked;
-        } finally { REQUEST_CONTEXT.remove(); PREPARED_BODY.remove(); RESILIENCE_SCOPE.remove(); if (!handedOff) { finishContext(request); gate.leave(); } }
+        } finally { REQUEST_CONTEXT.remove(); PREPARED_BODY.remove(); BODY_ERROR.remove(); RESILIENCE_SCOPE.remove(); if (!handedOff) { finishContext(request); gate.leave(); } }
     }
 
     private static void clearUsageThreadState() {
@@ -1125,9 +1320,10 @@ public class GatewayServer extends NanoHTTPD {
         final String rawBody;
         if(PREPARED_BODY.get()!=null) { rawBody=PREPARED_BODY.get(); PREPARED_BODY.remove(); BODY_ERROR.remove(); }
         else rawBody=readUtf8Body(session);
-        String bodyErr = BODY_ERROR.get();
-        if (bodyErr != null && !bodyErr.isEmpty()) {
-            return errorResponse(413, bodyErr);
+        IngressBody.Result bodyErr = BODY_ERROR.get();
+        if (bodyErr != null) {
+            BODY_ERROR.remove();
+            return ingressErrorResponse(bodyErr);
         }
 
         try {
@@ -1597,6 +1793,33 @@ public class GatewayServer extends NanoHTTPD {
                 return jsonResponse(ret);
             }
 
+            if("/api/affinity".equals(uri)) {
+                if("GET".equalsIgnoreCase(method)) return jsonResponse(affinitySettingsResponse());
+                if(!"POST".equalsIgnoreCase(method)) return errorResponse(405,"Method not allowed");
+                JSONObject req,settings;
+                try { req=new JSONObject(rawBody); settings=req.getJSONObject("settings");
+                    if(req.length()!=2 || !(req.opt("expectedStateToken") instanceof String) || settings.length()!=1 || !(settings.opt("enabled") instanceof Boolean)) throw new IllegalArgumentException();
+                } catch(Exception invalid) { return errorResponse(400,"Invalid affinity settings"); }
+                synchronized(this) {
+                    if(!affinitySettingsResponse().getString("stateToken").equals(req.getString("expectedStateToken"))) return errorResponse(409,"Affinity settings changed; reload");
+                    JSONObject updated=new JSONObject(configJson.toString()).put("affinity",new JSONObject().put("enabled",settings.getBoolean("enabled")));
+                    try { persistConfigStrict(updated); advanceProviderStateRevision("affinity-settings"); } catch(IOException e) { return errorResponse(500,"Affinity settings save failed"); }
+                    return jsonResponse(affinitySettingsResponse());
+                }
+            }
+            if("/api/quirks".equals(uri)) {
+                if(!"GET".equalsIgnoreCase(method)) return errorResponse(405,"Method not allowed");
+                loadBuiltinQuirks(); ProviderQuirks.Snapshot q=currentQuirksSnapshot();
+                return jsonResponse(new JSONObject().put("version",q==null?JSONObject.NULL:q.ruleVersion)
+                    .put("source",q==null?JSONObject.NULL:q.source).put("ruleCount",q==null?0:q.ruleCount())
+                    .put("schema",q==null?JSONObject.NULL:q.schemaVersion).put("engine",q==null?JSONObject.NULL:q.engineVersion)
+                    .put("loadError",quirksLoadError==null?JSONObject.NULL:quirksLoadError).put("update",quirksUpdateStatus()));
+            }
+            if("/api/quirks/check".equals(uri)) {
+                if(!"POST".equalsIgnoreCase(method)) return errorResponse(405,"Method not allowed");
+                loadBuiltinQuirks(); GatewayQuirksBridge bridge=quirksBridge;
+                return jsonResponse(bridge==null?quirksUpdateStatus():bridge.check());
+            }
             if("/api/resilience".equals(uri)) {
                 if("GET".equalsIgnoreCase(method)) return jsonResponse(resilienceSettingsResponse());
                 if(!"POST".equalsIgnoreCase(method)) return errorResponse(405,"Method not allowed");
@@ -1674,6 +1897,7 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     synchronized (this) {
                     newConf.remove("providerStateTokens");
+                    if(configJson.has("affinity")) newConf.put("affinity",configJson.opt("affinity")); else newConf.remove("affinity");
                     if(configJson.has("resilience")) newConf.put("resilience",configJson.opt("resilience")); else newConf.remove("resilience");
                     if(configJson.has("outbound")) newConf.put("outbound",configJson.opt("outbound"));
                     else newConf.remove("outbound");
@@ -1682,6 +1906,7 @@ public class GatewayServer extends NanoHTTPD {
                     // Full config snapshots can be stale. DeepSeek accounts are managed by
                     // auth/add and auth/remove; retain the current authoritative pool.
                     preserveDeepSeekAccounts(configJson,newConf);
+                    preserveMiniMaxAccounts(configJson,newConf);
                     // Security state belongs to its dedicated endpoints, even for stale snapshots.
                     JSONObject oldServer = configJson.optJSONObject("server");
                     JSONObject newServer = newConf.optJSONObject("server");
@@ -3446,11 +3671,16 @@ public class GatewayServer extends NanoHTTPD {
                 JSONObject req = new JSONObject(postData);
                 String removeId = req.optString("id", "");
 
+                if ("minimax-code".equals(targetProv)) {
+                    try { removeMiniMaxAccount(removeId); } catch(Exception e) { return errorResponse(500,"MiniMax 账号移除失败"); }
+                    return jsonResponse(new JSONObject().put("ok",true));
+                }
                 if ("deepseek_web".equals(targetProv)) {
                     try { removeDeepSeekAccount(removeId); }
                     catch(IOException e) { return errorResponse(500,"网页账号移除保存失败"); }
                     return jsonResponse(new JSONObject().put("ok",true));
                 }
+                synchronized(this) {
                 JSONArray providers = configJson.optJSONArray("providers");
                 if (providers != null) {
                     for (int i = 0; i < providers.length(); i++) {
@@ -3475,6 +3705,7 @@ public class GatewayServer extends NanoHTTPD {
                             }
                         }
                     }
+                }
                 }
                 JSONObject res = new JSONObject();
                 res.put("ok", true);
@@ -3619,8 +3850,12 @@ public class GatewayServer extends NanoHTTPD {
                         if (cand != null && !cand.optString("refresh", "").trim().isEmpty()) { macc = cand; break; }
                     }
                     if (macc == null) return errorResponse(400, "请先登录 MiniMax Code 再同步模型");
-                    if (MiniMaxAuth.ensureToken(macc)) saveConfig(configJson);
-                    fetched = MiniMaxAuth.models(macc.optString("access", macc.optString("token", "")));
+                    MiniMaxLifecycle.Lease ml = miniLease(macc,false,null);
+                    fetched = miniMaxAuxTransport==null ? MiniMaxAuth.models(ml.credentials.access) : miniMaxAuxTransport.models(ml.credentials.access);
+                    if(fetched==null || fetched.isEmpty()) return errorResponse(500,"MiniMax 模型同步失败");
+                    JSONArray result=new JSONArray(); for(String model:fetched) result.put(model);
+                    try { persistMiniMaxAux(ml,result,null); } catch(Exception stale) { return errorResponse(409,"MiniMax 账号已变化或保存失败"); }
+                    return jsonResponse(new JSONObject().put("ok",true).put("provider",provId).put("count",fetched.size()).put("models",result));
                 } else if ("antigravity".equals(provId)) {
                     JSONObject aacc = null;
                     JSONArray aaccs = prov.optJSONArray("accounts");
@@ -3975,7 +4210,8 @@ public class GatewayServer extends NanoHTTPD {
                 if ("/v1/messages".equals(uri) && !looksOpenAIPayload(payload)) {
                     try {
                         JSONObject nativeRequest = new JSONObject(payload.toString());
-                        payload = AnthropicBridge.requestToOpenAI(payload);
+                        payload = NativeAnthropicPolicy.requiresNative(nativeRequest)
+                                ? AnthropicBridge.projectNativeRequest(payload) : AnthropicBridge.requestToOpenAI(payload);
                         java.util.Map<String, String> nativeHeaders = new java.util.HashMap<>();
                         for (String header : new String[]{"anthropic-version", "anthropic-beta"}) {
                             String value = session.getHeaders().get(header);
@@ -4035,6 +4271,7 @@ public class GatewayServer extends NanoHTTPD {
                 try {
                     guardResult = ContextGuard.fit(payload, guardCfg);
                     if (guardResult.error != null || guardResult.budgetExceeded) {
+                        lastGuardStats = guardResult.toJson();
                         String reason = guardResult.error != null ? guardResult.error : "budget_exceeded";
                         return errorResponse("budget_exceeded".equals(reason) ? 413 : 400, reason);
                     }
@@ -4260,7 +4497,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     /** 对单个 MiniMax 账号跑一次签到，并把结果写回账号（date/outcome/credit/uid） */
-    private synchronized JSONObject minimaxCheckinAccount(JSONObject acc) {
+    private JSONObject minimaxCheckinAccount(JSONObject acc) {
         JSONObject out = new JSONObject();
         try {
             if (acc == null) {
@@ -4268,25 +4505,16 @@ public class GatewayServer extends NanoHTTPD {
                 out.put("error", "账号为空");
                 return out;
             }
-            if (MiniMaxAuth.ensureToken(acc)) saveConfig(configJson);
-            String token = acc.optString("access", acc.optString("token", ""));
+            MiniMaxLifecycle.Lease ml=miniLease(acc,false,null);
+            String token = ml.credentials.access;
             if (token.isEmpty()) {
                 out.put("ok", false);
                 out.put("error", "MiniMax 登录态缺失，请重新登录");
                 return out;
             }
-            JSONObject r = MiniMaxAuth.checkin(token, acc.optString("uid", ""));
-            if (r.optBoolean("ok", false)) {
-                String outcome = r.optString("outcome", "");
-                if (!"failed".equals(outcome)) {
-                    acc.put("checkinDate", todayStamp());
-                    acc.put("checkinOutcome", outcome);
-                    acc.put("checkinCredit", r.optInt("credit", 0));
-                }
-                String uid = r.optString("uid", "");
-                if (!uid.isEmpty()) acc.put("uid", uid);
-                saveConfig(configJson);
-            }
+            String uid=acc.optString("uid", "");
+            JSONObject r = miniMaxAuxTransport==null ? MiniMaxAuth.checkin(token,uid) : miniMaxAuxTransport.checkin(token,uid);
+            if(r.optBoolean("ok",false)) persistMiniMaxAux(ml,null,r);
             return r;
         } catch (Exception e) {
             try {
@@ -4635,82 +4863,25 @@ public class GatewayServer extends NanoHTTPD {
     private int bodyLimitBytes() {
         try {
             JSONObject server = configJson == null ? null : configJson.optJSONObject("server");
-            if (server != null) {
-                int v = server.optInt("maxBodyBytes", 0);
-                if (v >= 65536) return v;
-            }
-        } catch (Exception ignored) {
-        }
-        return 8 * 1024 * 1024;
+            Object value = server == null ? null : server.opt("maxBodyBytes");
+            if (value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte)
+                return IngressBody.effectiveLimit(((Number) value).longValue());
+        } catch (RuntimeException ignored) { }
+        return IngressBody.DEFAULT_LIMIT;
     }
 
     private String readUtf8Body(IHTTPSession session) {
-        BODY_ERROR.set(null);
-        try {
-            if (session.getMethod() == null) return "";
-            String m = session.getMethod().name();
-            if (!"POST".equalsIgnoreCase(m) && !"PUT".equalsIgnoreCase(m) && !"PATCH".equalsIgnoreCase(m)) {
-                return "";
-            }
-            Map<String, String> headers = session.getHeaders();
-            String cl = (headers == null) ? null : headers.get("content-length");
-            int len = -1;
-            if (cl != null) {
-                try {
-                    len = Integer.parseInt(cl.trim());
-                } catch (Exception ignored) {
-                }
-            }
-            if (len == 0) return "";
+        BODY_ERROR.remove();
+        IngressBody.Result result = IngressBody.read(session.getInputStream(), session.getHeaders(),
+                session.getMethod() == null ? null : session.getMethod().name(), bodyLimitBytes());
+        if (!result.ok()) BODY_ERROR.set(result);
+        return result.text;
+    }
 
-            // 没有 Content-Length 也没有 Transfer-Encoding: chunked 的请求，
-            // 按 HTTP/1.1 规范就是「没有 body」，必须立刻返回空串。
-            //
-            // 以前这里只有 len==0 才提前返回，len==-1 会掉到下面的「一直读到 EOF」分支；
-            // 而 curl -X POST 不带 -d 这种请求根本不会有 body，读操作就一路阻塞到
-            // readTimeout（面板上表现为 30 秒后返回 {"error":"Read timed out"}）。
-            // 前端当时是靠给每个无 body 的 POST 补 '{}' 绕过去的，但任何第三方客户端
-            // 依然会踩；根因应该在这里修掉。
-            String te = (headers == null) ? null : headers.get("transfer-encoding");
-            boolean chunked = te != null && te.toLowerCase().contains("chunked");
-            if (len < 0 && !chunked) return "";
-
-            // 上限：超过 config.server.maxBodyBytes（默认 8 MiB）直接拒绝读入，
-            // 否则一个超大 body 就能把 App OOM 掉（/api/config 之前完全没有大小检查）。
-            int limit = bodyLimitBytes();
-            if (len > limit) {
-                throw new java.io.IOException("请求体 " + len + " 字节，超过上限 " + limit
-                        + "（可在 config.server.maxBodyBytes 调整）");
-            }
-
-            InputStream is = session.getInputStream();
-            if (is == null) return "";
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            if (len > 0) {
-                int remaining = len;
-                while (remaining > 0) {
-                    int n = is.read(buf, 0, Math.min(buf.length, remaining));
-                    if (n <= 0) break;
-                    bos.write(buf, 0, n);
-                    remaining -= n;
-                }
-            } else {
-                int n;
-                long total = 0;
-                while ((n = is.read(buf)) > 0) {
-                    total += n;
-                    if (total > limit) {
-                        throw new java.io.IOException("请求体超过上限 " + limit + " 字节");
-                    }
-                    bos.write(buf, 0, n);
-                }
-            }
-            return new String(bos.toByteArray(), "UTF-8");
-        } catch (Exception e) {
-            BODY_ERROR.set(e.getMessage() == null ? "读取请求体失败" : e.getMessage());
-            return "";
-        }
+    private Response ingressErrorResponse(IngressBody.Result result) {
+        Response response = errorResponse(result.status, result.message);
+        response.closeConnection(true);
+        return response;
     }
 
     /** 把本次裁剪情况回传给客户端，便于 agent 侧感知上下文被压缩 */
@@ -4722,6 +4893,8 @@ public class GatewayServer extends NanoHTTPD {
         resp.addHeader("X-Magpie-Context-Final-Bytes", String.valueOf(r.finalBytes));
         resp.addHeader("X-Magpie-Context-Original-Tokens", String.valueOf(r.originalTokens));
         resp.addHeader("X-Magpie-Context-Final-Tokens", String.valueOf(r.finalTokens));
+        resp.addHeader("X-AllIn-Image-Count", String.valueOf(r.imageCount));
+        resp.addHeader("X-AllIn-Image-Token-Estimate-Known", String.valueOf(r.imageTokenEstimateKnown));
         if (r.appliedMaxOutputTokens != null) {
             resp.addHeader("X-Magpie-Max-Output-Tokens", String.valueOf(r.appliedMaxOutputTokens));
         }
@@ -5073,6 +5246,8 @@ public class GatewayServer extends NanoHTTPD {
     private Response nativeAnthropicResponse(InputStream upstream, PrivacyMasker.Session session,
                                               ContextGuard.Result guard, final HttpURLConnection connection) {
         final UsageLedger.Row row = U_ROW.get();
+        final RequestContext affinityRequest=REQUEST_CONTEXT.get();
+        final java.util.concurrent.atomic.AtomicBoolean semantic=affinityRequest==null?null:affinityRequest.affinitySemantic;
         final Long startBox = U_START.get();
         final long start = startBox == null ? System.currentTimeMillis() : startBox.longValue();
         NativeAnthropicStream stream = new NativeAnthropicStream(upstream, session, new NativeAnthropicStream.Listener() {
@@ -5089,6 +5264,7 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
             @Override public void onComplete(boolean success) {
+                if(semantic!=null) semantic.set(success);
                 if (row == null) return;
                 row.status = success ? 200 : 502;
                 row.err = success ? "" : "Native Anthropic stream incomplete or cancelled";
@@ -5116,6 +5292,8 @@ public class GatewayServer extends NanoHTTPD {
             PrivacyMasker.Session maskSession, final HttpURLConnection conn,
             final UsageLedger.Row row, final long start) {
         final AnthropicBridge.StreamState state = new AnthropicBridge.StreamState(model);
+        final RequestContext affinityRequest=REQUEST_CONTEXT.get();
+        final java.util.concurrent.atomic.AtomicBoolean semantic=affinityRequest==null?null:affinityRequest.affinitySemantic;
         final OpenAiUnmask unmask = new OpenAiUnmask(maskSession);
         class ConvertedStream extends InputStream implements fi.iki.elonen.AllInTrackedResponse.WriteCompletion {
             private final java.io.BufferedReader reader =
@@ -5123,7 +5301,7 @@ public class GatewayServer extends NanoHTTPD {
                             java.nio.charset.Charset.forName("UTF-8")));
             private byte[] buf = new byte[0];
             private int pos = 0;
-            private boolean done = false, committed = false, closed = false, success = false;
+            private boolean done = false, committed = false, closed = false, success = false, sawDone = false;
             private synchronized void commit(int status, String error) {
                 if (committed || row == null) return;
                 committed = true;
@@ -5133,6 +5311,7 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
             @Override public synchronized void onWriteComplete(boolean delivered) {
+                if(semantic!=null) semantic.set(delivered && done && sawDone && success && pos>=buf.length);
                 if (!delivered) {
                     // A row already persisted at EOF is immutable. C1's separate delivery gate
                     // still rejects this failed delivery without rewriting ledger history.
@@ -5175,7 +5354,7 @@ public class GatewayServer extends NanoHTTPD {
                     String data = line.substring(5).trim();
                     if (data.isEmpty()) continue;
                     if ("[DONE]".equals(data)) {
-                        done = true;
+                        done = true; sawDone = true;
                         return end(state.onEnd());
                     }
                     JSONObject chunk;
@@ -5279,6 +5458,8 @@ public class GatewayServer extends NanoHTTPD {
         final boolean[] uCommitted = new boolean[]{false};
 
         final boolean awaitDelivery = uRow != null && "gift".equals(uRow.ep) && "zcode".equals(uRow.prov);
+        final RequestContext affinityRequest=REQUEST_CONTEXT.get();
+        final java.util.concurrent.atomic.AtomicBoolean semantic=affinityRequest==null?null:affinityRequest.affinitySemantic;
         class ChatForwardStream extends InputStream implements fi.iki.elonen.AllInTrackedResponse.WriteCompletion {
             private boolean deliveryConfirmed;
             private boolean readComplete;
@@ -5464,6 +5645,7 @@ public class GatewayServer extends NanoHTTPD {
             @Override public void onWriteComplete(boolean success) {
                 deliveryConfirmed = true;
                 if (!success || (awaitDelivery && !readComplete)) sawError = true;
+                if(semantic!=null) semantic.set(success && readComplete && sawDone && sawFinish && !sawError);
                 recordUsage();
             }
 
@@ -5814,15 +5996,26 @@ public class GatewayServer extends NanoHTTPD {
 
     private static final class DeepSeekConfigFailure extends IOException {}
     private synchronized void persistConfigStrict(JSONObject value) throws IOException {
+        if (backupRetired) throw new IOException("gateway retired");
         try {
             NetworkPolicy.parse(networkFromConfig(value));
             AtomicConfigFile.write(configFile, value.toString(2));
             NetworkPolicy.configure(networkFromConfig(value));
             configJson = value;
+            reconcileMiniMax();
             GatewayAuthKeyHolder.invalidate();
+            configChangedAffinity();
         } catch (Exception e) {
             throw new IOException("config persistence failed", e);
         }
+    }
+    static void preserveMiniMaxAccounts(JSONObject current,JSONObject incoming) throws Exception {
+        JSONObject old=null, fresh=null; JSONArray a=current.optJSONArray("providers"), b=incoming.optJSONArray("providers");
+        for(int i=0;a!=null && i<a.length();i++) { JSONObject p=a.optJSONObject(i); if(p!=null && "minimax-code".equals(p.optString("id"))) { if(old!=null) throw new IOException("duplicate MiniMax provider"); old=p; } }
+        if(old==null) return;
+        for(int i=0;b!=null && i<b.length();i++) { JSONObject p=b.optJSONObject(i); if(p!=null && "minimax-code".equals(p.optString("id"))) { if(fresh!=null) throw new IOException("duplicate MiniMax provider"); fresh=p; } }
+        if(fresh==null) { b.put(new JSONObject(old.toString())); return; }
+        JSONArray accounts=old.optJSONArray("accounts"); fresh.put("accounts",accounts==null?new JSONArray():new JSONArray(accounts.toString()));
     }
     static void preserveDeepSeekAccounts(JSONObject current,JSONObject incoming) throws Exception {
         JSONObject old=null, fresh=null;
@@ -5918,6 +6111,56 @@ public class GatewayServer extends NanoHTTPD {
 
     private static String recentRef(RouteTarget target) { return target.providerId + "/" + target.upstreamModel; }
 
+    private boolean isManualGroup(String model) {
+        if(model==null || !model.startsWith("group/")) return false;
+        JSONArray groups=configJson.optJSONArray("groups");
+        for(int i=0;groups!=null && i<groups.length();i++) { JSONObject g=groups.optJSONObject(i);
+            if(g!=null && model.substring(6).equals(g.optString("id"))) return "manual".equals(g.optString("strategy","order")); }
+        return false;
+    }
+    private static SessionAffinity.Target affinityTarget(RouteTarget t, CommercialKeyPool.Credential c) {
+        if(t==null || c==null || t.providerId==null || t.baseUrl==null || t.upstreamModel==null) return null;
+        try { return new SessionAffinity.Target(t.providerId,t.baseUrl.trim(),t.upstreamModel,c.credentialId); }
+        catch(IllegalArgumentException e) { return null; }
+    }
+    private CommercialKeyPool.Credential affinityCredential(RouteTarget t,SessionAffinity.Target wanted) {
+        if(wanted==null || t.commercialCandidates==null) return null;
+        JSONObject provider=getProviderById(t.providerId);
+        if(provider==null || !provider.optBoolean("enabled",true)) return null;
+        String prior=t.apiKey; CommercialKeyPool.Credential old=t.commercialCredential;
+        try { for(CommercialKeyPool.Credential c:t.commercialCandidates) if(wanted.equals(affinityTarget(t,c)) && commercialPool().available(commercialScope(t),t.upstreamModel,c)) {
+                t.apiKey=c.secret(); t.commercialCredential=c; if(outboundReadySelected(t)) return c;
+            } return null;
+        } finally { t.apiKey=prior; t.commercialCredential=old; }
+    }
+    private static void applyQuirkHeaders(HttpURLConnection conn, Map<String,String> headers) {
+        if(headers.isEmpty()) return;
+        conn.setInstanceFollowRedirects(false);
+        for(Map.Entry<String,String> h:headers.entrySet()) conn.setRequestProperty(h.getKey(),h.getValue());
+    }
+    private static boolean affinitySemanticComplete(String raw, String protocol) {
+        try { JSONObject j=new JSONObject(raw); if(j.has("error")) return false;
+            if("anthropic".equals(protocol)) return j.optJSONArray("content")!=null && !j.optString("stop_reason","").isEmpty() && !"null".equals(j.optString("stop_reason",""));
+            JSONArray choices=j.optJSONArray("choices"); if(choices==null || choices.length()==0) return false;
+            for(int i=0;i<choices.length();i++) { JSONObject c=choices.optJSONObject(i); if(c==null || c.optJSONObject("message")==null || c.isNull("finish_reason") || c.optString("finish_reason","").isEmpty()) return false; }
+            return true;
+        } catch(Exception e) { return false; }
+    }
+    private final class AffinityDelivery extends java.io.FilterInputStream implements fi.iki.elonen.AllInTrackedResponse.WriteCompletion {
+        private final SessionAffinity.Lease lease; private final SessionAffinity.Target target; private final RequestContext request;
+        private final java.util.concurrent.atomic.AtomicBoolean semantic;
+        private final java.util.concurrent.atomic.AtomicBoolean done=new java.util.concurrent.atomic.AtomicBoolean();
+        private boolean writing;
+        AffinityDelivery(InputStream in,SessionAffinity.Lease lease,SessionAffinity.Target target,RequestContext request) { super(in); this.lease=lease; this.target=target; this.request=request; this.semantic=request.affinitySemantic; }
+        public void onWriteStart() { writing=true; if(in instanceof fi.iki.elonen.AllInTrackedResponse.WriteCompletion) ((fi.iki.elonen.AllInTrackedResponse.WriteCompletion)in).onWriteStart(); }
+        public void onWriteComplete(boolean ok) {
+            if(!done.compareAndSet(false,true)) return;
+            try { if(in instanceof fi.iki.elonen.AllInTrackedResponse.WriteCompletion) ((fi.iki.elonen.AllInTrackedResponse.WriteCompletion)in).onWriteComplete(ok);
+                synchronized(GatewayServer.this) { if(ok && semantic.get() && !backupRetired && !request.isCancelled() && request.affinityEpoch==affinityEpoch) lease.bind(target); }
+            } finally { lease.close(); }
+        }
+        @Override public void close() throws IOException { try { super.close(); } finally { if(!writing) onWriteComplete(false); } }
+    }
     private boolean isUsageGroup(String model) {
         if (model == null || !model.startsWith("group/")) return false;
         JSONArray groups = configJson.optJSONArray("groups");
@@ -6129,6 +6372,7 @@ public class GatewayServer extends NanoHTTPD {
         String upstreamModel;
         boolean isAnthropic;
         String protocol;      // "openai" / "anthropic" / "qoder"
+        MiniMaxLifecycle.Lease miniLease;
         JSONObject account;   // qoder 等账号池供应商的完整账号
         List<CommercialKeyPool.Credential> commercialCandidates;
         CommercialKeyPool.Credential commercialCredential;
@@ -6208,6 +6452,23 @@ public class GatewayServer extends NanoHTTPD {
         RouteTarget lastTarget = null;
         long earliest = Long.MAX_VALUE;
         boolean cooled = false, exhausted = false, success = false;
+        SessionAffinity.Key affinityKey=null; SessionAffinity.Lease affinityLease=null;
+        SessionAffinity.Target preferred=null; boolean affinityTransferred=false;
+        if(request!=null && !isManualGroup(requestedModel) && configJson.optJSONObject("affinity")!=null
+                && configJson.optJSONObject("affinity").optBoolean("enabled",false) && request.affinityEpoch==affinityEpoch
+                && !request.explicitSession.isEmpty()) {
+            affinityKey=affinity().key(true,request.explicitSession,request.authScope+":"+request.affinityEpoch,request.protocol,requestedModel);
+            try {
+                while(true) { affinityLease=affinity().acquire(affinityKey);
+                    if(affinityLease.state!=SessionAffinity.State.WAIT) break;
+                    if(request.isCancelled()) { terminalMarker(logical,requestedModel,null,503,"Affinity wait cancelled or deadline exceeded"); LOGICAL.remove(); return errorResponse(503,"Affinity wait cancelled or deadline exceeded"); }
+                    affinityLease.await(Math.min(100,request.remainingMillis()));
+                }
+            } catch(InterruptedException interrupted) { Thread.currentThread().interrupt(); terminalMarker(logical,requestedModel,null,503,"Affinity wait interrupted"); LOGICAL.remove(); return errorResponse(503,"Affinity wait interrupted"); }
+            if(request.affinityEpoch!=affinityEpoch || backupRetired) { affinityLease.close(); affinityLease=null; affinityKey=null; }
+            if(affinityLease!=null && affinityLease.state==SessionAffinity.State.OWNER) { final SessionAffinity.Lease cleanupLease=affinityLease; request.onClose(cleanupLease::close); }
+            else if(affinityLease!=null && affinityLease.state==SessionAffinity.State.BOUND) preferred=affinityLease.preferred;
+        }
         java.util.Map<String, java.util.Set<String>> attemptedByTarget = new java.util.HashMap<String, java.util.Set<String>>();
         int terminalStatus = 502;
         String terminalError = "all candidates failed";
@@ -6221,6 +6482,23 @@ public class GatewayServer extends NanoHTTPD {
             for (int ci = 0; ci < maxTargets && !remaining.isEmpty(); ci++) {
                 RecentUsageScheduler.Lease selectedLease = null;
                 RouteTarget target;
+                RouteTarget preferredRoute=null;
+                if(preferred!=null) for(RouteTarget candidate:remaining) if(affinityCredential(candidate,preferred)!=null) { preferredRoute=candidate; break; }
+                if(preferred!=null && preferredRoute==null) {
+                    affinity().invalidate(affinityKey,preferred); preferred=null;
+                    if(affinityLease!=null && affinityLease.state==SessionAffinity.State.BOUND) {
+                        try { do { affinityLease=affinity().acquire(affinityKey);
+                            if(affinityLease.state==SessionAffinity.State.WAIT) {
+                                if(request.isCancelled()) return errorResponse(503,"Affinity wait cancelled or deadline exceeded");
+                                affinityLease.await(Math.min(100,request.remainingMillis()));
+                            }
+                        } while(affinityLease.state==SessionAffinity.State.WAIT); }
+                        catch(InterruptedException interrupted) { Thread.currentThread().interrupt(); return errorResponse(503,"Affinity wait interrupted"); }
+                        if(affinityLease.state==SessionAffinity.State.BOUND) preferred=affinityLease.preferred;
+                        if(affinityLease.state==SessionAffinity.State.OWNER) { final SessionAffinity.Lease cleanup=affinityLease; request.onClose(cleanup::close); }
+                    }
+                }
+
                 if (usageStrategy) {
                     List<RouteTarget> eligible = new ArrayList<RouteTarget>();
                     List<RouteTarget> resting = new ArrayList<RouteTarget>();
@@ -6249,13 +6527,14 @@ public class GatewayServer extends NanoHTTPD {
                     if (eligible.isEmpty()) break;
                     List<String> refs = new ArrayList<String>();
                     for (RouteTarget candidate : eligible) refs.add(recentRef(candidate));
-                    selectedLease = RECENT_USAGE.pickAndReserve(refs);
+                    if(preferredRoute!=null && eligible.contains(preferredRoute)) selectedLease=RECENT_USAGE.reserve(recentRef(preferredRoute));
+                    else selectedLease = RECENT_USAGE.pickAndReserve(refs);
                     if (selectedLease == null) { terminalStatus = 503; terminalError = "Recent usage tracking capacity exhausted"; return errorResponse(503, terminalError); }
                     target = null;
                     for (RouteTarget candidate : eligible) if (selectedLease.target.equals(recentRef(candidate))) { target = candidate; break; }
                     if (target == null) { selectedLease.cancel(); break; }
                 } else {
-                    target=remaining.get(0);
+                    target=preferredRoute!=null?preferredRoute:remaining.get(0);
                     if(!outboundReady(target)) for(RouteTarget candidate:remaining) if(outboundReady(candidate)) { target=candidate; break; }
                 }
                 final String chosenRef = recentRef(target);
@@ -6288,7 +6567,9 @@ public class GatewayServer extends NanoHTTPD {
                         // The normal pool retains rotation; only skip blocked keys if an immediate alternative exists.
                         Set<String> selectionExclusions=new HashSet<>(attempted);
                         if(!readyKeys.isEmpty()) for(CommercialKeyPool.Credential c:target.commercialCandidates) if(!readyKeys.contains(c)) selectionExclusions.add(c.credentialId);
-                        CommercialKeyPool.Credential credential = pool.choose(scope, target.upstreamModel,
+                        CommercialKeyPool.Credential credential = preferred==null?null:affinityCredential(target,preferred);
+                        if(credential!=null && selectionExclusions.contains(credential.credentialId)) credential=null;
+                        if(credential==null) credential = pool.choose(scope, target.upstreamModel,
                                 target.commercialCandidates, selectionExclusions);
                         if(credential!=null) attempted.add(credential.credentialId);
                         if (credential == null) {
@@ -6319,12 +6600,23 @@ public class GatewayServer extends NanoHTTPD {
                     ATTEMPT_LEASE.set(attemptLease);
                     logical.attempts = budget.attempts();
                     try {
+                        if(request!=null) request.affinitySemantic=new java.util.concurrent.atomic.AtomicBoolean();
                         last = forwardAttempt(target, payload, stream, requestedModel, mask, guardCfg, guardResult);
                     } catch (RuntimeException | Error failure) {
                         if (attemptLease != null) attemptLease.cancel();
                         throw failure;
                     } finally { ATTEMPT_LEASE.remove(); }
-                    if (last.ok) { success = true; return last.response; }
+                    if (last.ok) {
+                        success = true;
+                        if(request!=null && last.affinitySemanticComplete) request.affinitySemantic.set(true);
+                        if(affinityLease!=null && affinityLease.state==SessionAffinity.State.OWNER
+                                && request!=null && target.commercialCredential!=null && last.response!=null && last.response.getData()!=null) {
+                            SessionAffinity.Target actual=affinityTarget(target,target.commercialCredential);
+                            if(actual!=null) { last.response.setData(new AffinityDelivery(last.response.getData(),affinityLease,actual,request)); affinityTransferred=true; }
+                        }
+                        return last.response;
+                    }
+                    if(preferred!=null) { affinity().invalidate(affinityKey,preferred); preferred=null; }
                     terminalStatus = last.status > 0 ? last.status : 502;
                     terminalError = last.body == null ? "upstream failed" : last.body;
                     if (!enabled || last.localRejection || last.protocolFailure) return last.response;
@@ -6352,6 +6644,11 @@ public class GatewayServer extends NanoHTTPD {
                         if (decision.retryKey) continue;
                         if (!decision.routeFallback && !safeRejection) return last.response;
                         break;
+                    }
+                    if ("minimax".equals(target.protocol) && last.sent) {
+                        if(target.miniLease!=null) minimaxLifecycle().finish(target.miniLease,
+                                last.status<=0?MiniMaxLifecycle.Outcome.UNKNOWN:MiniMaxLifecycle.Outcome.REJECTED,REST_FAIL_MS);
+                        return last.response;
                     }
                     if (last.status<=0 && last.sent) return last.response;
                     if (last.failure!=null && (last.failure.kind==UpstreamFailure.Kind.PROXY || last.failure.kind==UpstreamFailure.Kind.UNKNOWN_EXECUTION)) return last.response;
@@ -6403,6 +6700,7 @@ public class GatewayServer extends NanoHTTPD {
             terminalStatus = 503; terminalError = "Privacy masking unavailable";
             throw e;
         } finally {
+            if(affinityLease!=null && !affinityTransferred) affinityLease.close();
             if (!success) terminalMarker(logical, requestedModel, lastTarget, terminalStatus, terminalError);
             LOGICAL.remove();
         }
@@ -6844,8 +7142,11 @@ public class GatewayServer extends NanoHTTPD {
                 conn.setRequestProperty("Authorization", "Bearer " + target.apiKey);
             }
 
-            // WorkBuddy 与小浣熊协议头部注入
-            if ("workbuddy".equals(target.providerId) || "workbuddy-ai".equals(target.providerId)) {
+            // Only matched immutable built-in rules replace the legacy static headers.
+            java.util.Map<String,String> quirkHeaders=request==null || request.quirks==null ? java.util.Collections.emptyMap()
+                    : request.quirks.headers(target.providerId, target.protocol, targetUrl);
+            applyQuirkHeaders(conn,quirkHeaders);
+            if (quirkHeaders.isEmpty() && ("workbuddy".equals(target.providerId) || "workbuddy-ai".equals(target.providerId))) {
                 boolean ai = "workbuddy-ai".equals(target.providerId);
                 conn.setRequestProperty("User-Agent", "CLI/2.63.2 CodeBuddy/2.63.2");
                 conn.setRequestProperty("X-Requested-With", "XMLHttpRequest");
@@ -6855,16 +7156,16 @@ public class GatewayServer extends NanoHTTPD {
                 conn.setRequestProperty("X-Conversation-ID", "00000000-0000-0000-0000-000000000000");
                 conn.setRequestProperty("X-Agent-Type", "main");
                 conn.setRequestProperty("X-Auth-Refresh-Source", ai ? "workbuddy-ai" : "workbuddy");
-                if (ai) {
+            } else if (quirkHeaders.isEmpty() && "raccoon".equals(target.providerId)) {
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+                conn.setRequestProperty("Accept", "text/event-stream, application/json");
+            }
+            if ("workbuddy-ai".equals(target.providerId)) {
                     // 国际版的 API Key 通道：三头同值，X-User-Id 用 key 后 8 位
                     conn.setRequestProperty("X-API-Key", target.apiKey);
                     String tail = target.apiKey.length() > 8
                             ? target.apiKey.substring(target.apiKey.length() - 8) : target.apiKey;
                     conn.setRequestProperty("X-User-Id", "anonymous_" + tail);
-                }
-            } else if ("raccoon".equals(target.providerId)) {
-                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-                conn.setRequestProperty("Accept", "text/event-stream, application/json");
             }
 
             byte[] requestBytes = payload.toString().getBytes("UTF-8");
@@ -7139,6 +7440,7 @@ public class GatewayServer extends NanoHTTPD {
             is.close();
 
             String rawResponse = baos.toString("UTF-8");
+            out.affinitySemanticComplete=target.commercialCandidates!=null && affinitySemanticComplete(rawResponse,target.protocol);
             String unmaskedResponse = PrivacyMasker.unmaskText(rawResponse, maskSession);
 
             // 用量：非流式响应里一次带走整个 usage
@@ -7639,8 +7941,10 @@ public class GatewayServer extends NanoHTTPD {
             src.put("model", upstream);
             if (clientWantsStream) src.put("stream", true);
             anthropic = ZCodeAnthropic.toAnthropic(src);
+        } catch (ImageContent.InvalidImage e) {
+            return errorResponse(400, "Invalid or unsupported image content");
         } catch (Exception e) {
-            return errorResponse(400, "请求体转换成 Anthropic 格式失败: " + e.getMessage());
+            return errorResponse(400, "请求体转换成 Anthropic 格式失败");
         }
 
         JSONObject middleware = configJson.optJSONObject("middleware");
@@ -8149,7 +8453,17 @@ public class GatewayServer extends NanoHTTPD {
                     ? nativeAnthropicRequest(NATIVE_REQUEST.get(), NATIVE_BASELINE.get(), payload,
                             target.upstreamModel, clientWantsStream) : null;
             if (anth == null) {
-                anth = ZCodeAnthropic.toAnthropic(new JSONObject(payload.toString()));
+                try {
+                    anth = ZCodeAnthropic.toAnthropic(new JSONObject(payload.toString()));
+                } catch (ImageContent.InvalidImage invalidImage) {
+                    out.ok = false;
+                    out.sent = false;
+                    out.localRejection = true;
+                    out.status = 400;
+                    out.body = "Invalid or unsupported image content";
+                    out.response = errorResponse(400, out.body);
+                    return out;
+                }
                 anth.put("model", target.upstreamModel);
                 anth.put("stream", clientWantsStream);
                 anth = restoreNativeToolResults(NATIVE_REQUEST.get(), NATIVE_BASELINE.get(), payload, anth, guardCfg);
@@ -8184,27 +8498,27 @@ public class GatewayServer extends NanoHTTPD {
                     conn.setRequestProperty("Authorization", "Bearer " + token);
                 }
                 byte[] requestBytes = anth.toString().getBytes("UTF-8");
-                if (target.commercialCandidates != null) conn.setFixedLengthStreamingMode(requestBytes.length);
+                if (target.commercialCandidates != null || !genericAnthropic) conn.setFixedLengthStreamingMode(requestBytes.length);
+                if (!genericAnthropic) {
+                    conn.setInstanceFollowRedirects(false);
+                    RequestContext current=REQUEST_CONTEXT.get();
+                    if(current!=null) current.check();
+                    synchronized(this) {
+                        reconcileMiniMax();
+                        if(target.miniLease==null || !minimaxLifecycle().isCurrent(target.miniLease)) throw new IOException("MiniMax account changed before send");
+                    }
+                    if(current!=null) current.attach(conn);
+                    out.sent=true;
+                    if(U_ROW.get()!=null) U_ROW.get().outboundAt=System.currentTimeMillis();
+                    RequestDiagnostics.handoff(U_ROW.get());
+                }
                 OutputStream os = conn.getOutputStream();
                 os.write(requestBytes);
                 os.flush();
                 os.close();
 
                 status = conn.getResponseCode();
-                if (!genericAnthropic && status == 401 && attempt == 0 && target.account != null
-                        && MiniMaxAuth.forceRefresh(target.account)) {
-                    token = target.account.optString("access", target.account.optString("token", ""));
-                    try {
-                        saveConfig(configJson);
-                    } catch (Throwable ignored) {
-                    }
-                    try {
-                        conn.disconnect();
-                    } catch (Throwable ignored) {
-                    }
-                    conn = null;
-                    continue;
-                }
+                // Fail closed on 401: a status alone does not prove safe replay for this adapter.
                 break;
             }
 
@@ -8245,6 +8559,7 @@ public class GatewayServer extends NanoHTTPD {
 
             String text = NativeAnthropicPolicy.unmaskResponse(drainText(conn.getInputStream()), maskSession);
             JSONObject msg = new JSONObject(text);
+            out.affinitySemanticComplete=target.commercialCandidates!=null && affinitySemanticComplete(text,"anthropic");
             UsageLedger.Row nativeRow = U_ROW.get();
             if (nativeRow != null) absorbUsage(nativeRow, msg.optJSONObject("usage"));
             StringBuilder sb = new StringBuilder();
@@ -8286,6 +8601,7 @@ public class GatewayServer extends NanoHTTPD {
             return out;
         } finally {
             if (conn != null && !handedOff) {
+                RequestContext current=REQUEST_CONTEXT.get(); if(current!=null) current.detach(conn);
                 try {
                     conn.disconnect();
                 } catch (Throwable ignored) {
@@ -8436,6 +8752,7 @@ public class GatewayServer extends NanoHTTPD {
 
     /** 单次转发的结果：成功就直接是响应；失败带上状态码与错误体供 retryable 判定 */
     private static class Attempt {
+        boolean affinitySemanticComplete;
         boolean ok;
         boolean sent;
         boolean localRejection;
@@ -8623,12 +8940,11 @@ public class GatewayServer extends NanoHTTPD {
             if ("copilot".equals(route.protocol)) {
                 now = CopilotAuth.ensureCopilotToken(acc);
             } else {
-                MiniMaxAuth.ensureToken(acc);
-                now = acc.optString("access", acc.optString("token", ""));
+                try { route.miniLease=miniLease(acc,false,null); now=route.miniLease.credentials.access; }
+                catch(Exception unavailable) { return null; }
             }
             if (now == null || now.trim().isEmpty()) return null;
-            // Copilot token 30 分钟一换、MiniMax refresh 一次性，续过就必须落盘
-            if (!now.equals(before)) saveConfig(configJson);
+            if ("copilot".equals(route.protocol) && !now.equals(before)) saveConfig(configJson);
             route.account = acc;
             route.apiKey = now;
         }
@@ -9653,6 +9969,8 @@ public class GatewayServer extends NanoHTTPD {
     private Response nativeResponsesStream(final InputStream source, final PrivacyMasker.Session mask,
                                            ContextGuard.Result guard, final HttpURLConnection conn) {
         final UsageLedger.Row row=U_ROW.get(); final Long start=U_START.get(); final String clientModel=CLIENT_MODEL.get();
+        final RequestContext affinityRequest=REQUEST_CONTEXT.get();
+        final java.util.concurrent.atomic.AtomicBoolean semantic=affinityRequest==null?null:affinityRequest.affinitySemantic;
         InputStream processed=new InputStream() {
             final BufferedReader reader=new BufferedReader(new InputStreamReader(source,java.nio.charset.StandardCharsets.UTF_8));
             final java.util.Map<String,StreamUnmask> deltas=new java.util.LinkedHashMap<String,StreamUnmask>();
@@ -9741,6 +10059,7 @@ public class GatewayServer extends NanoHTTPD {
                                 if("response.completed".equals(type) || "response.incomplete".equals(type)) for(String key:new java.util.ArrayList<String>(deltas.keySet())) result+=flushDelta(key);
                                 if(("response.completed".equals(type) || "response.incomplete".equals(type)) && (response==null || !type.substring(9).equals(response.optString("status")))) throw new IOException("invalid terminal response status");
                                 terminal=true; ended=true;
+                                if(semantic!=null) semantic.set("response.completed".equals(type));
                             }
                             if(event.opt("delta") instanceof String) {
                                 String key=type+":"+event.optString("item_id","")+":"+event.optInt("output_index",0)+":"+event.optInt("content_index",event.optInt("summary_index",0));
@@ -9757,7 +10076,7 @@ public class GatewayServer extends NanoHTTPD {
                             if(terminal) finish("response.failed".equals(type)?502:200,"response.failed".equals(type)?"Upstream response failed":"");
                         }
                     } catch(Exception ex) {
-                        ended=true; terminal=false; try { result=failure("Invalid or interrupted Responses stream"); } catch(Exception ignored) { finish(502,"Invalid or interrupted Responses stream"); throw new IOException(ex); }
+                        ended=true; terminal=false; if(semantic!=null) semantic.set(false); try { result=failure("Invalid or interrupted Responses stream"); } catch(Exception ignored) { finish(502,"Invalid or interrupted Responses stream"); throw new IOException(ex); }
                         }
                     if(ended && !terminal) finish(502,"Invalid or interrupted Responses stream");
                     if(!result.isEmpty()) { bytes=result.getBytes(java.nio.charset.StandardCharsets.UTF_8); offset=0; return true; }
@@ -10051,6 +10370,7 @@ public class GatewayServer extends NanoHTTPD {
             else {
                 JSONObject response=new JSONObject(drainText(in)); conn.disconnect();
                 if(!"completed".equals(response.optString("status")) && !"incomplete".equals(response.optString("status"))) throw new IOException("invalid Responses status");
+                out.affinitySemanticComplete="completed".equals(response.optString("status"));
                 UsageLedger.Row row=U_ROW.get(); if(row!=null) absorbUsage(row,response.optJSONObject("usage"));
                 unmaskJson(response,mask); if(CLIENT_MODEL.get()!=null && response.has("model")) response.put("model",CLIENT_MODEL.get()); out.response=newFixedLengthResponse(Status.OK,"application/json; charset=UTF-8",response.toString()); addCorsHeaders(out.response); applyGuardHeaders(out.response,guard);
             }

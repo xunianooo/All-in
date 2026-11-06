@@ -27,6 +27,8 @@ public class GatewayService extends Service {
     private static final java.util.concurrent.atomic.AtomicInteger PENDING_STOPS = new java.util.concurrent.atomic.AtomicInteger();
     private final RecoveryPolicy recoveryPolicy = new RecoveryPolicy();
     private volatile GatewayServer server;
+    // A failed stop keeps the retired listener visible to lifecycle management.
+    private volatile boolean backupStopUncertain;
     private volatile boolean disposed;
     private volatile boolean foreground;
     private volatile long createdAt, lastProbeAt, lastProbeMs;
@@ -113,7 +115,7 @@ public class GatewayService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         createdAt = System.currentTimeMillis();
-        current = this;
+        synchronized (ENGINE_SERIAL) { current = this; }
         createNotificationChannel();
         if (!startForegroundNotification()) {
             phase = "foregroundStartFailed";
@@ -151,6 +153,19 @@ public class GatewayService extends Service {
         if (disposed || !isGatewayEnabled(this)) return;
         lastReason = safeReason(reason);
         GatewayServer own = server;
+        if (backupStopUncertain) {
+            synchronized (ENGINE_SERIAL) {
+                synchronized (lifecycle) { if (disposed || server != own) return; }
+                try {
+                    if (own != null) own.stop();
+                    synchronized (lifecycle) { if (server == own) server = null; backupStopUncertain = false; }
+                } catch (Throwable stopFailure) {
+                    RUNNING = false; phase = "restoreStopFailed"; errorType = stopFailure.getClass().getSimpleName();
+                    scheduleFollowup(2000L); return;
+                }
+            }
+            startEngine(); return;
+        }
         if (own == null || !own.isAlive()) {
             RUNNING = false;
             startEngine();
@@ -166,19 +181,22 @@ public class GatewayService extends Service {
         if (disposed || !isGatewayEnabled(this)) return;
         KeepAliveScheduler.recordCheck(this, result.ok, result.code);
         if (result.ok) {
-            recoveryPolicy.probeSucceeded();
-            failures = 0;
             synchronized (lifecycle) {
                 if (disposed || !isGatewayEnabled(this) || server != own) return;
+                recoveryPolicy.probeSucceeded();
+                failures = 0;
                 phase = "healthy";
                 RUNNING = own.isAlive();
             }
             return;
         }
-        RUNNING = false;
-        recoveryPolicy.probeFailed();
-        failures = recoveryPolicy.failures();
-        phase = "unhealthy";
+        synchronized (lifecycle) {
+            if (disposed || !isGatewayEnabled(this) || server != own) return;
+            RUNNING = false;
+            recoveryPolicy.probeFailed();
+            failures = recoveryPolicy.failures();
+            phase = "unhealthy";
+        }
         long now = android.os.SystemClock.elapsedRealtime();
         if (!recoveryPolicy.mayRecover(now)) return;
         synchronized (ENGINE_SERIAL) {
@@ -198,6 +216,7 @@ public class GatewayService extends Service {
     private void startEngine() {
         synchronized (ENGINE_SERIAL) {
             if (disposed || !isGatewayEnabled(this)) return;
+            if (backupStopUncertain) { phase = "restoreStopFailed"; scheduleFollowup(2000L); return; }
             if (PENDING_STOPS.get() > 0) { phase = "waitingForStop"; scheduleFollowup(2000L); return; }
             long now = android.os.SystemClock.elapsedRealtime();
             if (!recoveryPolicy.mayStart(now)) { phase = "startBackoff"; return; }
@@ -395,16 +414,97 @@ public class GatewayService extends Service {
         super.onTaskRemoved(rootIntent);
     }
 
+    /** Native backup uses the same engine lock as watchdog start/stop. */
+    static BackupCoordinator.Backend backupBackend(final Context context) {
+        final Context app = context.getApplicationContext();
+        return new BackupCoordinator.Backend() {
+            public byte[] readConfig() throws Exception {
+                synchronized (ENGINE_SERIAL) {
+                    if (PENDING_STOPS.get() != 0) throw new IllegalStateException("gateway stopping");
+                    GatewayService s = current;
+                    GatewayServer own = s == null ? null : s.server;
+                    return own != null ? own.backupDurableConfig() : BackupFiles.readFile(
+                            new java.io.File(app.getFilesDir(), "config.json"), EncryptedConfigBackup.MAX_CONFIG_BYTES);
+                }
+            }
+            public void restoreIfUnchanged(byte[] hash, byte[] replacement, byte[] rollback) throws Exception {
+                synchronized (ENGINE_SERIAL) {
+                    if (PENDING_STOPS.get() != 0) throw new IllegalStateException("gateway stopping");
+                    org.json.JSONObject restoreConfig = EncryptedConfigBackup.validateConfig(replacement);
+                    Object restoreNetwork = restoreConfig.opt("network");
+                    if (restoreConfig.has("network") && !(restoreNetwork instanceof org.json.JSONObject))
+                        throw new IllegalArgumentException("network config");
+                    NetworkPolicy.parse((org.json.JSONObject) restoreNetwork);
+                    final GatewayService owner = current;
+                    final boolean enabled = isGatewayEnabled(app);
+                    if (enabled && (owner == null || owner.disposed)) throw new IllegalStateException("gateway unavailable");
+                    final java.io.File config = new java.io.File(app.getFilesDir(), "config.json");
+                    BackupRestoreTransaction.Engine engine = new BackupRestoreTransaction.Engine() {
+                        public byte[] readCurrent() throws Exception {
+                            GatewayServer own = owner == null ? null : owner.server;
+                            return own != null ? own.backupDurableConfig() : BackupFiles.readFile(config, EncryptedConfigBackup.MAX_CONFIG_BYTES);
+                        }
+                        public void retireAndStop() throws Exception {
+                            if (owner == null) return;
+                            GatewayServer own;
+                            synchronized (owner.lifecycle) { own = owner.server; if (own != null) own.retireForRestore(); RUNNING = false; owner.phase = "restoring"; }
+                            if (own != null) {
+                                try { own.stop(); }
+                                catch (Throwable failure) { owner.backupStopUncertain = true; throw new IllegalStateException("gateway stop failed", failure); }
+                                synchronized (owner.lifecycle) { if (owner.server == own) owner.server = null; owner.backupStopUncertain = false; }
+                            }
+                        }
+                        public void restart() throws Exception {
+                            if (!enabled) return;
+                            if (owner.disposed || current != owner || !isGatewayEnabled(app)) throw new IllegalStateException("gateway lifecycle changed");
+                            GatewayServer candidate = new GatewayServer(owner, 3425);
+                            boolean published = false;
+                            synchronized (owner.lifecycle) { owner.server = candidate; }
+                            try {
+                                candidate.start();
+                                if (!candidate.isAlive()) throw new IllegalStateException("gateway failed to start");
+                                synchronized (owner.lifecycle) { owner.server = candidate; RUNNING = false; owner.phase = "awaitingProbe"; published = true; }
+                                owner.scheduleFollowup(2000L);
+                            } finally {
+                                if (!published) {
+                                    candidate.retireForRestore();
+                                    try { candidate.stop(); synchronized (owner.lifecycle) { if (owner.server == candidate) owner.server = null; } }
+                                    catch (Throwable stopFailure) { owner.backupStopUncertain = true; throw new IllegalStateException("candidate stop failed", stopFailure); }
+                                }
+                            }
+                        }
+                    };
+                    try {
+                        new BackupRestoreTransaction(config, new java.io.File(app.getFilesDir(), "config-rollback.aibk"),
+                                engine, stage -> { }).apply(hash, replacement, rollback);
+                    } catch (Exception failure) {
+                        if (owner != null) {
+                            synchronized (owner.lifecycle) {
+                                RUNNING = false;
+                                owner.phase = "restoreFailed";
+                                owner.errorType = failure.getClass().getSimpleName();
+                            }
+                            if (!owner.disposed && isGatewayEnabled(app)) owner.scheduleFollowup(2000L);
+                        }
+                        throw failure;
+                    } finally { GatewayAuthKeyHolder.invalidate(); }
+                }
+            }
+        };
+    }
+
     @Override public void onDestroy() {
-        disposed = true;
-        if (worker != null) worker.shutdownNow();
         final GatewayServer toStop;
-        synchronized (lifecycle) {
-            if (current == this) current = null;
-            RUNNING = false;
-            toStop = server;
-            if (toStop != null) PENDING_STOPS.incrementAndGet();
-            server = null;
+        synchronized (ENGINE_SERIAL) {
+            disposed = true;
+            if (worker != null) worker.shutdownNow();
+            synchronized (lifecycle) {
+                if (current == this) current = null;
+                RUNNING = false;
+                toStop = server;
+                if (toStop != null) PENDING_STOPS.incrementAndGet();
+                server = null;
+            }
         }
         if (toStop != null) {
             new Thread(new Runnable() { public void run() {

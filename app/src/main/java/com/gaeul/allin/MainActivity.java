@@ -25,6 +25,7 @@ public class MainActivity extends Activity {
     private static final int GATEWAY_PORT = 3425;
 
     private WebView webView;
+    private BackupActivityController backupController;
     /** 当前 WebView 正在显示的页面地址；原生桥只认面板自己的页面 */
     private volatile String currentPageUrl = "";
 
@@ -449,12 +450,15 @@ public class MainActivity extends Activity {
      * 模型名、用户自己填的 baseUrl）被注入就能调 requestAsync 改配置、导凭据。
      */
     private boolean bridgeAllowed() {
-        String u = currentPageUrl;
-        if (u == null || u.isEmpty()) return false;
-        if (u.startsWith("file:///android_asset/")) return true;
-        if (u.startsWith("http://127.0.0.1:3425")) return true;
-        if (u.startsWith("http://localhost:3425")) return true;
-        return false;
+        try {
+            Uri uri = Uri.parse(currentPageUrl);
+            if (uri.getUserInfo() != null || uri.getQuery() != null) return false;
+            if ("file".equals(uri.getScheme()))
+                return (uri.getAuthority() == null || uri.getAuthority().isEmpty()) && "/android_asset/dashboard.html".equals(uri.getPath());
+            return "http".equals(uri.getScheme()) && uri.getPort() == 3425
+                    && ("127.0.0.1".equals(uri.getHost()) || "localhost".equals(uri.getHost()))
+                    && ("/".equals(uri.getPath()) || "/dashboard.html".equals(uri.getPath()));
+        } catch (Exception ignored) { return false; }
     }
 
     /**
@@ -463,6 +467,17 @@ public class MainActivity extends Activity {
      * 返回 {"status":200,"body":"..."} 的 JSON 字符串。
      */
     private class NativeBridge {
+        @android.webkit.JavascriptInterface
+        public boolean openEncryptedBackup(final String action) {
+            if (!bridgeAllowed() || !("export".equals(action) || "import".equals(action) || "rollback".equals(action))) return false;
+            runOnUiThread(() -> {
+                if (!bridgeAllowed() || isFinishing()) return;
+                if (backupController == null) backupController = new BackupActivityController(MainActivity.this, GatewayService.backupBackend(MainActivity.this));
+                backupController.open(action);
+            });
+            return true;
+        }
+
         /** 同步调用（保留兼容，短请求用；长请求请用 requestAsync 避免卡住 JS 线程） */
         @android.webkit.JavascriptInterface
         public String request(String method, String pathAndQuery, String body) {
@@ -970,7 +985,14 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (backupController != null && backupController.onActivityResult(requestCode, resultCode, data)) return;
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    @Override
     protected void onDestroy() {
+        if (backupController != null) backupController.destroy();
         if (webView != null) {
             webView.destroy();
         }

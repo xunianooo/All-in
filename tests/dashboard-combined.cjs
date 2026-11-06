@@ -1,0 +1,22 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync('app/src/main/assets/dashboard.html','utf8');
+for(const s of html.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(s[1]);
+const nodes=Object.fromEntries(['affinity-enabled','affinity-save','affinity-status','quirks-status','backup-status'].map(x=>[x,{checked:false,disabled:false,textContent:''}]));
+let queue=[],calls=[];const ctx=vm.createContext({document:{getElementById:id=>nodes[id]},window:{},API_BASE:'',fetch:(url,opts)=>{calls.push({url,opts});return new Promise((resolve,reject)=>queue.push({resolve,reject}));}});
+vm.runInContext(html.slice(html.indexOf('    let affinityToken='),html.indexOf('    // 页面启动初始化')),ctx);
+const run=s=>vm.runInContext(s,ctx),reply=(enabled,token='t1',status=200)=>({ok:status===200,status,json:async()=>({ok:status===200,settings:{enabled},stateToken:token})});
+(async()=>{
+await run('saveAffinity()');assert.equal(calls.length,0);
+let p=run('loadAffinity()');queue.shift().resolve(reply(false));await p;
+nodes['affinity-enabled'].checked=true;run('affinityEdited()');p=run('saveAffinity()');assert.equal(JSON.parse(calls.at(-1).opts.body).expectedStateToken,'t1');assert.equal(JSON.parse(calls.at(-1).opts.body).settings.enabled,true);
+await run('saveAffinity()');assert.equal(queue.length,1);
+nodes['affinity-enabled'].checked=false;run('affinityEdited()');queue.shift().resolve(reply(true,'t2'));await p;assert.equal(nodes['affinity-enabled'].checked,false);assert.match(nodes['affinity-status'].textContent,/草稿/);
+p=run('saveAffinity()');queue.shift().resolve(reply(false,'t3',409));await p;let before=calls.length;await run('saveAffinity()');assert.equal(calls.length,before);
+p=run('loadAffinity()');queue.shift().resolve(reply(true,'t4'));await p;assert.equal(nodes['affinity-enabled'].checked,false);
+p=run('saveAffinity()');queue.shift().reject(Error('lost response'));await p;before=calls.length;await run('saveAffinity()');assert.equal(calls.length,before);
+run("openLocalBackup('export')");assert.match(nodes['backup-status'].textContent,/Android/);let action;ctx.window.AllInNative={openEncryptedBackup:a=>{action=a;return true}};run("openLocalBackup('import')");assert.equal(action,'import');assert.match(nodes['backup-status'].textContent,/原生提示/);run("openLocalBackup('delete')");assert.equal(action,'import');
+p=run('loadQuirks()');queue.shift().resolve({ok:true,json:async()=>({version:'1.0.0',ruleCount:3,source:'builtin',loadError:null})});await p;assert.match(nodes['quirks-status'].textContent,/1.0.0/);assert.match(nodes['quirks-status'].textContent,/3 条/);
+p=run('loadQuirks()');queue.shift().resolve({ok:true,json:async()=>({loadError:'bad'})});await p;assert.match(nodes['quirks-status'].textContent,/保留原兼容/);
+for(const id of ['card-affinity','card-quirks','card-backup'])assert(html.includes('id="'+id+'"'));
+assert(!html.slice(html.indexOf('id="card-backup"'),html.indexOf('id="card-resilience"')).includes('type="password"'));console.log('combined dashboard: affinity drafts/CAS/unknown saves, rules and native-only backup passed');
+})().catch(e=>{console.error(e);process.exitCode=1});

@@ -13,7 +13,7 @@ final class NativeAnthropicPolicy {
         JSONArray messages = original == null ? null : original.optJSONArray("messages");
         for (int i = 0; messages != null && i < messages.length(); i++) {
             JSONObject message = messages.optJSONObject(i);
-            if (message != null && hasProtected(message.opt("content"))) return true;
+            if (message != null && (hasProtected(message.opt("content")) || ("assistant".equals(message.optString("role")) && hasImage(message.opt("content"))))) return true;
         }
         return false;
     }
@@ -26,8 +26,22 @@ final class NativeAnthropicPolicy {
             if (b == null) return true;
             String type = b.optString("type", "");
             if (!known(type)) return true;
+            if ("image".equals(type) && ImageContent.needsNative(b)) return true;
+            if ("tool_result".equals(type) && hasImage(b.opt("content"))) {
+                try { ImageContent.keys(b,"type","tool_use_id","content","is_error"); }
+                catch (IllegalArgumentException opaque) { return true; }
+                JSONArray parts=b.optJSONArray("content");
+                for(int j=0;parts!=null && j<parts.length();j++) {JSONObject part=parts.optJSONObject(j); if(part!=null && "text".equals(part.optString("type"))) {try {ImageContent.keys(part,"type","text");} catch(IllegalArgumentException opaque) {return true;}}}
+            }
             if ("tool_result".equals(type) && hasProtected(b.opt("content"))) return true;
         }
+        return false;
+    }
+
+    private static boolean hasImage(Object content) {
+        if(!(content instanceof JSONArray)) return false;
+        JSONArray blocks=(JSONArray)content;
+        for(int i=0;i<blocks.length();i++) { JSONObject b=blocks.optJSONObject(i); if(b!=null && ("image".equals(b.optString("type")) || ("tool_result".equals(b.optString("type")) && hasImage(b.opt("content"))))) return true; }
         return false;
     }
 
@@ -50,7 +64,7 @@ final class NativeAnthropicPolicy {
         JSONArray oldMessages = before.optJSONArray("messages");
         for (int i = 0; oldMessages != null && i < oldMessages.length(); i++) {
             JSONObject m = oldMessages.optJSONObject(i);
-            if (m != null && hasProtected(m.opt("content"))) last = i;
+            if (m != null && (hasProtected(m.opt("content")) || ("assistant".equals(m.optString("role")) && hasImage(m.opt("content"))))) last = i;
         }
         if (last >= 0) {
             for (String key : new String[]{"system", "tools"})
