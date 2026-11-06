@@ -28,10 +28,32 @@ final class BackupFiles {
         File temp = File.createTempFile("backup-", ".tmp", parent);
         boolean ready = false;
         try {
-            if (!temp.setReadable(false, false) || !temp.setWritable(false, false)
+            if (!AtomicConfigFile.isAndroidRuntime(System.getProperty("java.vm.name", ""))
+                    && System.getProperty("os.name", "").startsWith("Windows")) {
+                WindowsPrivateFile.restrict(temp);
+            } else if (!temp.setReadable(false, false) || !temp.setWritable(false, false)
                     || !temp.setReadable(true, true) || !temp.setWritable(true, true)) throw new IOException("permissions");
             try (FileOutputStream out = new FileOutputStream(temp)) { out.write(data); out.flush(); out.getFD().sync(); }
             ready = true; return temp;
         } finally { if (!ready) temp.delete(); }
+    }
+    // Desktop-only: Windows File.setWritable toggles the DOS readonly attribute and
+    // cannot implement POSIX owner-only permissions. Fail closed if ACLs are absent.
+    @android.annotation.TargetApi(26)
+    private static final class WindowsPrivateFile {
+        static void restrict(File file) throws IOException {
+            java.nio.file.Path path = file.toPath();
+            java.nio.file.attribute.AclFileAttributeView view = java.nio.file.Files.getFileAttributeView(path, java.nio.file.attribute.AclFileAttributeView.class);
+            if (view == null) throw new IOException("private ACL unavailable");
+            java.nio.file.attribute.UserPrincipal owner = view.getOwner();
+            java.nio.file.attribute.AclEntry entry = java.nio.file.attribute.AclEntry.newBuilder()
+                    .setType(java.nio.file.attribute.AclEntryType.ALLOW).setPrincipal(owner)
+                    .setPermissions(java.util.EnumSet.allOf(java.nio.file.attribute.AclEntryPermission.class)).build();
+            view.setAcl(java.util.Collections.singletonList(entry));
+            java.util.List<java.nio.file.attribute.AclEntry> actual = view.getAcl();
+            if (actual.size() != 1 || actual.get(0).type() != java.nio.file.attribute.AclEntryType.ALLOW
+                    || !owner.equals(actual.get(0).principal())
+                    || !actual.get(0).permissions().containsAll(entry.permissions())) throw new IOException("private ACL verification failed");
+        }
     }
 }

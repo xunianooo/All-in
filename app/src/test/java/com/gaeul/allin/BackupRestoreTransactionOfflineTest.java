@@ -21,6 +21,16 @@ public class BackupRestoreTransactionOfflineTest {
     public static void main(String[] args) throws Exception {
         File dir = Files.createTempDirectory("backup-transaction").toFile();
         File config = new File(dir,"config.json"), snapshot = new File(dir,"rollback.aibk");
+        if (System.getProperty("os.name", "").startsWith("Windows")) {
+            File staged = BackupFiles.stage(snapshot, bytes("private"));
+            try {
+                java.nio.file.attribute.AclFileAttributeView view = Files.getFileAttributeView(staged.toPath(), java.nio.file.attribute.AclFileAttributeView.class);
+                if (view == null) throw new AssertionError("ACL unavailable");
+                java.util.List<java.nio.file.attribute.AclEntry> acl = view.getAcl();
+                if (acl.size() != 1 || acl.get(0).type() != java.nio.file.attribute.AclEntryType.ALLOW || !acl.get(0).principal().equals(view.getOwner()) || !acl.get(0).permissions().containsAll(java.util.EnumSet.allOf(java.nio.file.attribute.AclEntryPermission.class)))
+                    throw new AssertionError("staged backup ACL is not owner-only: " + acl);
+            } finally { Files.delete(staged.toPath()); }
+        }
         byte[] hash = MessageDigest.getInstance("SHA-256").digest(OLD), encrypted = bytes("encrypted fixture");
         for (String stage : new String[]{"stopped","snapshot","replaced","restarted","restart","commitSnapshot"}) {
             Files.write(config.toPath(), OLD); Files.write(snapshot.toPath(),bytes("old snapshot")); Engine engine = new Engine(config); engine.failStart = stage.equals("restart");
