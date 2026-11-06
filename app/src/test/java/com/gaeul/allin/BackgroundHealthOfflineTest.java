@@ -62,7 +62,12 @@ public final class BackgroundHealthOfflineTest {
             AtomicReference<Throwable> failure = new AtomicReference<>();
             Thread worker = new Thread(() -> { try (Socket s=server.accept()) {
                 s.setSoTimeout(3000); InputStream in=s.getInputStream(); int state=0,c;
-                while ((c=in.read())!=-1) { state=(state==0&&c=='\r')?1:(state==1&&c=='\n')?2:(state==2&&c=='\r')?3:(state==3&&c=='\n')?4:0; if(state==4) break; }
+                ByteArrayOutputStream headers=new ByteArrayOutputStream();
+                while ((c=in.read())!=-1) { headers.write(c); state=(state==0&&c=='\r')?1:(state==1&&c=='\n')?2:(state==2&&c=='\r')?3:(state==3&&c=='\n')?4:0; if(state==4) break; }
+                int length=0;
+                for (String line : new String(headers.toByteArray(),StandardCharsets.US_ASCII).split("\\r\\n"))
+                    if (line.toLowerCase(Locale.ROOT).startsWith("content-length:")) length=Integer.parseInt(line.substring(line.indexOf(':')+1).trim());
+                while (length>0) { int n=in.read(); if(n<0) throw new EOFException("truncated request"); length--; }
                 received.countDown(); if (!release.await(3,TimeUnit.SECONDS)) throw new IOException("test timed out");
                 byte[] body=SSE.getBytes(StandardCharsets.UTF_8);
                 OutputStream out=s.getOutputStream(); out.write(("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: "+body.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII)); out.write(body); out.flush();
