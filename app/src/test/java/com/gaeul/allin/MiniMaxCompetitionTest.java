@@ -29,7 +29,12 @@ public final class MiniMaxCompetitionTest {
   check(op.equals("delete")?accounts.length()==0:accounts.getJSONObject(0).getString("refresh").equals("one"),"no stale writer "+op);
  }
  static void restartAndFailures() throws Exception {
-  Path dir=Files.createTempDirectory("mini-restart"), file=dir.resolve("config.json"); GatewayServer g=MiniMaxIntegrationHttpTest.setup(1,file,1);AtomicInteger calls=new AtomicInteger();
+  Path dir=Files.createTempDirectory("mini-restart"), file=dir.resolve("config.json");
+  if (System.getProperty("os.name", "").startsWith("Windows")) {
+   try { new MiniMaxRefreshJournal(dir.toFile()).syncDirectory(); System.out.println("Windows directory sync probe succeeded"); }
+   catch (IOException e) { System.out.println("Windows directory sync probe failed: " + e.getClass().getName() + " / cause=" + (e.getCause()==null?"none":e.getCause().getClass().getName())); }
+  }
+  GatewayServer g=MiniMaxIntegrationHttpTest.setup(1,file,1);AtomicInteger calls=new AtomicInteger();
   g.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(g);
   GatewayServer restart=MiniMaxIntegrationHttpTest.setup(1,file,1);MiniMaxIntegrationHttpTest.account(restart).put("id","renamed");restart.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(restart);check(calls.get()==1,"restarted renamed credential replayed");
   Files.write(dir.resolve("minimax-refresh.journal"),new byte[]{1});GatewayServer corrupt=MiniMaxIntegrationHttpTest.setup(1,file,1);corrupt.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(corrupt);check(calls.get()==1,"corrupt marker sent refresh");
