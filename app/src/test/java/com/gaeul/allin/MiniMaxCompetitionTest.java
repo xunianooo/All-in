@@ -38,6 +38,7 @@ public final class MiniMaxCompetitionTest {
    reopened.setMiniMaxRefreshForTests(rt->{attempts.incrementAndGet();return null;}); expectFailure(reopened);
    check(attempts.get()==0 && Arrays.equals(before,Files.readAllBytes(file)),"unsupported directory sync must fail closed before refresh and after restart");
    System.out.println("Windows directory sync AccessDeniedException: fail-closed verified; isolated lifecycle fixture follows");
+   dir=Files.createTempDirectory("mini-restart-fixture"); file=dir.resolve("config.json");
   }
   GatewayServer g=MiniMaxIntegrationHttpTest.setup(1,file,1);AtomicInteger calls=new AtomicInteger();
   g.setMiniMaxRefreshForTests(rt->{calls.incrementAndGet();return null;});expectFailure(g);
