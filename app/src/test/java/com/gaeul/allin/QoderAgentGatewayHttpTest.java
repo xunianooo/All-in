@@ -66,12 +66,22 @@ public final class QoderAgentGatewayHttpTest {
                             }
                         } else if (downstreamProbe) {
                             if (!release.await(8, java.util.concurrent.TimeUnit.SECONDS)) throw new IOException("fixture gate timeout");
-                            try {
-                                StringBuilder chunk = new StringBuilder();
-                                for (int i=0; i<8192; i++) chunk.append('x');
-                                byte[] frame=bytes(delta(new JSONObject().put("content",chunk.toString()),null));
-                                for(int i=0;i<4096;i++) { out.write(frame); out.flush(); }
-                            } catch (IOException expected) { peerClosed.countDown(); }
+                            // A peer can close gracefully (FIN) without our writes failing
+                            // immediately, particularly with Windows TCP send buffering. Observe
+                            // EOF as well as reset, instead of flooding until write throws.
+                            s.setSoTimeout(100);
+                            StringBuilder chunk = new StringBuilder();
+                            for (int i=0; i<1024; i++) chunk.append('x');
+                            byte[] frame=bytes(delta(new JSONObject().put("content",chunk.toString()),null));
+                            long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                            while(System.nanoTime()<until && peerClosed.getCount()!=0) {
+                                try {
+                                    out.write(frame); out.flush();
+                                    if(in.read()==-1) { peerClosed.countDown(); break; }
+                                } catch(SocketTimeoutException waitingForPeer) {
+                                    // No close yet. More data exercises another downstream write.
+                                } catch(IOException peerReset) { peerClosed.countDown(); break; }
+                            }
                         } else {
                             if (!release.await(8, java.util.concurrent.TimeUnit.SECONDS)) throw new IOException("fixture gate timeout");
                             out.write(bytes(tail)); out.flush();
