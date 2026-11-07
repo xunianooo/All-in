@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 23
-        versionName '1.2.17'
+        versionCode 24
+        versionName '1.2.18'
     }
 
     signingConfigs {
@@ -69,7 +69,35 @@ dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
 // 保留原有 9 个套件，并运行网关、Responses 和首次设置回归测试。
 def offlineTestMains = [
         'com.gaeul.allin.AnthropicBridgeRequestTest',
+        'com.gaeul.allin.WorkBuddyRequestPolicyOfflineTest',
+        'com.gaeul.allin.ProviderEndpointProbeHttpTest',
+        'com.gaeul.allin.ProviderEndpointProbeTlsHttpTest',
+        'com.gaeul.allin.ProviderEndpointProbeGatewayHttpTest',
+        'com.gaeul.allin.ZCodeGiftSummaryHttpTest',
+        'com.gaeul.allin.ZCodeGiftControlOfflineTest',
+        'com.gaeul.allin.ZCodeGiftControlGatewayHttpTest',
+        'com.gaeul.allin.ClineAuthPolicyOfflineTest',
+        'com.gaeul.allin.ClineFailurePolicyOfflineTest',
+        'com.gaeul.allin.ClinePersistenceOfflineTest',
+        'com.gaeul.allin.MiniMaxPollPolicyOfflineTest',
+        'com.gaeul.allin.ProviderRetryPolicyOfflineTest',
+        'com.gaeul.allin.CodexRefreshOfflineTest',
+        'com.gaeul.allin.CodexPersistenceOfflineTest',
+        'com.gaeul.allin.CatPawPolicyOfflineTest',
+        'com.gaeul.allin.WorkBuddyCatalogHttpTest',
+        'com.gaeul.allin.RaccoonCatalogHttpTest',
+        'com.gaeul.allin.ProviderCatalogCommitOfflineTest',
+        'com.gaeul.allin.AccountTokenCoordinatorOfflineTest',
+        'com.gaeul.allin.ProviderTokenCandidateOfflineTest',
+        'com.gaeul.allin.TokenPersistenceGatewayOfflineTest',
+        'com.gaeul.allin.AccountSelectionGatewayOfflineTest',
+        'com.gaeul.allin.ModelProbeDiagnosticsHttpTest',
         'com.gaeul.allin.QoderPolicyOfflineTest',
+        'com.gaeul.allin.QoderProtocolOfflineTest',
+        'com.gaeul.allin.QoderTextToolsOfflineTest',
+        'com.gaeul.allin.QoderStreamOfflineTest',
+        'com.gaeul.allin.QoderAgentGatewayHttpTest',
+        'com.gaeul.allin.QoderAgentBoundaryHttpTest',
         'com.gaeul.allin.QoderTransportOfflineTest',
         'com.gaeul.allin.QoderGatewayHttpTest',
         'com.gaeul.allin.ZCodeToolSearchOfflineTest',

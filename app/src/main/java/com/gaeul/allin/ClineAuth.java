@@ -155,7 +155,7 @@ public class ClineAuth {
         InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
         String body = readStream(is);
         if (code < 200 || code >= 400) {
-            throw new Exception("WorkOS device code request failed (HTTP " + code + "): " + body);
+            throw new Exception("WorkOS device code request failed (HTTP " + code + ")");
         }
 
         JSONObject j = new JSONObject(body);
@@ -208,7 +208,7 @@ public class ClineAuth {
             j = new JSONObject(body);
         } catch (Exception e) {
             pr.status = "failed";
-            pr.error = "WorkOS returned non-JSON response (HTTP " + code + "): " + body;
+            pr.error = "WorkOS returned non-JSON response (HTTP " + code + ")";
             return pr;
         }
 
@@ -223,8 +223,7 @@ public class ClineAuth {
         }
         if (!error.isEmpty()) {
             pr.status = "failed";
-            String desc = j.optString("error_description", "");
-            pr.error = error + (!desc.isEmpty() ? (" (" + desc + ")") : "");
+            pr.error = "WorkOS authorization rejected";
             return pr;
         }
 
@@ -271,7 +270,7 @@ public class ClineAuth {
         InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
         String body = readStream(is);
         if (code < 200 || code >= 400) {
-            throw new Exception("Cline register failed (HTTP " + code + "): " + body);
+            throw new Exception("Cline register failed (HTTP " + code + ")");
         }
 
         JSONObject res = new JSONObject(body);
@@ -312,7 +311,7 @@ public class ClineAuth {
         InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
         String body = readStream(is);
         if (code < 200 || code >= 400) {
-            throw new Exception("Cline token refresh failed (HTTP " + code + "): " + body);
+            throw new Exception("Cline token refresh failed (HTTP " + code + ")");
         }
 
         JSONObject res = new JSONObject(body);
@@ -325,24 +324,68 @@ public class ClineAuth {
     /**
      * 更新已有账号对象的 access/refresh/expires
      */
-    public static synchronized boolean refreshAccount(JSONObject acc) {
+    interface RefreshTransport { SignIn refresh(String token) throws Exception; }
+    private static final long FRESH_MARGIN_MS = 120000L;
+
+    /** Immutable pre-refresh credentials plus result, for a caller-managed config CAS.
+     * The caller must validate account identity/enabled state and persist atomically. */
+    public static final class RefreshCandidate {
+        public final String token, access, refresh;
+        public final long expires;
+        public final SignIn next;
+        private RefreshCandidate(JSONObject account, SignIn next) {
+            token = account.optString("token", ""); access = account.optString("access", "");
+            refresh = account.optString("refresh", ""); expires = account.optLong("expires", 0L);
+            this.next = next;
+        }
+        public boolean matches(JSONObject account) {
+            return account != null && token.equals(account.optString("token", ""))
+                    && access.equals(account.optString("access", ""))
+                    && refresh.equals(account.optString("refresh", ""))
+                    && expires == account.optLong("expires", 0L);
+        }
+    }
+
+    /** Null means already fresh, missing refresh credential, or refresh failure. Never mutates account. */
+    public static RefreshCandidate refreshCandidate(JSONObject account, boolean force) {
+        return refreshCandidate(account, force, ClineAuth::refreshToken);
+    }
+    static RefreshCandidate refreshCandidate(JSONObject account, boolean force, RefreshTransport transport) {
+        if (account == null) return null;
+        synchronized (account) {
+            long expires = account.optLong("expires", 0L);
+            if (!force && expires > System.currentTimeMillis() + FRESH_MARGIN_MS) return null;
+            String refresh = account.optString("refresh", "");
+            if (refresh.isEmpty()) return null;
+            RefreshCandidate before = new RefreshCandidate(account, null);
+            try {
+                SignIn next = transport.refresh(refresh);
+                if (next == null || next.access == null || next.access.isEmpty() || !before.matches(account)) return null;
+                return new RefreshCandidate(account, next);
+            } catch (Exception ignored) { return null; }
+        }
+    }
+
+    /** Legacy shared-object adapter. True also means another caller already refreshed it. */
+    public static boolean refreshAccount(JSONObject acc) {
+        return refreshAccount(acc, ClineAuth::refreshToken);
+    }
+    static boolean refreshAccount(JSONObject acc, RefreshTransport transport) {
         if (acc == null) return false;
-        String r = acc.optString("refresh", "");
-        if (r.isEmpty()) return false;
-        try {
-            SignIn next = refreshToken(r);
-            acc.put("token", next.access);
-            acc.put("access", next.access);
-            if (next.refresh != null && !next.refresh.isEmpty()) {
-                acc.put("refresh", next.refresh);
-            }
-            acc.put("expires", next.expires);
-            if (!next.email.isEmpty()) acc.put("email", next.email);
-            if (!next.uid.isEmpty()) acc.put("uid", next.uid);
-            return true;
-        } catch (Throwable e) {
-            e.printStackTrace();
-            return false;
+        synchronized (acc) {
+            if (acc.optLong("expires", 0L) > System.currentTimeMillis() + FRESH_MARGIN_MS
+                    && !acc.optString("token", "").isEmpty()) return true;
+            RefreshCandidate candidate = refreshCandidate(acc, false, transport);
+            if (candidate == null || !candidate.matches(acc)) return false;
+            SignIn next = candidate.next;
+            try {
+                acc.put("token", next.access); acc.put("access", next.access);
+                if (next.refresh != null && !next.refresh.isEmpty()) acc.put("refresh", next.refresh);
+                acc.put("expires", next.expires);
+                if (next.email != null && !next.email.isEmpty()) acc.put("email", next.email);
+                if (next.uid != null && !next.uid.isEmpty()) acc.put("uid", next.uid);
+                return true;
+            } catch (Exception ignored) { return false; }
         }
     }
 

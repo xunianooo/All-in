@@ -104,7 +104,12 @@ public class CodexAuth {
     /**
      * Codex 凭据结构
      */
+    public interface RefreshCommit { void commit(SignInInfo before, SignInInfo candidate) throws Exception; }
+    public static final class RefreshCommitFailure extends RuntimeException {
+        RefreshCommitFailure() { super("Codex credential commit failed"); }
+    }
     public static class SignInInfo {
+        public transient RefreshCommit refreshCommit;
         public String idToken = "";
         public String accessToken = "";
         public String refreshToken = "";
@@ -245,7 +250,116 @@ public class CodexAuth {
     /**
      * 刷新 Token
      */
+    /** Immutable comparison snapshot. Never log or serialize this object. */
+    public static final class RefreshState {
+        private final String id, access, token, refresh, idToken;
+        private final long expires, lastRefresh;
+        private RefreshState(JSONObject account) {
+            id = account.optString("id", "");
+            access = account.optString("access", "");
+            token = account.optString("token", "");
+            refresh = account.optString("refresh", "");
+            idToken = account.optString("idToken", "");
+            expires = account.optLong("expires", 0);
+            lastRefresh = account.optLong("lastRefresh", 0);
+        }
+        /** Invoke under the same lock that protects lookup, mutation and durable save. */
+        public boolean matches(JSONObject account) {
+            return account != null && id.equals(account.optString("id", ""))
+                    && access.equals(account.optString("access", ""))
+                    && token.equals(account.optString("token", ""))
+                    && refresh.equals(account.optString("refresh", ""))
+                    && idToken.equals(account.optString("idToken", ""))
+                    && expires == account.optLong("expires", 0)
+                    && lastRefresh == account.optLong("lastRefresh", 0);
+        }
+    }
+    /** Capture while holding the same config lock used for the later CAS. */
+    public static RefreshState snapshotRefreshState(JSONObject account) {
+        if (account == null) throw new IllegalArgumentException("missing account");
+        return new RefreshState(account);
+    }
+    /** Check only: Gateway owns account lookup, atomic write, durable save and rollback. */
+    public static boolean matchesRefreshState(JSONObject account, RefreshState expected) {
+        return expected != null && expected.matches(account);
+    }
+
+    private static final Object[] REFRESH_LOCKS = new Object[64];
+    private static final LinkedHashMap<String, RefreshResult> REFRESH_RESULTS = new LinkedHashMap<>();
+    private static final long REFRESH_CACHE_MS = 60_000L;
+    static { for (int i = 0; i < REFRESH_LOCKS.length; i++) REFRESH_LOCKS[i] = new Object(); }
+    private static final class RefreshResult {
+        final String access, refresh, id;
+        final long expires, refreshed, cachedAt;
+        RefreshResult(SignInInfo info) {
+            access = info.accessToken; refresh = info.refreshToken; id = info.idToken;
+            expires = info.expiresAt; refreshed = info.lastRefresh; cachedAt = System.currentTimeMillis();
+        }
+        void apply(SignInInfo info) {
+            info.accessToken = access; info.refreshToken = refresh; info.idToken = id;
+            info.expiresAt = expires; info.lastRefresh = refreshed;
+        }
+    }
+    private static String refreshKey(String token) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8));
+        StringBuilder b = new StringBuilder(64);
+        for (byte v : digest) b.append(String.format(Locale.ROOT, "%02x", v & 255));
+        return b.toString();
+    }
+    private static SignInInfo copySignIn(SignInInfo from) {
+        SignInInfo out = new SignInInfo();
+        out.accessToken=from.accessToken; out.refreshToken=from.refreshToken; out.idToken=from.idToken;
+        out.accountId=from.accountId; out.email=from.email; out.planType=from.planType;
+        out.authMode=from.authMode; out.expiresAt=from.expiresAt; out.lastRefresh=from.lastRefresh;
+        return out;
+    }
+    static void applyCommittedRefresh(SignInInfo info, SignInInfo candidate) {
+        SignInInfo before = copySignIn(info);
+        if (info.refreshCommit != null) {
+            try { info.refreshCommit.commit(before, candidate); }
+            catch (Exception e) { throw new RefreshCommitFailure(); }
+        }
+        new RefreshResult(candidate).apply(info);
+        info.accountId=candidate.accountId; info.email=candidate.email; info.planType=candidate.planType;
+    }
+    static boolean shouldReuseCached(String currentAccess, String cachedAccess, String reason) {
+        return !"unauthorized_recovery".equals(reason)
+                || !java.util.Objects.equals(currentAccess, cachedAccess);
+    }
+    /** Cache successful exchanges even if local commit fails, to permit safe retry. */
     public static void refreshToken(SignInInfo info, String reason) throws Exception {
+        if (info == null || info.refreshToken == null || info.refreshToken.isEmpty())
+            throw new IllegalStateException("无可用的 refresh_token，无法续期");
+        String key = refreshKey(info.refreshToken);
+        Object lock = REFRESH_LOCKS[(key.hashCode() & 0x7fffffff) % REFRESH_LOCKS.length];
+        synchronized (lock) {
+            SignInInfo candidate = copySignIn(info);
+            RefreshResult cached;
+            synchronized (REFRESH_RESULTS) {
+                cached = REFRESH_RESULTS.get(key);
+                if (cached != null && (System.currentTimeMillis() - cached.cachedAt >= REFRESH_CACHE_MS
+                        || System.currentTimeMillis() < cached.cachedAt
+                        || !shouldReuseCached(info.accessToken, cached.access, reason))) {
+                    REFRESH_RESULTS.remove(key); cached=null;
+                }
+            }
+            if (cached != null) cached.apply(candidate);
+            else {
+                try { refreshTokenExchange(candidate, reason); }
+                catch (Exception failure) {
+                    String message = failure.getMessage();
+                    if (message != null && message.matches("Codex 令牌刷新失败 \\(HTTP [0-9]{3}\\)")) throw new Exception(message);
+                    throw new Exception("Codex 令牌刷新失败：网络或响应错误");
+                }
+                synchronized (REFRESH_RESULTS) {
+                    REFRESH_RESULTS.put(key, new RefreshResult(candidate));
+                    while (REFRESH_RESULTS.size() > 128) REFRESH_RESULTS.remove(REFRESH_RESULTS.keySet().iterator().next());
+                }
+            }
+            applyCommittedRefresh(info, candidate);
+        }
+    }
+    private static void refreshTokenExchange(SignInInfo info, String reason) throws Exception {
         if (info.refreshToken == null || info.refreshToken.isEmpty()) {
             throw new IllegalStateException("无可用的 refresh_token，无法续期");
         }
@@ -280,13 +394,13 @@ public class CodexAuth {
 
         String resStr = bos.toString("UTF-8");
         if (code != 200) {
-            throw new Exception("Codex 令牌刷新失败 (" + code + "): " + resStr);
+            throw new Exception("Codex 令牌刷新失败 (HTTP " + code + ")");
         }
 
         JSONObject res = new JSONObject(resStr);
         String newAcc = res.optString("access_token", "");
         if (newAcc.isEmpty()) {
-            throw new Exception("刷新响应中缺少 access_token: " + resStr);
+            throw new Exception("刷新响应中缺少 access_token");
         }
         info.accessToken = newAcc;
         String newRef = res.optString("refresh_token", "");
@@ -451,8 +565,8 @@ public class CodexAuth {
         if (info.expiresAt > 0 && (info.expiresAt - System.currentTimeMillis() < 5 * 60 * 1000L) && !info.refreshToken.isEmpty()) {
             try {
                 refreshToken(info, "proactive_expiry");
-            } catch (Throwable ignored) {
-            }
+            } catch (RefreshCommitFailure failure) { throw failure; }
+            catch (Throwable ignored) { }
         }
 
         HttpURLConnection conn = openHttp(WHAM_USAGE);
@@ -584,7 +698,8 @@ public class CodexAuth {
             if (info.expiresAt > 0 && (info.expiresAt - System.currentTimeMillis() < 5 * 60 * 1000L) && !info.refreshToken.isEmpty()) {
                 try {
                     refreshToken(info, "proactive_expiry");
-                } catch (Throwable ignored) {}
+                } catch (RefreshCommitFailure failure) { throw failure; }
+                catch (Throwable ignored) {}
             }
 
             String urlStr = CODEX_MODELS + "?client_version=" + URLEncoder.encode(CODEX_VERSION, "UTF-8");
@@ -623,7 +738,8 @@ public class CodexAuth {
                     }
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (RefreshCommitFailure failure) { throw failure; }
+        catch (Throwable ignored) {
         }
 
         if (list.isEmpty()) {

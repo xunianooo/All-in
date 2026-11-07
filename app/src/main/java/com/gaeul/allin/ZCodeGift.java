@@ -446,6 +446,10 @@ final class ZCodeGift {
             if (ctx != null) ctx.check();
             if (ctx != null) { ctx.check(); conn.setReadTimeout((int)Math.max(1,Math.min(timeoutMs,ctx.remainingMillis()))); }
             out.status=conn.getResponseCode();
+            if (out.status == 429) {
+                String retry = ProviderRetryPolicy.safeRetryAfter(conn.getHeaderField("Retry-After"));
+                if (retry != null) out.retryAfterMillis = Long.parseLong(retry) * 1000L;
+            }
             if (out.status < 200 || out.status >= 300) {
                 InputStream es=decoded(conn,conn.getErrorStream(),ctx,timeoutMs); byte[] data=null;
                 if (es != null) try (InputStream input=es) { data=readBounded(input,65536); }

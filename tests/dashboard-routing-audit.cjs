@@ -3,7 +3,7 @@ const html = fs.readFileSync(require('path').join(__dirname, '../app/src/main/as
 const text = html.slice(html.indexOf('    let routingRevision = 0;'), html.indexOf('    async function loadConfig()', html.indexOf('    let routingRevision = 0;')));
 const elements = {'groups-enabled': {checked:false}, 'bare-fallback':{checked:false}, 'groups-disabled-hint':{style:{}}, 'groups-box':{style:{}}};
 let pending = [], state = {enabled:false, bareModelFallback:false};
-const context = { document:{getElementById:id=>elements[id]||null}, API_BASE:'', showToast(){}, errText:String, loadConfig:async()=>{}, fetch:async(url,options)=>{
+const context = { window:{}, document:{getElementById:id=>elements[id]||null}, API_BASE:'', showToast(){}, errText:String, loadConfig:async()=>{}, fetch:async(url,options)=>{
  if (options) {let patch=JSON.parse(options.body); if ('enabled' in patch) state.enabled=patch.enabled; if ('bareModelFallback' in patch) state.bareModelFallback=patch.bareModelFallback; return {json:async()=>({ok:true,...state})};}
  let snapshot={...state}; return new Promise(resolve=>pending.push(()=>resolve({json:async()=>snapshot})));
 }};

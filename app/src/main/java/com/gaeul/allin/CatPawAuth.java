@@ -230,7 +230,7 @@ public final class CatPawAuth {
             String role = m.optString("role", "user");
             String content = contentText(m.opt("content"));
             String block = null;
-            if ("system".equals(role)) block = "[System Instructions]\n" + content;
+            if ("system".equals(role) || "developer".equals(role)) block = "[System Instructions]\n" + content;
             else if ("user".equals(role)) block = "[User]\n" + content;
             else if ("assistant".equals(role)) block = "[Assistant]\n" + content;
             if (block == null) continue;
@@ -258,49 +258,102 @@ public final class CatPawAuth {
         return String.valueOf(content);
     }
 
-    /** 会话协议送不进工具/图片：命中就带着原因返回，让调用方明确 400 */
+    /** Validate everything the flattened prompt can represent before any network call. */
     public static String unsupportedReason(JSONArray messages, JSONArray tools) {
-        if (tools != null && tools.length() > 0) {
-            return "妙手 CatPaw 无法使用工具：会话协议只收一段扁平文本 prompt，"
-                    + "工具定义会被静默丢弃（这里选择明确拒绝，而不是答错）";
-        }
-        if (messages == null) return null;
+        if (tools != null && tools.length() > 0) return "妙手不支持工具";
+        if (messages == null || messages.length() == 0) return "妙手需要消息";
         for (int i = 0; i < messages.length(); i++) {
             JSONObject m = messages.optJSONObject(i);
-            if (m == null) continue;
-            if ("tool".equals(m.optString("role"))) {
-                return "妙手 CatPaw 无法续接工具调用：会话协议只收一段扁平文本 prompt，"
-                        + "工具结果会被静默丢弃（这里选择明确拒绝，而不是答错）";
-            }
-            Object c = m.opt("content");
-            if (c instanceof JSONArray) {
-                JSONArray arr = (JSONArray) c;
-                for (int k = 0; k < arr.length(); k++) {
-                    Object o = arr.opt(k);
-                    if (!(o instanceof JSONObject)) continue;
-                    JSONObject part = (JSONObject) o;
-                    String t = part.optString("type", "");
-                    if ("tool_call".equals(t) || "tool_use".equals(t) || "tool_result".equals(t)) {
-                        return "妙手 CatPaw 无法续接工具调用：会话协议只收一段扁平文本 prompt，"
-                                + "工具结果会被静默丢弃（这里选择明确拒绝，而不是答错）";
-                    }
-                    if ("image".equals(t) || "image_url".equals(t) || "input_image".equals(t)) {
-                        return "妙手 CatPaw 无法接收图片：会话协议只收一段扁平文本 prompt"
-                                + "（这里选择明确拒绝，而不是悄悄丢掉）";
-                    }
-                    String txt = part.optString("text", "");
-                    if (txt.startsWith("data:image/")) {
-                        return "妙手 CatPaw 无法接收图片：会话协议只收一段扁平文本 prompt"
-                                + "（这里选择明确拒绝，而不是悄悄丢掉）";
-                    }
-                }
+            if (m == null) return "妙手消息格式无效";
+            String role = m.optString("role", "");
+            if (!"system".equals(role) && !"developer".equals(role)
+                    && !"user".equals(role) && !"assistant".equals(role)) return "妙手不支持此消息角色";
+            if (m.has("tool_calls") || m.has("function_call") || m.has("tool_call_id")) return "妙手不支持工具历史";
+            Object content = m.opt("content");
+            if (content instanceof String) continue;
+            if (!(content instanceof JSONArray)) return "妙手只支持文本内容";
+            JSONArray parts = (JSONArray) content;
+            for (int j = 0; j < parts.length(); j++) {
+                JSONObject part = parts.optJSONObject(j);
+                if (part == null || !"text".equals(part.optString("type")) || !(part.opt("text") instanceof String))
+                    return "妙手只支持文本内容";
             }
         }
         return null;
     }
 
+    /** Safe typed error: sentOrUnknown is conservative once a POST is attempted. */
+    public static final class Failure extends Exception {
+        public final int httpStatus;
+        public final Integer businessCode;
+        public final boolean sentOrUnknown;
+        public Failure(int httpStatus, Integer businessCode, boolean sentOrUnknown) {
+            super("妙手请求失败");
+            this.httpStatus = httpStatus;
+            this.businessCode = businessCode;
+            this.sentOrUnknown = sentOrUnknown;
+        }
+    }
+    public static int failureStatus(Throwable error) {
+        if (!(error instanceof Failure)) return 502;
+        Failure f = (Failure) error;
+        if (f.httpStatus == 400 || f.httpStatus == 401 || f.httpStatus == 403 || f.httpStatus == 429) return f.httpStatus;
+        return 502;
+    }
+    public static boolean failureSentOrUnknown(Throwable error) {
+        return !(error instanceof Failure) || ((Failure) error).sentOrUnknown;
+    }
+    public interface ChatTransport {
+        ChatResponse post(String url, String body, Map<String, String> headers, int timeoutMs, String accept) throws Exception;
+    }
+    public static final class ChatResponse {
+        public final int status;
+        public final byte[] body;
+        public ChatResponse(int status, byte[] body) { this.status = status; this.body = body == null ? new byte[0] : body; }
+    }
+    private static int businessStatus(Integer code) {
+        return code != null && (code == 401 || code == 403 || code == 429) ? code : 502;
+    }
+    private static ChatResponse chatPost(ChatTransport transport, String path, JSONObject body,
+                                         Map<String, String> headers, int timeout, String accept) throws Failure {
+        try {
+            ChatResponse response = transport.post(ORIGIN + path, body.toString(), headers, timeout, accept);
+            if (response == null) throw new Failure(502, null, true);
+            if (response.status < 200 || response.status >= 300) throw new Failure(response.status, null, true);
+            return response;
+        } catch (Failure e) { throw e; }
+        catch (Exception e) { throw new Failure(502, null, true); }
+    }
+    private static final ChatTransport HTTP_CHAT = new ChatTransport() {
+        public ChatResponse post(String url, String body, Map<String, String> headers, int timeout, String accept) throws Exception {
+            HttpURLConnection conn = NetworkPolicy.openHttp(url);
+            try {
+                conn.setInstanceFollowRedirects(false);
+                conn.setRequestMethod("POST"); conn.setDoOutput(true);
+                conn.setConnectTimeout(15000); conn.setReadTimeout(timeout);
+                if (accept != null) conn.setRequestProperty("Accept", accept);
+                for (Map.Entry<String, String> h : headers.entrySet()) conn.setRequestProperty(h.getKey(), h.getValue());
+                try (OutputStream out = conn.getOutputStream()) { out.write(body.getBytes("UTF-8")); }
+                int status = conn.getResponseCode();
+                if (status < 200 || status >= 300) return new ChatResponse(status, null);
+                InputStream input = conn.getInputStream();
+                if (input == null) throw new java.io.IOException("empty stream");
+                try (InputStream in = input; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    byte[] buf = new byte[8192]; int n;
+                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                    return new ChatResponse(status, out.toByteArray());
+                }
+            } finally { conn.disconnect(); }
+        }
+    };
+
     /** 三步会话机；返回 {text, reasoning}，出错抛异常 */
     public static JSONObject chat(String token, String model, JSONArray messages) throws Exception {
+        return chat(token, model, messages, HTTP_CHAT);
+    }
+
+    public static JSONObject chat(String token, String model, JSONArray messages, ChatTransport transport) throws Exception {
+        if (unsupportedReason(messages, null) != null || transport == null) throw new Failure(400, null, false);
         int modelType = modelTypeOf(model);
         String convId = UUID.randomUUID().toString();
         String msgId = UUID.randomUUID().toString();
@@ -321,14 +374,13 @@ public final class CatPawAuth {
         Map<String, String> h1 = gatewayHeaders(token);
         h1.put("m-spanid", "0.2");
         h1.put("m-spanname", "conversation.round");
-        String r1 = post(ORIGIN + "/api/agent/conversation/round", round.toString(), h1, 30000,
-                "application/json");
+        ChatResponse roundResponse = chatPost(transport, "/api/agent/conversation/round", round, h1, 30000, "application/json");
         JSONObject r1j;
-        try { r1j = new JSONObject(r1 == null || r1.isEmpty() ? "{}" : r1); }
-        catch (Exception e) { throw new Exception("妙手 round 返回非 JSON：" + cut(r1)); }
-        if (r1j.optInt("code", -1) != 0) {
-            throw new Exception("妙手 round 失败：code=" + r1j.optInt("code", -1)
-                    + " msg=" + r1j.optString("msg", r1j.optString("message", "")));
+        try { r1j = new JSONObject(new String(roundResponse.body, "UTF-8")); }
+        catch (Exception e) { throw new Failure(502, null, true); }
+        if (!r1j.has("code") || r1j.optInt("code", -1) != 0) {
+            Integer code = r1j.opt("code") instanceof Number ? r1j.optInt("code") : null;
+            throw new Failure(businessStatus(code), code, true);
         }
 
         // ② event：标记会话运行中
@@ -341,7 +393,15 @@ public final class CatPawAuth {
         Map<String, String> h2 = gatewayHeaders(token);
         h2.put("m-spanid", "0.3");
         h2.put("m-spanname", "conversation.event");
-        post(ORIGIN + "/api/agent/conversation/event", ev.toString(), h2, 30000, "application/json");
+        ChatResponse eventResponse = chatPost(transport, "/api/agent/conversation/event", ev, h2, 30000, "application/json");
+        try {
+            JSONObject eventJson = new JSONObject(new String(eventResponse.body, "UTF-8"));
+            if (eventJson.has("code") && eventJson.optInt("code", -1) != 0) {
+                Integer code = eventJson.opt("code") instanceof Number ? eventJson.optInt("code") : null;
+                throw new Failure(businessStatus(code), code, true);
+            }
+        } catch (Failure e) { throw e; }
+        catch (Exception e) { throw new Failure(502, null, true); }
 
         // ③ turn：SSE 答案，累积帧做差分
         JSONObject turn = new JSONObject();
@@ -361,9 +421,12 @@ public final class CatPawAuth {
         h3.put("m-spanid", "0.4.1");
         h3.put("m-spanname", "conversation.turn");
 
-        String answer = new String(streamPost(ORIGIN + "/api/agent/conversation/turn",
-                turn.toString(), h3, 15 * 60 * 1000), "UTF-8");
+        ChatResponse turnResponse = chatPost(transport, "/api/agent/conversation/turn", turn, h3, 15 * 60 * 1000, "text/event-stream");
+        return parseTurn(turnResponse.body);
+    }
 
+    static JSONObject parseTurn(byte[] dataBytes) throws Exception {
+        String answer = new String(dataBytes, "UTF-8");
         StringBuilder text = new StringBuilder();
         StringBuilder reasoning = new StringBuilder();
         int frames = 0;
@@ -379,8 +442,8 @@ public final class CatPawAuth {
             frames++;
             JSONObject err = frame.optJSONObject("error");
             if (err != null) {
-                throw new Exception("妙手 SSE 错误：code=" + err.optInt("code", -1)
-                        + " msg=" + err.optString("message", ""));
+                Integer code = err.opt("code") instanceof Number ? err.optInt("code") : null;
+                throw new Failure(businessStatus(code), code, true);
             }
             JSONObject msg = frame.optJSONObject("message");
             if (msg == null) continue;
@@ -390,18 +453,12 @@ public final class CatPawAuth {
                 JSONObject c = content.optJSONObject(k);
                 if (c == null || !"text".equals(c.optString("type"))) continue;
                 String cur = c.optString("text", "");
-                if (cur.length() > text.length()) {
-                    text.setLength(0);
-                    text.append(cur);
-                }
+                if (c.has("text")) { text.setLength(0); text.append(cur); }
                 String curR = c.optString("reasoningContent", "");
-                if (curR.length() > reasoning.length()) {
-                    reasoning.setLength(0);
-                    reasoning.append(curR);
-                }
+                if (c.has("reasoningContent")) { reasoning.setLength(0); reasoning.append(curR); }
             }
         }
-        if (frames == 0 && text.length() == 0) throw new Exception("妙手 SSE 流结束但没有任何帧");
+        if (frames == 0 && text.length() == 0) throw new Failure(502, null, true);
 
         JSONObject out = new JSONObject();
         out.put("text", text.toString());

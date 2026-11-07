@@ -86,6 +86,43 @@ public class ZCodeAuth {
         return sb.toString();
     }
 
+    public static final long MAX_RETRY_AFTER_MS = 6L * 60 * 60 * 1000;
+
+    /** Structured service failure; never contains an upstream response body. */
+    public static class ServiceException extends Exception {
+        public final int status;
+        public final int businessCode;
+        public final long retryAfterMs;
+        public ServiceException(int status, int businessCode, long retryAfterMs) {
+            super(businessCode == 3002 || status == 429 ? "ZCode rate limited" :
+                    "ZCode request failed (" + status + ")" + (businessCode != 0 ? " code " + businessCode : ""));
+            this.status = status;
+            this.businessCode = businessCode;
+            this.retryAfterMs = Math.max(0, Math.min(MAX_RETRY_AFTER_MS, retryAfterMs));
+        }
+        public boolean isRateLimited() { return status == 429 || businessCode == 3002; }
+    }
+
+    static long parseRetryAfter(String value, long now) {
+        if (value == null || value.trim().isEmpty()) return 0;
+        String v = value.trim();
+        try {
+            double seconds = Double.parseDouble(v);
+            if (!Double.isFinite(seconds) || seconds <= 0) return 0;
+            return (long)Math.min(MAX_RETRY_AFTER_MS, seconds * 1000.0);
+        } catch (NumberFormatException ignored) { }
+        try {
+            java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US);
+            fmt.setLenient(false);
+            java.text.ParsePosition pos = new java.text.ParsePosition(0);
+            java.util.Date date = fmt.parse(v, pos);
+            if (date == null || pos.getIndex() != v.length()) return 0;
+            long at = date.getTime();
+            if (at <= now) return 0;
+            return at - now < 0 ? MAX_RETRY_AFTER_MS : Math.min(MAX_RETRY_AFTER_MS, at - now);
+        } catch (Exception ignored) { return 0; }
+    }
+
     /** Z.ai 系接口统一返回 {code,msg,data}，code 为 0 或 200 是成功 */
     private static JSONObject call(String method, String url, String auth, JSONObject body,
                                    String device, int timeoutMs) throws Exception {
@@ -138,16 +175,21 @@ public class ZCodeAuth {
         }
 
         String bizCode = (env == null || env.isNull("code")) ? "" : String.valueOf(env.opt("code"));
-        if (code < 200 || code >= 400) {
-            String msg = env == null ? null : env.optString("msg", "");
-            if (msg == null || msg.isEmpty()) msg = "HTTP " + code;
-            throw new Exception(msg + " (" + code + ")");
+        int businessCode = 0;
+        try { businessCode = Integer.parseInt(bizCode); } catch (Exception ignored) { }
+        if (code < 200 || code >= 400 || (!bizCode.isEmpty() && !"0".equals(bizCode) && !"200".equals(bizCode))) {
+            throw new ServiceException(code, businessCode, parseRetryAfter(conn.getHeaderField("Retry-After"), System.currentTimeMillis()));
         }
         if (env == null) throw new Exception("上游返回的不是 JSON");
-        if (!bizCode.isEmpty() && !"0".equals(bizCode) && !"200".equals(bizCode)) {
-            throw new Exception(env.optString("msg", "error " + bizCode));
-        }
         JSONObject data = env.optJSONObject("data");
+        // Only an explicitly successful preview can mean "nothing to claim".
+        // Keep other shared call sites' response contracts unchanged.
+        if ((GIFT_BASE + "/billing/preview").equals(url)) {
+            if (!"0".equals(bizCode) && !"200".equals(bizCode))
+                throw new GiftDataException("gift 可领取计划响应缺少成功标志");
+            if (data == null && env.has("data") && !env.isNull("data"))
+                throw new GiftDataException("gift 可领取计划数据不完整");
+        }
         return data == null ? new JSONObject() : data;
     }
 
@@ -412,16 +454,24 @@ public class ZCodeAuth {
         return call("POST", GIFT_BASE + "/billing/claim", giftAuth(jwt), body, device, 20000);
     }
 
+    private static final class GiftDataException extends Exception {
+        GiftDataException(String message) { super(message); }
+    }
+
     /** 汇总：今天可领几个、各包还剩多少、合计剩余单位 */
     public static JSONObject giftSummary(String jwt, String device) {
         JSONObject out = new JSONObject();
         try {
             JSONObject prev = giftPreview(jwt, device);
             JSONArray plans = prev.optJSONArray("plans");
+            // A successful preview may omit data entirely when there is nothing to
+            // claim. It says nothing about already-claimed gift balances.
+            if (plans == null && prev.length() == 0) plans = new JSONArray();
+            if (plans == null) throw new GiftDataException("gift 可领取计划数据不完整");
             JSONArray claimable = new JSONArray();
             for (int i = 0; plans != null && i < plans.length(); i++) {
                 JSONObject p = plans.optJSONObject(i);
-                if (p == null) continue;
+                if (p == null) throw new GiftDataException("gift 计划数据不完整");
                 String st = p.optString("status", "");
                 if (!st.isEmpty() && !"active".equalsIgnoreCase(st)) continue;
                 JSONObject o = new JSONObject();
@@ -434,12 +484,14 @@ public class ZCodeAuth {
 
             JSONObject bal = giftBalance(jwt, device);
             JSONArray buckets = bal.optJSONArray("balances");
+            if (buckets == null) throw new GiftDataException("gift 余额数据不完整");
             JSONArray live = new JSONArray();
             long remaining = 0;
             for (int i = 0; buckets != null && i < buckets.length(); i++) {
                 JSONObject b = buckets.optJSONObject(i);
-                if (b == null) continue;
+                if (b == null || !b.has("remaining_units") || b.isNull("remaining_units")) throw new GiftDataException("gift 余额数据不完整");
                 long rem = b.optLong("remaining_units", -1);
+                if (rem < 0) throw new GiftDataException("gift 余额数据不完整");
                 long total = b.optLong("total_units", 0);
                 long exp = b.optLong("expires_at", 0);
                 long now = System.currentTimeMillis() / 1000L;
@@ -452,7 +504,8 @@ public class ZCodeAuth {
                 o.put("remaining", rem);
                 o.put("expiresAt", exp);
                 JSONArray caps = b.optJSONArray("capabilities");
-                o.put("capabilities", caps == null ? new JSONArray() : caps);
+                if (caps == null) throw new GiftDataException("gift 模型能力数据不完整");
+                o.put("capabilities", caps);
                 live.put(o);
                 if (rem > 0) remaining += rem;
             }
@@ -463,7 +516,13 @@ public class ZCodeAuth {
         } catch (Exception e) {
             try {
                 out.put("ok", false);
-                out.put("error", e.getMessage() == null ? "gift 查询失败" : e.getMessage());
+                out.put("error", e instanceof ServiceException || e instanceof GiftDataException ? e.getMessage() : "gift 查询失败，请检查网络后重试");
+                if (e instanceof ServiceException) {
+                    ServiceException failure = (ServiceException)e;
+                    out.put("status", failure.status);
+                    out.put("businessCode", failure.businessCode);
+                    out.put("retryAfterMs", failure.retryAfterMs);
+                }
             } catch (Exception ignored) {}
         }
         return out;

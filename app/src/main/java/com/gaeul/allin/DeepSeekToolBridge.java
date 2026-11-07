@@ -29,7 +29,7 @@ public final class DeepSeekToolBridge {
             }
             Map<String,String> ids=new HashMap<>();
             for(int i=0;i<messages.length();i++){JSONObject m=messages.optJSONObject(i); if(m==null)continue; JSONArray cs=m.optJSONArray("tool_calls");if(cs!=null)for(int j=0;j<cs.length();j++){JSONObject c=cs.optJSONObject(j);if(c!=null && c.optJSONObject("function")!=null)ids.put(c.optString("id"),c.optJSONObject("function").optString("name"));}}
-            int index=Math.max(0,from); while(index<messages.length() && "assistant".equals(messages.optJSONObject(index)==null?"":messages.optJSONObject(index).optString("role")))index++;
+            int index=Math.max(0,from);
             boolean spoke=false;
             for(;index<messages.length();index++) { JSONObject m=messages.optJSONObject(index);if(m==null)continue; String role=m.optString("role"), text=content(m.opt("content"));
                 if("system".equals(role)||"developer".equals(role)){if(!text.isEmpty())parts.add(text);continue;}

@@ -12,12 +12,10 @@ import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /** Request headers for the two fixed WorkBuddy chat endpoints. */
 public final class WorkBuddyPolicy {
     private static final byte[] SALT = new byte[32];
-    private static final Pattern UUID_PATTERN = Pattern.compile("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     static { new SecureRandom().nextBytes(SALT); }
     private WorkBuddyPolicy() {}
 
@@ -66,14 +64,16 @@ public final class WorkBuddyPolicy {
         h.put("X-Agent-Type", "main");
         h.put("X-Agent-Runtime", "local-agent");
         String session = explicitSession == null ? "" : explicitSession.trim();
-        String id;
-        if (!session.isEmpty() && UUID_PATTERN.matcher(session).matches()
-                && !"00000000-0000-0000-0000-000000000000".equals(session)) id = session;
-        else {
-            String request = logicalRequestId == null ? "" : logicalRequestId.trim();
-            String seed = !session.isEmpty() ? "session:" + session : "request:" + (request.isEmpty() ? UUID.randomUUID().toString() : request);
-            id = scoped(provider, key, uid, value(account, "enterpriseId"), seed);
-        }
+        // Account identity must survive credential refresh and be scoped for every session,
+        // including UUIDs. Without a trusted account/session, do not correlate requests.
+        String stableUid = value(account, "uid");
+        String accountId = value(account, "id");
+        boolean stableKey = key.startsWith("ck_") || key.startsWith("pt_")
+                || (ai && (account == null || !"oauth".equals(account.optString("type"))));
+        String identity = !stableUid.isEmpty() ? "uid:" + stableUid : !accountId.isEmpty() ? "id:" + accountId : stableKey ? "key:" + key : "";
+        String id = !identity.isEmpty() && !session.isEmpty() && session.length() <= 1024 && safe(session)
+                ? scoped("conversation", provider, identity, value(account,"enterpriseId"), domain, session)
+                : UUID.randomUUID().toString();
         h.put("X-Conversation-ID", id);
         String turn = turnId(provider, key, account, session, outboundPayload);
         h.put("X-Conversation-Request-ID", turn);

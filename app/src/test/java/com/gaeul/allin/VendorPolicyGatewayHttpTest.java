@@ -77,8 +77,10 @@ public final class VendorPolicyGatewayHttpTest {
                     check(u.requests.size()==i+1,"one upstream per turn step "+id+" step "+i);
                     Request sent=u.requests.get(i);
                     check(sent.path.equals("/v2/chat/completions"),"workbuddy turn endpoint "+id);
-                    check(sent.body.getJSONArray("messages").toString().equals(bodies[i].getJSONArray("messages").toString()),
-                            "upstream messages preserved "+id+" step "+i);
+                    JSONArray actual=sent.body.getJSONArray("messages"), expected=bodies[i].getJSONArray("messages");
+                    check(actual.length()==expected.length()+1,"default system and full history "+id+" step "+i);
+                    check(actual.getJSONObject(0).similar(new JSONObject().put("role","system").put("content","You are a helpful assistant.")),"default system "+id);
+                    for(int j=0;j<expected.length();j++)check(actual.getJSONObject(j+1).similar(expected.getJSONObject(j)),"history preserved "+id+" step "+i+" message "+j);
                     String turn=sent.headers.get("X-Conversation-Request-ID");
                     String message=sent.headers.get("X-Conversation-Message-ID");
                     String request=sent.headers.get("X-Request-ID");
@@ -89,6 +91,28 @@ public final class VendorPolicyGatewayHttpTest {
                     else if(i==1)check(firstTurn.equals(turn),"tool roundtrip keeps turn id "+id);
                     else check(!firstTurn.equals(turn),"repeated text new user turn changes id "+id);
                 }
+            }
+        }
+    }
+    static void workbuddyTransform()throws Exception {
+        for(String id:new String[]{"workbuddy","workbuddy-ai"}) {
+            String host=id.equals("workbuddy")?"https://copilot.tencent.com/v2":"https://www.workbuddy.ai/v2";
+            try(Upstream u=new Upstream((r,n)->new Reply(200,"text/event-stream",SSE));Gateway g=new Gateway(config(provider(id,"openai",host,"model")),u,false)) {
+                JSONObject input=body(id+"/model",false).put("max_completion_tokens",40);
+                JSONArray history=new JSONArray().put(new JSONObject().put("role","developer").put("content","synthetic instructions"))
+                    .put(new JSONObject().put("role","user").put("content","hello"))
+                    .put(new JSONObject().put("role","assistant").put("content","answer").put("reasoning_content","synthetic thought"));
+                input.put("messages",history);String before=input.toString();
+                Result result=post(g,"/v1/chat/completions",input,"session");
+                check(result.status==200,"workbuddy transform HTTP "+id+" "+result.body);
+                check(before.equals(input.toString()),"client transform input unchanged "+id);
+                check(u.requests.size()==1,"one transform request "+id);
+                JSONObject sent=u.requests.get(0).body;JSONArray msgs=sent.getJSONArray("messages");
+                check(sent.getInt("max_tokens")==40&&!sent.has("max_completion_tokens"),"stricter output cap "+id);
+                check(msgs.length()==3&&"system".equals(msgs.getJSONObject(0).getString("role"))&&"synthetic instructions".equals(msgs.getJSONObject(0).getString("content")),"developer preserved "+id);
+                check(msgs.getJSONObject(1).similar(history.getJSONObject(1)),"user preserved "+id);
+                JSONObject assistant=msgs.getJSONObject(2);
+                check("answer".equals(assistant.getString("content"))&&"synthetic thought".equals(assistant.getString("reasoning"))&&!assistant.has("reasoning_content"),"reasoning converted "+id);
             }
         }
     }
@@ -117,5 +141,5 @@ public final class VendorPolicyGatewayHttpTest {
         try(Upstream u=new Upstream((r,n)->new Reply(405,"application/json","{\"error\":{\"message\":\"generic refusal\"}}"));Gateway g=new Gateway(groupConfig(),u,false)){Result r=post(g,"/v1/messages",body("group/g",false));check(r.status==405,"bare 405 not safe fallback");check(u.requests.size()==1,"bare 405 not replayed");}
         try(Upstream u=new Upstream((r,n)->new Reply(200,"text/event-stream","event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"synthetic stream error\"}}\n\n"));Gateway g=new Gateway(groupConfig(),u,false)){Result r=post(g,"/v1/messages",body("group/g",true));check(r.status==200&&r.body.contains("error"),"stream error forwarded");check(u.requests.size()==1,"stream error never replayed");}
     }
-    public static void main(String[] args)throws Exception{UsageLedger.init(Files.createTempDirectory("vendor-policy-ledger-").toFile());workbuddy();workbuddyTurns();cline();zcode();groups();zeroStatusRefusal();System.out.println("VendorPolicyGatewayHttpTest OK");}
+    public static void main(String[] args)throws Exception{UsageLedger.init(Files.createTempDirectory("vendor-policy-ledger-").toFile());workbuddy();workbuddyTurns();workbuddyTransform();cline();zcode();groups();zeroStatusRefusal();System.out.println("VendorPolicyGatewayHttpTest OK");}
 }

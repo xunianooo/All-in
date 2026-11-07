@@ -339,6 +339,8 @@ public class QoderAuth {
     public static java.util.Map<String, String> chatHeaders(String url, SignIn u, String bodyWire,
                                                             String modelKey, String modelSource)
             throws Exception {
+        if (u == null || u.machineId == null || u.machineId.trim().isEmpty())
+            throw new IllegalArgumentException("Qoder account has no machine ID; sign in again");
         java.util.Map<String, String> h = cosyHeaders(url, u, bodyWire);
         h.remove("Cosy-ClientIp");
         h.remove("Cosy-MachineToken");

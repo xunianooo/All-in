@@ -37,6 +37,9 @@ jobs:
         shell: bash
         run: |
           node tests/dashboard-setup-key.cjs
+          node tests/dashboard-back-navigation.cjs
+          node tests/dashboard-endpoint-probe.cjs
+          node tests/dashboard-model-diagnostics.cjs
           node tests/dashboard-routing-audit.cjs
           node tests/dashboard-exposed.cjs
           node tests/dashboard-background.cjs

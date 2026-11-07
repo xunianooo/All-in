@@ -31,11 +31,12 @@ public final class ZCodeGiftPolicyHttpTest {
                     ByteArrayOutputStream request=new ByteArrayOutputStream();
                     while (length-->0) { v=input.read(); if(v<0) throw new EOFException(); request.write(v); }
                     received[0]=request.toString("UTF-8"); calls.incrementAndGet(); String m=mode[0];
-                    int status=m.equals("redirect")?302:m.equals("ok") || m.equals("slow")?200:405;
+                    int status=m.equals("redirect")?302:m.equals("rate")?429:m.equals("ok") || m.equals("slow")?200:405;
                     String text=m.equals("3012")?"{\"code\":3012}":m.equals("edge")?"<html>errors.aliyun.com</html>":m.equals("huge")?new String(new char[70000]).replace('\0','x'):m.equals("ok")?"{\"content\":[]}":"plain";
                     byte[] data=text.getBytes("UTF-8"); String extra="";
                     if (m.equals("gzip")) { ByteArrayOutputStream b=new ByteArrayOutputStream(); GZIPOutputStream z=new GZIPOutputStream(b); z.write("{\"code\":3012}".getBytes("UTF-8")); z.close(); data=b.toByteArray(); extra="Content-Encoding: gzip\r\n"; }
                     if (m.equals("redirect")) extra+="Location: /follow\r\n";
+                    if (m.equals("rate")) extra+="Retry-After: 47\r\n";
                     if (m.equals("slow")) { data="ab".getBytes("UTF-8"); extra+="Content-Type: text/event-stream\r\n"; }
                     else extra+="Content-Type: application/json\r\n";
                     OutputStream out=socket.getOutputStream(); out.write(("HTTP/1.1 "+status+" Test\r\n"+extra+"Content-Length: "+data.length+"\r\nConnection: close\r\n\r\n").getBytes("UTF-8"));
@@ -63,6 +64,11 @@ public final class ZCodeGiftPolicyHttpTest {
             mode[0]="gzip"; check(ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false).refused,"gzip");
             ZCodeGift.resetCooldownForTests(); mode[0]="huge"; check(!ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false).refused,"truncated");
             mode[0]="redirect"; int before=calls.get(); check(ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false).status==302 && calls.get()==before+1,"redirect");
+            mode[0]="rate"; int beforeRate=calls.get();
+            ZCodeGift.Stream rate=ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false);
+            check(rate.status==429 && rate.sent && rate.retryAfterMillis==47000 && !rate.refused && !rate.edge
+                    && !rate.held && rate.classification==ZCodeRefusalPolicy.Kind.NONE && calls.get()==beforeRate+1,"plain 429 retry-after, no retries or refusal");
+            check(ZCodeGift.hold("token","device",null)==null,"plain 429 creates no refusal hold");
             mode[0]="edge"; check(ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false).edge,"edge");
             check(ZCodeGift.openStream("other","device","zai","m",request,"sess",3000,false).held,"edge network scope");
             ZCodeGift.resetCooldownForTests(); mode[0]="ok"; JSONObject empty=new JSONObject("{\"messages\":[]}");

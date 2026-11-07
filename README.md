@@ -8,7 +8,7 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.2.17（versionCode 23）
+- 当前版本：1.2.18（versionCode 24）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
@@ -53,6 +53,15 @@ MAGPIE_KEY_ALIAS=gaeul \
 网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
 
 Responses 兼容完整 Agent 请求中的 `user`、`stream_options`、`text.verbosity`、常见可空默认值及普通 reasoning／工具历史。未知顶层扩展字段在副本上忽略，类型错误仍返回 400；非空服务器端会话、模板和异步执行不会静默丢弃。跨协议展示选项降级通过兼容性响应头提示，详见 [字段兼容表](docs/responses-agent-compatibility.md)。
+
+## 1.2.18 供应商可靠性、端点探测与新图标
+
+- 补齐 Qoder 工具与实时流式链路，完善多家供应商账号连续性、模型目录提交和故障诊断。
+- 20 家供应商新增登录前匿名端点探测，检查固定官方地址，不使用凭据、不提交推理或改写路由。
+- 修复 ZCode gift 空预览误拦已有额度，以及 WorkBuddy 同步失败覆盖模型目录的问题。
+- 修复供应商二级页系统返回直接退出，更新桌面普通、圆形、自适应及面板图标。
+
+完整更新及验收边界见 [1.2.18 更新说明](docs/release-1.2.18.md)。
 
 ## 1.2.17 Trae CN 与供应商兼容性
 

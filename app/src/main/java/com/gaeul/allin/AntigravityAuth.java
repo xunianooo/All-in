@@ -984,8 +984,65 @@ public class AntigravityAuth {
         return "Google 返回 " + status + "：" + shortErr(text);
     }
 
+    public static final class TypedAuthException extends Exception {
+        public final int status;
+        public final boolean needsSignIn;
+        public final long retryAfterMs;
+        TypedAuthException(int status, boolean needsSignIn) {
+            super("Antigravity token refresh failed (HTTP " + status + ")");
+            this.status = status; this.needsSignIn = needsSignIn; this.retryAfterMs = 0L;
+        }
+    }
+    static final class CandidateResponse {
+        final int status;
+        final JSONObject body;
+        CandidateResponse(int status, JSONObject body) { this.status = status; this.body = body; }
+    }
+    interface CandidateTransport { CandidateResponse exchange(String refresh) throws Exception; }
+    private static CandidateResponse exchangeCandidate(String refresh) throws Exception {
+        String form = "grant_type=refresh_token" + "&refresh_token=" + enc(refresh)
+                + "&client_id=" + enc(CLIENT_ID) + "&client_secret=" + enc(CLIENT_SECRET);
+        Resp r = request(TOKEN_URL, "POST", null, "application/json",
+                "application/x-www-form-urlencoded", form.getBytes(StandardCharsets.UTF_8), 20000, 60000);
+        try {
+            JSONObject body;
+            try { body = new JSONObject(r.text()); } catch (Exception ignored) { body = new JSONObject(); }
+            return new CandidateResponse(r.status, body);
+        } finally { r.close(); }
+    }
+    public static JSONObject refreshCandidate(JSONObject account) throws Exception {
+        return refreshCandidate(account, AntigravityAuth::exchangeCandidate);
+    }
+    static JSONObject refreshCandidate(JSONObject account, CandidateTransport transport) throws Exception {
+        if (account == null) throw new TypedAuthException(0, false);
+        JSONObject copy;
+        synchronized (account) { copy = new JSONObject(account.toString()); }
+        String refresh = copy.optString("refresh", "");
+        if (refresh.isEmpty()) throw new TypedAuthException(0, true);
+        CandidateResponse response;
+        try { response = transport.exchange(refresh); }
+        catch (Exception e) { throw new TypedAuthException(0, false); }
+        int status = response == null ? 0 : response.status;
+        JSONObject body = response == null || response.body == null ? new JSONObject() : response.body;
+        String access = body.optString("access_token", "");
+        if (status < 200 || status >= 300 || access.isEmpty()) {
+            boolean signIn = status == 401 || (status == 400 && "invalid_grant".equals(body.optString("error", "")));
+            throw new TypedAuthException(status, signIn);
+        }
+        copy.put("access", access);
+        copy.put("token", access);
+        copy.put("expires", System.currentTimeMillis() + body.optLong("expires_in", 3600) * 1000L);
+        String rotated = body.optString("refresh_token", "");
+        if (!rotated.isEmpty()) copy.put("refresh", rotated);
+        return copy;
+    }
+
     /** 刷 access_token（Google refresh token 不轮换，不用写回 refresh） */
-    public static synchronized boolean refresh(JSONObject acc) {
+    public static boolean refresh(JSONObject acc) {
+        if (acc == null) return false;
+        synchronized (acc) { return refreshLocked(acc); }
+    }
+    private static boolean refreshLocked(JSONObject acc) {
         try {
             String refresh = acc.optString("refresh", "");
             if (refresh.isEmpty()) return false;
@@ -1011,6 +1068,9 @@ public class AntigravityAuth {
 
     /** 保证 access 至少还有 3 分钟，必要时刷新；失败抛异常 */
     public static String ensureToken(JSONObject acc) throws Exception {
+        synchronized (acc) { return ensureTokenLocked(acc); }
+    }
+    private static String ensureTokenLocked(JSONObject acc) throws Exception {
         String access = acc.optString("access", acc.optString("token", ""));
         long expires = acc.optLong("expires", 0L);
         boolean stale = access.isEmpty() || (expires > 0 && expires - System.currentTimeMillis() < 3 * 60 * 1000L);
@@ -1407,12 +1467,9 @@ public class AntigravityAuth {
 
     /** Antigravity 那个假 429 的识别（额度其实没动） */
     public static boolean looksTurnedAway(int status, String body) {
-        if (body == null) return false;
-        String low = body.toLowerCase();
-        if (status == 429 && (low.contains("resource has been exhausted") || low.contains("resource_exhausted"))) {
-            return true;
-        }
-        return low.contains("resource has been exhausted") && low.contains("check quota");
+        // RESOURCE_EXHAUSTED alone also describes actual quota or rate limits.
+        // No reliable distinguishing server marker is currently established.
+        return false;
     }
 
     // ---------------------------------------------------------------- 小工具

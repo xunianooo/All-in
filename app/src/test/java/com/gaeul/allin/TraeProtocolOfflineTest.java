@@ -30,7 +30,11 @@ public class TraeProtocolOfflineTest {
   String img=messages.getJSONObject(3).getJSONArray("content").getJSONObject(0).getJSONObject("image_url").getString("url");byte[] bytes=java.util.Base64.getDecoder().decode(img.substring(img.indexOf(',')+1));check(java.util.Arrays.equals(java.security.MessageDigest.getInstance("SHA-256").digest(bytes),java.security.MessageDigest.getInstance("SHA-256").digest("abc".getBytes("UTF-8"))));
   JSONObject base=new JSONObject("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"user\",\"content\":\"b\"}]}");
   check(TraeProtocol.request(base,"chat","m",100,"s",true,null).getJSONArray("messages").getJSONObject(0).getJSONArray("content").length()==2);
-  for(String field:new String[]{"stop","response_format","seed","logprobs","top_p"}) {JSONObject r=new JSONObject(base.toString()).put(field,1);fails(()->TraeProtocol.request(r,"chat","m",100,"s",true,null));}
+  for(String field:new String[]{"stop","response_format","logprobs"}) {JSONObject r=new JSONObject(base.toString()).put(field,1);fails(()->TraeProtocol.request(r,"chat","m",100,"s",true,null));}
+  JSONObject extra=new JSONObject(base.toString()).put("top_p",0.9).put("seed",2).put("presence_penalty",JSONObject.NULL).put("metadata",new JSONObject()).put("stream_options",new JSONObject().put("include_usage",true)).put("extension",new JSONObject());
+  extra.getJSONArray("messages").getJSONObject(0).put("metadata",new JSONObject());String extraBefore=extra.toString();JSONObject extraWire=TraeProtocol.request(extra,"chat","m",100,"s",true,null);check(!extraWire.has("top_p")&&!extraWire.has("extension")&&extraBefore.equals(extra.toString()));
+  fails(()->TraeProtocol.request(new JSONObject(base.toString()).put("top_p","bad"),"chat","m",100,"s",true,null));
+  fails(()->TraeProtocol.request(new JSONObject(base.toString()).put("stream_options",new JSONObject().put("include_usage","yes")),"chat","m",100,"s",true,null));
   check(TraeProtocol.request(new JSONObject(base.toString()).put("n",1),"chat","m",100,"s",true,null)!=null);fails(()->TraeProtocol.request(new JSONObject(base.toString()).put("n",2),"chat","m",100,"s",true,null));
   JSONObject cap=new JSONObject(base.toString()).put("max_tokens",200).put("temperature",0.5);JSONObject capped=TraeProtocol.request(cap,"chat","m",100,"s",true,null);check(capped.getInt("max_tokens")==100&&capped.getDouble("temperature")==0.5);
   fails(()->TraeProtocol.request(new JSONObject(base.toString()).put("max_tokens",1.1),"chat","m",100,"s",true,null));

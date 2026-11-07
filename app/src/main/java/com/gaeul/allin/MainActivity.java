@@ -975,13 +975,39 @@ public class MainActivity extends Activity {
         });
     }
 
+    private boolean panelBackPending;
+
     @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webView != null && webView.canGoBack()) {
-            webView.goBack();
-            return true;
+    public void onBackPressed() {
+        if (panelBackPending) return;
+        final WebView panel = webView;
+        if (panel == null || !bridgeAllowed()) {
+            finishBackNavigation();
+            return;
         }
-        return super.onKeyDown(keyCode, event);
+        final String page = currentPageUrl;
+        panelBackPending = true;
+        try {
+            panel.evaluateJavascript("(function(){try{return typeof window.allInHandleBack==='function'"
+                    + " && window.allInHandleBack()===true;}catch(e){return false;}})()",
+                    new ValueCallback<String>() {
+                        @Override public void onReceiveValue(String handled) {
+                            panelBackPending = false;
+                            // A navigation or destroyed activity makes this callback obsolete.
+                            if (isFinishing() || isDestroyed() || panel != webView
+                                    || !page.equals(currentPageUrl) || !bridgeAllowed()) return;
+                            if (!"true".equals(handled)) finishBackNavigation();
+                        }
+                    });
+        } catch (RuntimeException failure) {
+            panelBackPending = false;
+            finishBackNavigation();
+        }
+    }
+
+    private void finishBackNavigation() {
+        if (webView != null && webView.canGoBack()) webView.goBack();
+        else super.onBackPressed();
     }
 
     @Override

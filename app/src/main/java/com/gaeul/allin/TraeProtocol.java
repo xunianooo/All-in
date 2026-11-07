@@ -73,8 +73,24 @@ public final class TraeProtocol {
     private static void flush(JSONArray out,JSONArray images) throws Exception {if(images.length()>0){JSONArray c=new JSONArray();for(int i=0;i<images.length();i++)c.put(images.get(i));out.put(new JSONObject().put("role","user").put("content",c));while(images.length()>0)images.remove(0);}}
     public static JSONObject request(JSONObject openai,String function,String modelName,int maxOutput,String session,boolean sees,JSONArray levels) throws Exception {
         if(openai==null)throw bad("missing request");
-        Set<String> supported=new HashSet<>(Arrays.asList("model","messages","stream","max_tokens","max_completion_tokens","temperature","tools","tool_choice","parallel_tool_calls","reasoning_effort","reasoningEffort","n"));
-        for(Iterator<String> it=openai.keys();it.hasNext();){String key=it.next();if(!supported.contains(key))throw bad("unsupported request field: "+key);}
+        // Constructed wire body never copies extension fields. Reject known controls
+        // whose semantics cannot be represented; optional sampling hints use model defaults.
+        for(String key:new String[]{"response_format","stop","logprobs","top_logprobs","logit_bias","functions","function_call","modalities","audio","prediction","web_search_options"})
+            if(openai.has(key) && !openai.isNull(key)) throw bad("unsupported request field: "+key);
+        for(String key:new String[]{"top_p","seed","presence_penalty","frequency_penalty"}) {
+            Object v=openai.opt(key); if(v==null||v==JSONObject.NULL)continue;
+            if(!(v instanceof Number)||!Double.isFinite(((Number)v).doubleValue()))throw bad("invalid "+key);
+            double d=((Number)v).doubleValue();
+            if((key.equals("top_p")&&(d<0||d>1))||(key.equals("seed")&&d!=Math.rint(d))||((key.equals("presence_penalty")||key.equals("frequency_penalty"))&&(d< -2||d>2)))throw bad("invalid "+key);
+        }
+        Object user=openai.opt("user"), metadata=openai.opt("metadata"), streamOptions=openai.opt("stream_options");
+        if(user!=null&&user!=JSONObject.NULL&&!(user instanceof String))throw bad("invalid user");
+        if(metadata!=null&&metadata!=JSONObject.NULL&&!(metadata instanceof JSONObject))throw bad("invalid metadata");
+        if(streamOptions!=null&&streamOptions!=JSONObject.NULL){
+            if(!(streamOptions instanceof JSONObject))throw bad("invalid stream_options");
+            JSONObject options=(JSONObject)streamOptions; fields(options,"include_usage");
+            if(options.has("include_usage")&&!options.isNull("include_usage")&&!(options.opt("include_usage") instanceof Boolean))throw bad("invalid stream_options");
+        }
         if(openai.has("n") && (!(openai.opt("n") instanceof Number) || ((Number)openai.opt("n")).doubleValue()!=1))throw bad("only n=1 supported");
         if(openai.has("stream")&&!(openai.opt("stream") instanceof Boolean))throw bad("invalid stream");
         if(openai.has("temperature")&&(!(openai.opt("temperature") instanceof Number)||!Double.isFinite(((Number)openai.opt("temperature")).doubleValue())||((Number)openai.opt("temperature")).doubleValue()<0||((Number)openai.opt("temperature")).doubleValue()>2))throw bad("invalid temperature");
@@ -82,7 +98,7 @@ public final class TraeProtocol {
         if(openai.has("tools")&&!(openai.opt("tools") instanceof JSONArray))throw bad("invalid tools");
         if(openai.has("parallel_tool_calls")&&!(openai.opt("parallel_tool_calls") instanceof Boolean))throw bad("invalid parallel_tool_calls");
         if(session!=null&&session.length()>128)throw bad("session exceeds 128 characters");String model=required(openai,"model");if(function==null||function.trim().isEmpty())throw bad("missing function");JSONArray msgs=openai.optJSONArray("messages");if(msgs==null)throw bad("missing messages");JSONArray out=new JSONArray(), pending=new JSONArray();Set<String> calls=new HashSet<>(), results=new HashSet<>(), outstanding=new HashSet<>();
-        for(int i=0;i<msgs.length();i++){JSONObject m=msgs.getJSONObject(i);try{ImageContent.keys(m,"role","content","tool_calls","tool_call_id","reasoning_content","name");}catch(IllegalArgumentException ex){throw bad("unsupported message field");}String role=required(m,"role");if(m.has("reasoning_content")&&(!role.equals("assistant")||(m.opt("reasoning_content")!=JSONObject.NULL&&!(m.opt("reasoning_content") instanceof String))))throw bad("invalid reasoning content");if(role.equals("developer"))role="system";if(!Arrays.asList("system","user","assistant","tool").contains(role))throw bad("unsupported role");if(!role.equals("tool")){if(!outstanding.isEmpty()&&!(role.equals("assistant")&&out.length()>0&&out.getJSONObject(out.length()-1).optString("role").equals("assistant")))throw bad("incomplete tool results");flush(out,pending);}
+        for(int i=0;i<msgs.length();i++){JSONObject m=msgs.getJSONObject(i);try{ImageContent.keys(m,"role","content","tool_calls","tool_call_id","reasoning_content","name","metadata");}catch(IllegalArgumentException ex){throw bad("unsupported message field");}String role=required(m,"role");if(m.has("reasoning_content")&&(!role.equals("assistant")||(m.opt("reasoning_content")!=JSONObject.NULL&&!(m.opt("reasoning_content") instanceof String))))throw bad("invalid reasoning content");if(role.equals("developer"))role="system";if(!Arrays.asList("system","user","assistant","tool").contains(role))throw bad("unsupported role");if(!role.equals("tool")){if(!outstanding.isEmpty()&&!(role.equals("assistant")&&out.length()>0&&out.getJSONObject(out.length()-1).optString("role").equals("assistant")))throw bad("incomplete tool results");flush(out,pending);}
             JSONArray content=parts(m.opt("content"),sees,role.equals("tool")?pending:null);JSONObject n=new JSONObject().put("role",role).put("content",content);
             if(m.has("name")&&(!(m.opt("name") instanceof String)||!role.equals("tool")))throw bad("invalid tool message name");
             if(role.equals("tool")){String id=required(m,"tool_call_id");if(!outstanding.remove(id)||!results.add(id))throw bad("unmatched, out-of-run or duplicate tool result");n.put("tool_call_id",id);if(content.length()==0)n.put("content",new JSONArray().put(new JSONObject().put("type","text").put("text",pending.length()>0?"(the result's image follows)":"(no output)")));}

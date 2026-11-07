@@ -153,6 +153,7 @@ public class MiniMaxAuth {
 
     private static HttpURLConnection open(String urlStr) throws Exception {
         HttpURLConnection conn = NetworkPolicy.openHttp(urlStr);
+        conn.setInstanceFollowRedirects(false);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(20000);
         return conn;
@@ -280,6 +281,8 @@ public class MiniMaxAuth {
             String[] raw = new String[]{""};
             JSONObject j = postForm(ACCOUNT + "/oauth2/token", formBody, code, raw);
             if (j == null) {
+                if (code[0] >= 400 && code[0] != 408 && code[0] != 429 && code[0] < 500)
+                    return pollOutcome(f, code[0], null);
                 pr.status = "pending";
                 pr.error = "MiniMax 轮询返回非 JSON (HTTP " + code[0] + ")";
                 return pr;
@@ -304,31 +307,10 @@ public class MiniMaxAuth {
                 return pr;
             }
 
-            if ("authorization_pending".equals(err) || "pending".equals(status)) {
-                pr.status = "pending";
-                return pr;
-            }
-            if ("slow_down".equals(err) || "slow_down".equals(status)) {
-                f.intervalMs = f.intervalMs + 5000L;
-                pr.status = "slow_down";
-                return pr;
-            }
-            if ("access_denied".equals(err) || "denied".equals(status)) {
-                pr.status = "failed";
-                pr.error = "MiniMax 授权被拒绝";
-                return pr;
-            }
-            if ("expired_token".equals(err) || "expired".equals(status)) {
-                pr.status = "failed";
-                pr.error = "登录码已过期，请重新发起";
-                return pr;
-            }
-            pr.status = "pending";
-            pr.error = err;
-            return pr;
+            return pollOutcome(f, code[0], j);
         } catch (Exception e) {
             pr.status = "pending";   // 单次网络抖动不算失败
-            pr.error = e.getMessage() == null ? "轮询失败" : e.getMessage();
+            pr.error = "MiniMax 轮询暂时失败";
             return pr;
         }
     }
@@ -345,6 +327,32 @@ public class MiniMaxAuth {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /** Classifies non-token device-poll replies; never exposes upstream text. */
+    static PollResult pollOutcome(Flow flow, int httpStatus, JSONObject body) {
+        PollResult result = new PollResult();
+        String error = body == null ? "" : body.optString("error", "");
+        String status = body == null ? "" : body.optString("status", "");
+        if ("authorization_pending".equals(error) || "pending".equals(status)
+                || "authorization_pending".equals(status)) result.status = "pending";
+        else if ("slow_down".equals(error) || "slow_down".equals(status)) {
+            if (flow != null) flow.intervalMs += 5000L;
+            result.status = "slow_down";
+        } else if ("access_denied".equals(error) || "access_denied".equals(status) || "denied".equals(status)) {
+            result.status = "failed"; result.error = "MiniMax 授权被拒绝";
+        } else if ("expired_token".equals(error) || "expired_token".equals(status) || "expired".equals(status)) {
+            result.status = "failed"; result.error = "登录码已过期，请重新发起";
+        } else if (!error.isEmpty()) {
+            result.status = "failed"; result.error = "MiniMax 授权失败";
+        } else if (httpStatus == 408 || httpStatus == 429 || httpStatus >= 500) {
+            result.status = "pending"; result.error = "MiniMax 轮询暂时失败";
+        } else if (httpStatus >= 400) {
+            result.status = "failed"; result.error = "MiniMax 授权失败 (HTTP " + httpStatus + ")";
+        } else {
+            result.status = "failed"; result.error = "MiniMax 授权响应不完整";
+        }
+        return result;
     }
 
     /** 用 refresh_token 换新 access；返回 null 表示被登出（invalid_grant/400）或失败 */

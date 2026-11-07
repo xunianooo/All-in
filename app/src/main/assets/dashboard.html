@@ -1225,11 +1225,13 @@
             <span id="badge-count-workbuddy" class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 0.75rem; padding: 3px 10px; border-radius: 12px;; cursor: pointer;" onclick="manageProviderAccounts('workbuddy')">账号 1</span>
           </div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <button id="endpoint-probe-button-workbuddy" class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; color: #38bdf8;" onclick="providerEndpointProbe('workbuddy')">端点探测</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="triggerPlatformLogin('workbuddy')">登录账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="promptImportAccount('workbuddy')">导入账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('workbuddy')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('workbuddy')">移除账号</button>
           </div>
+          <div id="endpoint-probe-status-workbuddy" role="status" aria-live="polite" style="font-size:0.74rem;line-height:1.7;margin-bottom:12px;color:var(--text-muted);overflow-wrap:anywhere;">登录前可先探测网络；不使用账号、不调用模型。</div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-workbuddy" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <button class="btn btn-outline" style="font-size: 0.7rem; padding: 3px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="syncUniversalModels('workbuddy')">🔄 同步官方模型</button>
@@ -1252,11 +1254,13 @@
             <span id="badge-count-raccoon" class="badge" style="background: rgba(255, 255, 255, 0.08); color: var(--text-muted); font-size: 0.75rem; padding: 3px 10px; border-radius: 12px;; cursor: pointer;" onclick="manageProviderAccounts('raccoon')">账号 0</span>
           </div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <button id="endpoint-probe-button-raccoon" class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; color: #38bdf8;" onclick="providerEndpointProbe('raccoon')">端点探测</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="triggerPlatformLogin('raccoon')">登录账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="promptImportAccount('raccoon')">导入账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('raccoon')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('raccoon')">移除账号</button>
           </div>
+          <div id="endpoint-probe-status-raccoon" role="status" aria-live="polite" style="font-size:0.74rem;line-height:1.7;margin-bottom:12px;color:var(--text-muted);overflow-wrap:anywhere;">登录前可先探测网络；不使用账号、不调用模型。</div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-raccoon" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <button class="btn btn-outline" style="font-size: 0.7rem; padding: 3px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="syncUniversalModels('raccoon')">🔄 同步官方模型</button>
@@ -1264,6 +1268,22 @@
           <div id="models-tags-raccoon" style="display: flex; gap: 6px; flex-wrap: wrap; max-height: 128px; overflow-y: auto; padding: 2px;">
             <span style="font-size: 0.72rem; color: var(--text-muted);">⚡ 正在加载模型池...</span>
           </div>
+        </div>
+
+        <!-- WorkBuddy AI -->
+        <div class="card" style="border:1px solid var(--card-border);background:#131622;border-radius:16px;padding:18px 20px;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;"><span data-provider-logo="workbuddy-ai"></span><b>WorkBuddy AI</b><span id="badge-count-workbuddy-ai" class="badge" onclick="manageProviderAccounts('workbuddy-ai')">账号 0</span></div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;"><button class="btn btn-outline" onclick="triggerPlatformLogin('workbuddy-ai')">登录账号</button><button id="endpoint-probe-button-workbuddy-ai" class="btn btn-outline" onclick="providerEndpointProbe('workbuddy-ai')">端点探测</button></div>
+          <div id="endpoint-probe-status-workbuddy-ai" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div>
+          <div id="models-tags-workbuddy-ai" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+        </div>
+
+        <!-- Loomy -->
+        <div class="card" style="border:1px solid var(--card-border);background:#131622;border-radius:16px;padding:18px 20px;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;"><span data-provider-logo="loomy"></span><b>Loomy</b></div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;">现有手动 session 通道，未提供网页登录。</div>
+          <button id="endpoint-probe-button-loomy" class="btn btn-outline" onclick="providerEndpointProbe('loomy')">端点探测</button>
+          <div id="endpoint-probe-status-loomy" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div>
         </div>
 
         <!-- 3. 妙手 CatPaw -->
@@ -1284,6 +1304,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('catpaw')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('catpaw')">移除账号</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-catpaw" class="btn btn-outline" onclick="providerEndpointProbe('catpaw')">端点探测</button><div id="endpoint-probe-status-catpaw" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-catpaw" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <button class="btn btn-outline" style="font-size: 0.7rem; padding: 3px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="syncUniversalModels('catpaw')">🔄 同步官方模型</button>
@@ -1311,6 +1332,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('github-copilot')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('github-copilot')">移除账号</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-github-copilot" class="btn btn-outline" onclick="providerEndpointProbe('github-copilot')">端点探测</button><div id="endpoint-probe-status-github-copilot" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-github-copilot" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <button class="btn btn-outline" style="font-size: 0.7rem; padding: 3px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="syncUniversalModels('github-copilot')">🔄 同步官方模型</button>
@@ -1338,6 +1360,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('minimax-code')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('minimax-code')">移除账号</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-minimax-code" class="btn btn-outline" onclick="providerEndpointProbe('minimax-code')">端点探测</button><div id="endpoint-probe-status-minimax-code" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-minimax-code" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <span style="display: flex; gap: 6px; flex-shrink: 0;">
@@ -1368,6 +1391,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('deepseek_web')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('deepseek_web')">移除账号</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-deepseek_web" class="btn btn-outline" onclick="providerEndpointProbe('deepseek_web')">端点探测</button><div id="endpoint-probe-status-deepseek_web" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-deepseek_web" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">模型别名（网页 default / expert 模式）:</span>
           </div>
@@ -1393,6 +1417,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(124, 58, 237, 0.12); color: #c4b5fd;" onclick="zcodeLogin('zai')">🔑 登录 Z.ai</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(124, 58, 237, 0.12); color: #c4b5fd;" onclick="zcodeLogin('bigmodel')">🔑 登录 BigModel</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-zcode" class="btn btn-outline" onclick="providerEndpointProbe('zcode')">端点探测</button><div id="endpoint-probe-status-zcode" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="promptImportAccount('zcode')">导入账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('zcode')">导出账号</button>
@@ -1438,6 +1463,7 @@
           <div style="display: flex; gap: 8px; margin-bottom: 8px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(91, 141, 239, 0.12); color: #93c5fd;" onclick="qoderLogin()">🔑 登录 Qoder CN</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-qoder_cn" class="btn btn-outline" onclick="providerEndpointProbe('qoder_cn')">端点探测</button><div id="endpoint-probe-status-qoder_cn" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="promptImportAccount('qoder_cn')">导入账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('qoder_cn')">导出账号</button>
@@ -1478,6 +1504,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(59, 130, 246, 0.12); color: #93c5fd;" onclick="clineLogin()">🔑 登录 Cline (WorkOS)</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(139, 92, 246, 0.12); color: #c4b5fd;" onclick="promptAddClineKey()">➕ 添加 API Key</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-cline" class="btn btn-outline" onclick="providerEndpointProbe('cline')">端点探测</button><div id="endpoint-probe-status-cline" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="promptImportAccount('cline')">导入账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('cline')">导出账号</button>
@@ -1513,6 +1540,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(16, 163, 127, 0.12); color: #6ee7b7; border-color: rgba(16, 163, 127, 0.3);" onclick="codexOAuthLogin()">🔑 OAuth 授权登录</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(59, 130, 246, 0.12); color: #93c5fd;" onclick="promptImportCodexCredentials()">📋 导入 auth.json / Token</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-codex" class="btn btn-outline" onclick="providerEndpointProbe('codex')">端点探测</button><div id="endpoint-probe-status-codex" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="checkCodexUsage()">📊 查看用量与额度</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('codex')">导出账号</button>
@@ -1548,8 +1576,9 @@
           <div style="display: flex; gap: 8px; margin-bottom: 8px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(66, 133, 244, 0.12); color: #93c5fd; border-color: rgba(66, 133, 244, 0.3);" onclick="antigravityLogin()">🔑 Google 账号登录</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(56, 189, 248, 0.1); color: #7dd3fc;" onclick="syncUniversalModels('antigravity')">🔄 同步模型</button>
-            <button class="btn btn-outline" style="flex: 0 0 96px; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(148, 163, 184, 0.1); color: #cbd5e1;" onclick="antigravityProbe()">🔍 端点探测</button>
+            <button class="btn btn-outline" style="flex: 0 0 96px; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(148, 163, 184, 0.1); color: #cbd5e1;" onclick="antigravityProbe()">高级探测并切换端点</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-antigravity" class="btn btn-outline" onclick="providerEndpointProbe('antigravity')">端点探测</button><div id="endpoint-probe-status-antigravity" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" onclick="exportAccount('antigravity')">导出账号</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('antigravity')">移除账号</button>
@@ -1579,6 +1608,7 @@
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(99, 102, 241, 0.08); color: #a5b4fc;" disabled title="完整设备身份请使用加密备份">加密备份迁移</button>
             <button class="btn btn-outline" style="flex: 1; justify-content: center; border-radius: 20px; font-size: 0.75rem; padding: 7px 0; background: rgba(239, 68, 68, 0.08); color: #f87171; border-color: rgba(239, 68, 68, 0.25);" onclick="removeAccountAction('trae-cn')">移除账号</button>
           </div>
+          <div style="margin-bottom:12px;"><button id="endpoint-probe-button-trae-cn" class="btn btn-outline" onclick="providerEndpointProbe('trae-cn')">端点探测</button><div id="endpoint-probe-status-trae-cn" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div></div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
             <span id="model-pool-summary-trae-cn" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;">官方云端模型池:</span>
             <button class="btn btn-outline" style="font-size: 0.7rem; padding: 3px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="syncUniversalModels('trae-cn')">🔄 同步官方模型</button>
@@ -2481,6 +2511,72 @@
       }
     }
 
+
+    // Pre-login endpoint probes share the native gateway's network policy.
+    const endpointProbePending = new Set();
+    const ENDPOINT_PROBE_PROVIDERS = new Set(['workbuddy','workbuddy-ai','raccoon','catpaw','deepseek_web','zcode','qoder_cn','cline','codex','antigravity','trae-cn','github-copilot','minimax-code','deepseek','siliconflow','openai','anthropic','openrouter','tencent','loomy']);
+    const endpointProbeState = new Map();
+    const endpointProbeScope = '仅探测官方固定地址，不代表用户自定义 base、地区或动态项目的实际地址；不改变路由。';
+    function hydrateEndpointProbe(provider) {
+      const state = endpointProbeState.get(provider);
+      const box = document.getElementById('endpoint-probe-status-' + provider);
+      const button = document.getElementById('endpoint-probe-button-' + provider);
+      if (button) { button.disabled = !!(state && state.pending); button.textContent = state && state.pending ? '探测中…' : '端点探测'; }
+      if (box) {
+        if (state && state.html != null) box.innerHTML = state.html;
+        else box.textContent = state && state.pending ? '正在匿名探测官方固定地址，不改变路由…' : endpointProbeScope;
+      }
+    }
+    function endpointProbeControls(provider) {
+      return '<div style="margin:8px 0;"><button type="button" class="btn btn-outline" id="endpoint-probe-button-' + esc(provider) + '" onclick="providerEndpointProbe(\'' + jsAttr(provider) + '\')">端点探测</button><div role="status" aria-live="polite" id="endpoint-probe-status-' + esc(provider) + '">' + esc(endpointProbeScope) + '</div></div>';
+    }
+    function endpointProbeMarkup(result) {
+      if (!result || result.ok !== true) return '<span style="color:#f59e0b;">'
+        + esc(result && result.busy ? '探测繁忙：' + (result.error || '请稍后重试') : result && result.error || '未能完成探测，请稍后重试') + '</span><div>' + esc(endpointProbeScope) + '</div>';
+      const rows = Array.isArray(result.results) ? result.results : [];
+      const reached = rows.filter(r => r && r.reachable === true).length;
+      const warnings = rows.some(r => r && r.reachable === true && r.kind !== 'response' && r.kind !== 'auth_required');
+      const color = reached === 0 ? '#f87171' : reached !== rows.length || warnings ? '#f59e0b' : 'var(--accent)';
+      const mode = ({default:'跟随系统', direct:'直连', http_proxy:'HTTP 代理', blocked:'配置无效'})[result.networkMode] || '未知';
+      const lines = rows.map(r => {
+        if (!r || typeof r !== 'object') return '';
+        const code = Number(r.httpStatus), ms = Number(r.ms);
+        const good = r.reachable === true && (r.kind === 'response' || r.kind === 'auth_required');
+        const tone = r.reachable !== true ? '#f87171' : good ? 'var(--accent)' : '#f59e0b';
+        return '<div style="margin-top:8px;"><span style="color:' + tone + ';">'
+          + esc(r.label || r.role || '端点') + ' · ' + esc(r.note || '状态未知') + '</span>'
+          + '<div style="font-size:0.68rem;color:var(--text-muted);">'
+          + esc(r.method || '') + ' ' + esc(r.url || '')
+          + (Number.isFinite(code) && code > 0 ? ' · HTTP ' + esc(code) : '')
+          + (Number.isFinite(ms) && ms >= 0 ? ' · ' + esc(ms) + ' ms' : '') + '</div></div>';
+      });
+      return '<div style="color:' + color + ';">' + esc(result.summary || '探测完成') + '</div>'
+        + '<div>' + esc(endpointProbeScope) + (result.scopeNote ? ' ' + esc(result.scopeNote) : '') + '</div>' + '<div>网关出站：' + esc(mode) + '</div>' + lines.join('')
+        + '<div style="margin-top:8px;color:var(--text-muted);">仅检查网络与 HTTP 响应，不代表登录、额度或推理成功。'
+        + '401 表示需要认证；403、404、405 等请按各项提示判断。重定向不自动跟随。'
+        + '登录网页使用 WebView，网络路径可能与网关不同；可继续点击登录实际验证。</div>';
+    }
+    async function providerEndpointProbe(provider) {
+      if (!ENDPOINT_PROBE_PROVIDERS.has(provider) || endpointProbePending.has(provider)) return;
+      endpointProbePending.add(provider);
+      endpointProbeState.set(provider, {pending:true}); hydrateEndpointProbe(provider);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(API_BASE + '/api/providers/endpoint-probe', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({provider}), signal:controller.signal, cache:'no-store'
+        });
+        const result = await response.json();
+        if (!response.ok && !(result && result.busy)) throw new Error('gateway');
+        endpointProbeState.set(provider, {html:endpointProbeMarkup(result)});
+      } catch (e) {
+        const message = e && e.name === 'AbortError' ? '探测等待超时，请检查网关是否运行后重试。' : '探测请求失败，请检查网关是否运行后重试。';
+        endpointProbeState.set(provider, {html:esc(message) + '<div>' + esc(endpointProbeScope) + '</div>'});
+      } finally {
+        clearTimeout(timeout); endpointProbePending.delete(provider); hydrateEndpointProbe(provider);
+      }
+    }
 
     /**
      * Antigravity (Google Code Assist) 登录：
@@ -4501,6 +4597,23 @@
       providerView = view; providerDetail = id || ''; applyProviderView();
       if (view === 'list') { flushCommercialRender(); renderProviderList(); window.scrollTo(0, providerListScroll); } else window.scrollTo(0, 0);
     }
+    // Android system back must unwind in-page navigation before leaving the activity.
+    window.allInHandleBack = function () {
+      const visible = id => {
+        const node = document.getElementById(id);
+        return !!(node && !node.hidden && node.style.display && node.style.display !== 'none');
+      };
+      if (visible('dup-account-modal')) { closeDupModal(); return true; }
+      if (visible('inapp-login-modal')) { closeInAppLogin(); return true; }
+      if (visible('account-manage-modal')) { closeAccountModal(); return true; }
+      const providers = document.getElementById('tab-providers');
+      if (providers && providers.classList.contains('active') && providerView !== 'list') {
+        showProviderView('list');
+        return true;
+      }
+      return false;
+    };
+
     function applyProviderView() {
       const list = document.getElementById('provider-list-view'), sub = document.getElementById('provider-subview'), catalog = document.getElementById('provider-catalog');
       if (!list || !sub || !catalog) return;
@@ -4524,6 +4637,7 @@
       const c = providerCounts(p), desc = document.createElement('p'); desc.textContent = '账号 ' + c.accounts + ' · Key ' + c.keys + ' · 模型 ' + c.models + '（配置） · 已配置 · 未验证'; info.appendChild(desc);
       if (c.accounts) { const b = document.createElement('button'); b.className = 'btn btn-outline'; b.textContent = '管理账号'; b.onclick = () => manageProviderAccounts(p.id); info.appendChild(b); }
       const hasCard = cards && Array.from(cards.children).some(x => !x.hidden), hasCommercial = details && !details.hidden;
+      if (!hasCard && !hasCommercial && ['loomy','workbuddy-ai'].includes(p.id) && String(p.status || '').toLowerCase() !== 'placeholder') { const probe = document.createElement('div'); probe.innerHTML = endpointProbeControls(p.id); info.appendChild(probe); hydrateEndpointProbe(p.id); }
       if (!hasCard && !hasCommercial && Array.isArray(p.models)) { const models = document.createElement('p'); models.textContent = '模型：' + p.models.map(m => typeof m === 'string' ? m : (m && (m.name || m.id)) || '').filter(Boolean).join('、'); info.appendChild(models); }
       if (!hasCard && !hasCommercial) { const note = document.createElement('p'); note.textContent = '当前未提供该类型配置入口'; info.appendChild(note); }
     }
@@ -6346,7 +6460,7 @@
           ? m
           : (m.indexOf(pid + '/') === 0 ? m.slice(pid.length + 1) : m);
         const isGift = pid === 'zcode' && zcodeGiftModels.includes(String(short).toLowerCase());
-        html += '<option value="' + m + '">' + short + (isGift ? '  🎁赠送额度' : '') + '</option>';
+        html += '<option value="' + escapeHtml(m) + '">' + escapeHtml(short) + (isGift ? '  🎁赠送额度' : '') + '</option>';
       });
       sel.innerHTML = html;
       block.style.display = 'block';
@@ -6417,7 +6531,7 @@
         out.style.background = streamError || (note && note.color === '#f87171') ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)';
         out.style.border = streamError || (note && note.color === '#f87171') ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(16,185,129,0.3)';
         out.style.color = streamError || (note && note.color === '#f87171') ? '#fecaca' : '#d1fae5';
-        out.innerHTML = '<b>🌊 ' + model + '</b>'
+        out.innerHTML = '<b>🌊 ' + escapeHtml(model) + '</b>'
           + '<span style="font-size:0.7rem;color:#6b7280;"> · 首字 ' + Math.round(firstAt || 0)
           + 'ms · ' + chunks + ' chunk · ' + el + 'ms</span>'
           + '<div style="margin-top:8px;white-space:pre-wrap;line-height:1.7;">'
@@ -6468,7 +6582,7 @@
         if (status) {
           status.innerHTML = err
             ? '<span style="color:#f87171;">流式失败：' + escapeHtml(err) + '</span>'
-            : '<span style="color:#34d399;">🌊 ' + model + ' · ' + chunks + ' chunk · ' + total + 'ms</span>';
+            : '<span style="color:#34d399;">🌊 ' + escapeHtml(model) + ' · ' + chunks + ' chunk · ' + total + 'ms</span>';
         }
       };
 
@@ -6531,6 +6645,15 @@
       return esc(s);
     }
 
+    function modelPingFailureText(result) {
+      result = result || {};
+      const parts = [errText(result.error, '连接超时或未配置有效 Key')];
+      if (result.statusCode != null && result.statusCode !== '') parts.push('HTTP ' + result.statusCode);
+      if (result.errorKind) parts.push('类别: ' + result.errorKind);
+      if (result.retryAfter != null && result.retryAfter !== '') parts.push('重试等待: ' + result.retryAfter);
+      return parts.join(' · ');
+    }
+
     async function executeModelPingTest(targetModel, quiet) {
       const model = targetModel;
       if (!model) return false;
@@ -6538,13 +6661,13 @@
       const status = document.getElementById('ping-model-status');
       const out = document.getElementById('ping-test-output');
 
-      if (status) status.innerHTML = '<span style="color:#818cf8;">⏳ 正在测 ' + model + ' …</span>';
+      if (status) status.innerHTML = '<span style="color:#818cf8;">⏳ 正在测 ' + escapeHtml(model) + ' …</span>';
       if (out) {
         out.style.display = 'block';
         out.style.background = 'rgba(99, 102, 241, 0.1)';
         out.style.border = '1px solid rgba(99, 102, 241, 0.3)';
         out.style.color = '#a5b4fc';
-        out.innerHTML = '⏳ 正在向 <code>' + model + '</code> 发起端到端连通性测试...';
+        out.innerHTML = '⏳ 正在向 <code>' + escapeHtml(model) + '</code> 发起端到端连通性测试...';
       }
 
       const billTag = (data) => {
@@ -6567,31 +6690,31 @@
         const data = await res.json();
 
         if (data.ok) {
-          if (status) status.innerHTML = '<span style="color:#34d399;">✅ ' + model
-            + ' 连通正常 · ' + data.latencyMs + ' ms</span>' + billTag(data);
+          if (status) status.innerHTML = '<span style="color:#34d399;">✅ ' + escapeHtml(model)
+            + ' 连通正常 · ' + escapeHtml(data.latencyMs) + ' ms</span>' + billTag(data);
           if (out) {
             out.style.background = 'rgba(16, 185, 129, 0.10)';
             out.style.border = '1px solid rgba(16,185,129,0.4)';
             out.style.color = '#34d399';
-            out.innerHTML = '<b>✅ ' + model + '</b> · ' + data.latencyMs + ' ms' + billTag(data)
+            out.innerHTML = '<b>✅ ' + escapeHtml(model) + '</b> · ' + escapeHtml(data.latencyMs) + ' ms' + billTag(data)
               + '<br><span style="font-size:0.75rem;color:var(--text);">模型返回: "'
-              + (data.reply || 'OK') + '"</span>';
+              + escapeHtml(data.reply || 'OK') + '"</span>';
           }
           if (!quiet) showToast('✅ ' + model + ' 连通正常 (' + data.latencyMs + 'ms)');
           return true;
         }
 
-        const err = errText(data.error, '连接超时或未配置有效 Key');
-        if (status) status.innerHTML = '<span style="color:#f87171;">❌ ' + model + ' 失败</span>'
+        const err = modelPingFailureText(data);
+        if (status) status.innerHTML = '<span style="color:#f87171;">❌ ' + escapeHtml(model) + ' 失败</span>'
           + billTag(data);
         if (out) {
           out.style.background = 'rgba(239, 68, 68, 0.10)';
           out.style.border = '1px solid rgba(239,68,68,0.4)';
           out.style.color = '#f87171';
-          out.innerHTML = '<b>❌ ' + model + '</b>'
-            + (data.latencyMs ? ' · ' + data.latencyMs + ' ms' : '') + billTag(data)
-            + '<br><code style="word-break:break-all;">' + err + '</code>'
-            + (data.hint ? '<br><span style="font-size:0.74rem;color:var(--text-muted);">' + data.hint + '</span>' : '');
+          out.innerHTML = '<b>❌ ' + escapeHtml(model) + '</b>'
+            + (data.latencyMs ? ' · ' + escapeHtml(data.latencyMs) + ' ms' : '') + billTag(data)
+            + '<br><code style="word-break:break-all;">' + escapeHtml(err) + '</code>'
+            + (data.hint ? '<br><span style="font-size:0.74rem;color:var(--text-muted);">' + escapeHtml(data.hint) + '</span>' : '');
         }
         if (!quiet) showToast('❌ ' + model + ' 测试失败');
         return false;
@@ -6601,7 +6724,7 @@
           out.style.background = 'rgba(239, 68, 68, 0.10)';
           out.style.border = '1px solid rgba(239,68,68,0.4)';
           out.style.color = '#f87171';
-          out.innerHTML = '<b>❌ 网络请求异常:</b> ' + e.message;
+          out.innerHTML = '<b>❌ 网络请求异常:</b> ' + escapeHtml(errText(e, '未知错误'));
         }
         if (!quiet) showToast('❌ 网络请求异常');
         return false;
@@ -6821,12 +6944,14 @@
           '  </span>',
           '</div>',
           (p.baseUrl ? '<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:6px;">' + esc(p.baseUrl) + '</div>' : ''),
+          (ENDPOINT_PROBE_PROVIDERS.has(p.id) ? endpointProbeControls(p.id) : '<div style="font-size:0.74rem;color:var(--text-muted);">自定义地址暂未提供此探测</div>'),
           '<input type="password" placeholder="配置字符串 API Key (多个用逗号隔开)" value="' + esc(keys.filter(k => typeof k === 'string').join(',')) + '">' + (keys.some(k => k && typeof k === 'object') ? '<small>结构化 Key 保持原样，当前无法修改</small>' : '')
         ].join('');
         const input = row.querySelector('input');
         input.oninput = () => updateProviderKeys(p.id, input.value);
         input.onblur = () => setTimeout(flushCommercialRender, 0);
         c.appendChild(row);
+        if (ENDPOINT_PROBE_PROVIDERS.has(p.id)) hydrateEndpointProbe(p.id);
       });
     }
 

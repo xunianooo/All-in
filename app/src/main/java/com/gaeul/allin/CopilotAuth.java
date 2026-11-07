@@ -233,7 +233,46 @@ public class CopilotAuth {
     }
 
     /** GitHub user token → Copilot 短期 token */
-    public static Tok exchange(String githubToken) {
+    public static final class ExchangeResult {
+        public final Tok token;
+        public final int status;
+        ExchangeResult(Tok token, int status) { this.token = token; this.status = status; }
+        public boolean needsSignIn() { return status == 401; }
+    }
+    public static final class TypedAuthException extends Exception {
+        public final int status;
+        public final boolean needsSignIn;
+        public final long retryAfterMs;
+        TypedAuthException(int status, boolean needsSignIn) {
+            super("Copilot token exchange failed (HTTP " + status + ")");
+            this.status = status; this.needsSignIn = needsSignIn; this.retryAfterMs = 0L;
+        }
+    }
+    interface CandidateTransport { ExchangeResult exchange(String refresh) throws Exception; }
+    public static JSONObject refreshCandidate(JSONObject account) throws Exception {
+        return refreshCandidate(account, CopilotAuth::exchangeResult);
+    }
+    static JSONObject refreshCandidate(JSONObject account, CandidateTransport transport) throws Exception {
+        if (account == null) throw new TypedAuthException(0, false);
+        JSONObject copy;
+        synchronized (account) { copy = new JSONObject(account.toString()); }
+        String refresh = copy.optString("refresh", "");
+        if (refresh.isEmpty()) throw new TypedAuthException(0, true);
+        ExchangeResult result;
+        try { result = transport.exchange(refresh); }
+        catch (Exception e) { throw new TypedAuthException(0, false); }
+        if (result == null || result.token == null || result.token.token == null || result.token.token.isEmpty()
+                || result.status < 200 || result.status >= 300) {
+            int status = result == null ? 0 : result.status;
+            throw new TypedAuthException(status, status == 401);
+        }
+        copy.put("access", result.token.token);
+        copy.put("token", result.token.token);
+        copy.put("expires", result.token.expires);
+        return copy;
+    }
+    public static Tok exchange(String githubToken) { return exchangeResult(githubToken).token; }
+    public static ExchangeResult exchangeResult(String githubToken) {
         try {
             HttpURLConnection conn = open(COPILOT_TOKEN_URL);
             conn.setRequestMethod("GET");
@@ -243,18 +282,18 @@ public class CopilotAuth {
             conn.setRequestProperty("Editor-Plugin-Version", PLUGIN_VERSION);
             conn.setRequestProperty("Authorization", "Bearer " + githubToken);
             int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) { conn.disconnect(); return new ExchangeResult(null, code); }
             String raw = text(conn);
-            if (code < 200 || code >= 400) return null;
             JSONObject j = new JSONObject(raw);
             String token = j.optString("token", "");
             long expSec = j.optLong("expires_at", 0L);
-            if (token.isEmpty()) return null;
+            if (token.isEmpty()) return new ExchangeResult(null, code);
             Tok t = new Tok();
             t.token = token;
             t.expires = expSec > 0 ? expSec * 1000L : System.currentTimeMillis() + 25L * 60L * 1000L;
-            return t;
+            return new ExchangeResult(t, code);
         } catch (Exception e) {
-            return null;
+            return new ExchangeResult(null, 0);
         }
     }
 
@@ -280,6 +319,10 @@ public class CopilotAuth {
      * 彻底失败时回退旧 token（可能已过期，让上游 401 报出去）。
      */
     public static String ensureCopilotToken(JSONObject acc) {
+        if (acc == null) return null;
+        synchronized (acc) { return ensureCopilotTokenLocked(acc); }
+    }
+    private static String ensureCopilotTokenLocked(JSONObject acc) {
         if (acc == null) return null;
         String token = acc.optString("access", acc.optString("token", ""));
         long exp = acc.optLong("expires", 0L);

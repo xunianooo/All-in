@@ -32,6 +32,9 @@ public class DeepSeekToolBridgeTest {
   JSONObject unnamed=new JSONObject(req.toString());unnamed.getJSONArray("messages").getJSONObject(1).getJSONArray("tool_calls").getJSONObject(0).remove("id");DeepSeekToolBridge.analyze(unnamed);
   JSONObject emptyHistory=new JSONObject(req.toString());emptyHistory.getJSONArray("messages").put(new JSONObject().put("role","assistant").put("content","ordinary").put("tool_calls",new JSONArray()));DeepSeekToolBridge.analyze(emptyHistory);
   String [] malformedAttrs={"string=\"true\" string=\"false\"", "string=\"yes\"", "string=\"false\" junk"};for(String attr:malformedAttrs){String inputBad="<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"run\"><｜｜DSML｜｜ parameter name=\"x\" "+attr+">123</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>";Sink out=new Sink();DeepSeekToolBridge.StreamParser pp=p.newParser(out);for(int j=0;j<inputBad.length();j++)pp.feed(inputBad.substring(j,j+1));check(pp.finish().isEmpty() && out.text.toString().equals(inputBad));}
+  JSONObject startsAssistant=new JSONObject(req.toString()); JSONArray original=startsAssistant.getJSONArray("messages"); JSONArray starts=new JSONArray().put(original.getJSONObject(1)).put(original.getJSONObject(2)).put(original.getJSONObject(0)); startsAssistant.put("messages",starts);
+  String full=DeepSeekToolBridge.analyze(startsAssistant).buildPrompt(); check(full.contains("\"id\":\"c1\"")&&full.contains("Tool result (run, id=c1): done"));
+  JSONObject offset=new JSONObject(req.toString()); JSONArray offsetMessages=offset.getJSONArray("messages"); String tail=DeepSeekToolBridge.analyze(offset).buildPrompt(1); check(tail.contains("\"id\":\"c1\"")&&tail.contains("Tool result (run, id=c1): done"));
   System.out.println("DeepSeekToolBridge tests passed");
  }
 }
