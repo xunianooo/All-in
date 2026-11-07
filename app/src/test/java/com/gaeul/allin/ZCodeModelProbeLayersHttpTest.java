@@ -16,7 +16,15 @@ public final class ZCodeModelProbeLayersHttpTest {
         volatile String body="{\"content\":[{\"type\":\"text\",\"text\":\"2\"}]}";
         volatile int status=200;
         Fixture() throws IOException { super("127.0.0.1",0); start(SOCKET_READ_TIMEOUT,true); }
-        public Response serve(IHTTPSession s) { calls.incrementAndGet(); return newFixedLengthResponse(Response.Status.lookup(status),"application/json",body); }
+        public Response serve(IHTTPSession s) {
+            // Drain each POST before replying so keep-alive never treats the old
+            // body as another request (Windows and Unix buffer it differently).
+            try { if(s.getMethod()==Method.POST) s.parseBody(new java.util.HashMap<String,String>()); }
+            catch(Exception e) { throw new IllegalStateException("fixture request body unreadable",e); }
+            calls.incrementAndGet();
+            Response r=newFixedLengthResponse(Response.Status.lookup(status),"application/json",body);
+            r.addHeader("Connection","close"); return r;
+        }
         public void close() { stop(); }
     }
     static final class BrokenResponse implements AutoCloseable {
@@ -86,7 +94,7 @@ public final class ZCodeModelProbeLayersHttpTest {
                 gift.body="bad json "+JWT+DEVICE+"secret-body"; r=probe(gateway.getListeningPort()); check(!r.optBoolean("ok")&&r.optBoolean("executionUnknown")&&"schema".equals(r.optString("errorKind")),"bad json: "+r);
                 gift.body="{\"code\":123,\"error\":\"secret-body\",\"content\":[{\"type\":\"text\",\"text\":\"2\"}]}"; r=probe(gateway.getListeningPort()); check(!r.optBoolean("ok"),"business error: "+r);
                 gift.body="{\"content\":[{\"type\":\"text\",\"text\":\"2\"}]}"; r=probe(gateway.getListeningPort()); check(r.optBoolean("ok")&&"gift".equals(r.optString("billing")),"gift success: "+r);
-                check(gift.calls.get()==3 && plan.calls.get()==1,"no replay");
+                check(gift.calls.get()==3 && plan.calls.get()==1,"no replay: gift="+gift.calls.get()+", plan="+plan.calls.get());
                 for (String bad : new String[]{"{\"success\":false,\"content\":[{\"type\":\"text\",\"text\":\"2\"}]}",
                         "{\"data\":{\"error\":\"failed\"},\"content\":[{\"type\":\"text\",\"text\":\"2\"}]}",
                         "{\"content\":[{\"type\":\"text\",\"text\":123}]}"}) {
