@@ -787,7 +787,7 @@ public class GatewayServer extends NanoHTTPD {
     }
     private volatile ProviderBillingTransport billingTransport;
     void setProviderBillingTransportForTest(ProviderBillingTransport transport) { billingTransport = transport; }
-    private static final java.util.Set<String> billingBusy = java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+    private static final java.util.concurrent.ConcurrentHashMap<String,Object> billingBusy = new java.util.concurrent.ConcurrentHashMap<>();
 
     private JSONObject fetchBillingAllowance(String provider, JSONObject account) throws Exception {
         ProviderBillingTransport fixture = billingTransport;
@@ -948,12 +948,16 @@ public class GatewayServer extends NanoHTTPD {
             if(!provider.optBoolean("enabled",true)) return errorResponse(403,"Provider disabled");
             snapshot=new JSONObject(provider.toString());
         }
-        if(!billingBusy.add(id)) return errorResponse(409,"Provider busy");
+        final Object billingOperation=new Object();
+        if(billingBusy.putIfAbsent(id,billingOperation)!=null) return errorResponse(409,"Provider busy");
         java.util.concurrent.FutureTask<JSONObject> task=new java.util.concurrent.FutureTask<>(() -> billingSnapshot(id,snapshot));
-        try { new Thread(scopedTask(() -> { try { task.run(); } finally { billingBusy.remove(id); } }),"provider-billing").start(); }
-        catch(Throwable failure) { billingBusy.remove(id); return errorResponse(503,"Billing unavailable"); }
+        try { new Thread(scopedTask(() -> { try { task.run(); } finally { billingBusy.remove(id,billingOperation); } }),"provider-billing").start(); }
+        catch(Throwable failure) { billingBusy.remove(id,billingOperation); return errorResponse(503,"Billing unavailable"); }
         try {
             JSONObject result=task.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            // Future completion precedes the worker thread's outer finally. Release
+            // only this operation now; its late cleanup cannot clear a newer operation.
+            billingBusy.remove(id,billingOperation);
             synchronized(this) {
                 JSONObject current=getProviderById(id);
                 if(current==null || !current.optBoolean("enabled",true)) return errorResponse(409,"Provider changed");

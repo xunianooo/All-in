@@ -79,6 +79,11 @@ public final class ProviderBillingGatewayHttpTest {
         JSONObject diff=new JSONObject(ResponsesGatewayOfflineTest.read(server.serve(request("127.0.0.1","GET","fixture-auth","qoder_cn")).getData())).getJSONObject("models").getJSONObject("m");
         check(!diff.has("billing") && diff.getString("billingScope").equals("account") && diff.getJSONArray("billingVariants").length()==2,"account rates differ");
         check(diff.getJSONArray("billingVariants").getJSONObject(0).getJSONObject("billing").getLong("observedAt")==12345,"old timestamp preserved");
+        // Consecutive calls must not race the previous worker's cleanup.
+        for(int repeat=0;repeat<50;repeat++) {
+            NanoHTTPD.Response next=server.serve(request("127.0.0.1","GET","fixture-auth","qoder_cn"));
+            check(next.getStatus().getRequestStatus()==200,"completed operation left busy: "+repeat);
+        }
         m2.put("price_factor",1); JSONObject same=new JSONObject(ResponsesGatewayOfflineTest.read(server.serve(request("127.0.0.1","GET","fixture-auth","qoder_cn")).getData())).getJSONObject("models").getJSONObject("m");
         check(same.getJSONObject("billing").getDouble("value")==1 && !same.has("billingScope"),"same rate");
         JSONObject refreshBefore=new JSONObject().put("id","a").put("token","old").put("refresh","old-r").put("name","same");
