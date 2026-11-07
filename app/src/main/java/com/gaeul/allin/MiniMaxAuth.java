@@ -44,6 +44,40 @@ import java.security.SecureRandom;
  */
 public class MiniMaxAuth {
 
+    /** Read-only CN M Plan quota; endpoint and headers follow the MiniMax plugin. */
+    interface AllowanceConnectionFactory { HttpURLConnection open(String url) throws Exception; }
+    static JSONObject fetchAllowance(String access, String group) throws Exception {
+        return fetchAllowance(access,group, url -> NetworkPolicy.openHttp(url));
+    }
+    static JSONObject fetchAllowance(String access, String group, AllowanceConnectionFactory factory) throws Exception {
+        if (access == null || access.isEmpty()) throw new java.io.IOException("MiniMax access unavailable");
+        String[] paths={"/backend/account/token_plan/remains_percent", "/v1/api/openplatform/coding_plan/remains"};
+        for(int i=0;i<paths.length;i++) {
+            if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
+            HttpURLConnection conn=null;
+            try {
+                conn=factory.open("https://www.minimaxi.com"+paths[i]);
+                conn.setRequestMethod("GET"); conn.setInstanceFollowRedirects(false);
+                conn.setConnectTimeout(i==0?3000:5000); conn.setReadTimeout(i==0?3000:5000);
+                conn.setRequestProperty("Accept","application/json");
+                conn.setRequestProperty("Authorization","Bearer "+access);
+                if(group!=null && !group.isEmpty()) conn.setRequestProperty("X-Group-Id",group);
+                if(conn.getResponseCode()!=200) continue;
+                try(InputStream in=conn.getInputStream(); java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()) {
+                    byte[] buf=new byte[4096]; int n,total=0;
+                    while((n=in.read(buf))!=-1) { if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
+                        total+=n; if(total>1024*1024) throw new java.io.IOException("quota response too large"); out.write(buf,0,n); }
+                    JSONObject body=new JSONObject(out.toString("UTF-8"));
+                    JSONObject status=body.optJSONObject("base_resp");
+                    if((status==null || status.optInt("status_code",0)==0) && body.optJSONArray("model_remains")!=null && body.optJSONArray("model_remains").length()>0) return body;
+                }
+            } catch(java.io.InterruptedIOException interrupted) { if(Thread.currentThread().isInterrupted()) throw interrupted; }
+              catch(Exception ignored) { }
+            finally { if(conn!=null) conn.disconnect(); }
+        }
+        throw new java.io.IOException("MiniMax quota unavailable");
+    }
+
     public static final String PROVIDER = "minimax-code";
     public static final String SITE = "cn";
     public static final String LANG = "zh";
@@ -673,52 +707,94 @@ public class MiniMaxAuth {
         }
     }
 
-    /** 模型目录：{llm}/mavis/api/v1/models?region=cn&buildEnv=prod */
+    /** Fetch the official catalog; callers may also collect its model metadata. */
     public static java.util.List<String> models(String access) throws Exception {
-        java.util.List<String> out = new java.util.ArrayList<String>();
-        HttpURLConnection conn = open(LLM + "/mavis/api/v1/models?region=" + SITE + "&buildEnv=prod");
-        conn.setRequestMethod("GET");
-        conn.setRequestProperty("Accept", "application/json");
-        if (access != null && !access.isEmpty()) {
-            conn.setRequestProperty("Authorization", "Bearer " + access);
+        return models(access, null);
+    }
+
+    public static java.util.List<String> models(String access, JSONObject metaOut) throws Exception {
+        String url = LLM + "/mavis/api/v1/models?region=" + SITE + "&buildEnv=prod";
+        boolean authenticated = access != null && !access.isEmpty();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpURLConnection conn = null;
+            try {
+                conn = open(url);
+                conn.setInstanceFollowRedirects(false);
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("Accept", "application/json");
+                if (attempt == 0 && authenticated) conn.setRequestProperty("Authorization", "Bearer " + access);
+                int code = conn.getResponseCode();
+                if (attempt == 0 && authenticated && (code == 401 || code == 403)) continue;
+                if (code < 200 || code >= 300) throw new java.io.IOException("MiniMax 模型目录 HTTP " + code);
+                try (InputStream in = conn.getInputStream(); java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+                    byte[] buf = new byte[8192]; int n, total = 0;
+                    while ((n = in.read(buf)) != -1) {
+                        total += n;
+                        if (total > 2 * 1024 * 1024) throw new java.io.IOException("MiniMax model catalog too large");
+                        bytes.write(buf, 0, n);
+                    }
+                    return parseModelCatalog(new JSONObject(bytes.toString("UTF-8")), metaOut);
+                }
+            } finally { if (conn != null) conn.disconnect(); }
         }
-        int code = conn.getResponseCode();
-        String raw;
-        if (code == 401 || code == 403) {
-            // 无凭据时上游也会给一份公开目录，按插件语义再来一次
-            HttpURLConnection anon = open(LLM + "/mavis/api/v1/models?region=" + SITE + "&buildEnv=prod");
-            anon.setRequestMethod("GET");
-            anon.setRequestProperty("Accept", "application/json");
-            code = anon.getResponseCode();
-            InputStream is2 = (code >= 200 && code < 400) ? anon.getInputStream() : anon.getErrorStream();
-            raw = read(is2);
-        } else {
-            InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
-            raw = read(is);
-        }
-        if (code < 200 || code >= 400) {
-            throw new Exception("MiniMax 模型目录 HTTP " + code + ": " + raw.trim());
-        }
-        JSONObject j = new JSONObject(raw);
-        JSONArray provs = j.optJSONArray("providers");
-        for (int i = 0; provs != null && i < provs.length(); i++) {
-            JSONObject p = provs.optJSONObject(i);
-            if (p == null || !"minimax".equals(p.optString("providerId", ""))) continue;
-            JSONObject cfg = p.optJSONObject("config");
-            JSONObject ms = cfg == null ? null : cfg.optJSONObject("models");
-            if (ms == null) continue;
+        throw new java.io.IOException("MiniMax model catalog unavailable");
+    }
+
+    /** Parse completely before publishing metadata so malformed catalogs cannot partially update it. */
+    static java.util.List<String> parseModelCatalog(JSONObject catalog, JSONObject metaOut) throws Exception {
+        if (catalog == null || !(catalog.opt("providers") instanceof JSONArray)) throw new java.io.IOException("Invalid MiniMax catalog");
+        JSONArray providers = catalog.getJSONArray("providers");
+        java.util.List<String> ids = new java.util.ArrayList<String>();
+        JSONObject staged = new JSONObject();
+        boolean found = false;
+        for (int i = 0; i < providers.length(); i++) {
+            JSONObject provider = providers.optJSONObject(i);
+            if (provider == null) throw new java.io.IOException("Invalid MiniMax provider");
+            if (!"minimax".equals(provider.optString("providerId", ""))) continue;
+            found = true;
+            JSONObject cfg = provider.optJSONObject("config");
+            JSONObject entries = cfg == null ? null : cfg.optJSONObject("models");
+            if (entries == null || (cfg.has("model_order") && !(cfg.opt("model_order") instanceof JSONArray))) throw new java.io.IOException("Invalid MiniMax models");
+            java.util.Iterator<String> keys = entries.keys();
+            while (keys.hasNext()) {
+                String id = keys.next();
+                JSONObject entry = entries.optJSONObject(id);
+                if (id.trim().isEmpty() || entry == null) throw new java.io.IOException("Invalid MiniMax model");
+                JSONObject meta = new JSONObject();
+                if (entry.has("name") && !entry.isNull("name")) {
+                    if (!(entry.opt("name") instanceof String)) throw new java.io.IOException("Invalid MiniMax model name");
+                    meta.put("name", entry.getString("name"));
+                }
+                if (entry.has("limit") && !entry.isNull("limit")) {
+                    JSONObject limit = entry.optJSONObject("limit");
+                    if (limit == null) throw new java.io.IOException("Invalid MiniMax model limit");
+                    JSONObject copiedLimit = new JSONObject();
+                    for (String field : new String[]{"context", "output"}) {
+                        if (!limit.has(field) || limit.isNull(field)) continue;
+                        Object value = limit.opt(field);
+                        if (!(value instanceof Number)) throw new java.io.IOException("Invalid MiniMax model limit");
+                        double n = ((Number)value).doubleValue();
+                        if (Double.isNaN(n) || Double.isInfinite(n) || n <= 0 || n != Math.rint(n) || n > Integer.MAX_VALUE) throw new java.io.IOException("Invalid MiniMax model limit");
+                        copiedLimit.put(field, ((Number)value).longValue());
+                        meta.put("context".equals(field) ? "contextWindow" : "maxOutput", ((Number)value).longValue());
+                    }
+                    if (copiedLimit.length() > 0) meta.put("limit", copiedLimit);
+                }
+                if (!staged.has(id)) staged.put(id, meta);
+            }
             JSONArray order = cfg.optJSONArray("model_order");
             for (int k = 0; order != null && k < order.length(); k++) {
-                String id = order.optString(k, "");
-                if (!id.isEmpty() && ms.has(id) && !out.contains(id)) out.add(id);
+                Object value = order.opt(k);
+                if (!(value instanceof String)) throw new java.io.IOException("Invalid MiniMax model order");
+                String id = (String)value;
+                if (!id.isEmpty() && entries.has(id) && !ids.contains(id)) ids.add(id);
             }
-            java.util.Iterator<String> it = ms.keys();
-            while (it.hasNext()) {
-                String id = it.next();
-                if (!id.trim().isEmpty() && !out.contains(id)) out.add(id);
-            }
+            keys = entries.keys();
+            while (keys.hasNext()) { String id = keys.next(); if (!ids.contains(id)) ids.add(id); }
         }
-        return out;
+        if (!found) throw new java.io.IOException("MiniMax provider missing");
+        if (metaOut != null) for (String id : ids) metaOut.put(id, new JSONObject(staged.getJSONObject(id).toString()));
+        return ids;
     }
 
     static int timezoneOffsetSeconds(java.util.TimeZone timezone, long timestampMillis) {

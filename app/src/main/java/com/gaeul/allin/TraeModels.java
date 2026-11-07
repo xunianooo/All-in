@@ -40,12 +40,12 @@ public final class TraeModels {
             if(success==0) { if(last!=null)throw last; throw new TraeAuth.Failure("invalid_response"); }
             lists=new JSONObject().put("function_configs",all);
         }
-        return parse(lists);
+        return parse(lists, System.currentTimeMillis());
     }
     private static boolean allowed(String f) { for(String s:FUNCTIONS)if(s.equals(f))return true; return false; }
     private static boolean valid(JSONObject m) { String id=m.optString("config_name"); JSONObject d=m.optJSONObject("display_config"); return !id.isEmpty()&&!id.toLowerCase(java.util.Locale.ROOT).startsWith("custom_model") && (m.optString("usage").isEmpty()||"chat_completion".equals(m.optString("usage"))) && !Boolean.FALSE.equals(m.opt("config_switch")) && !Boolean.TRUE.equals(m.opt("is_custom_model")) && !(d!=null&&Boolean.TRUE.equals(d.opt("is_custom_model"))) && !Boolean.TRUE.equals(m.opt("is_invisible_to_user")); }
     private static JSONObject detail(JSONObject m,String suffix) { JSONArray a=m.optJSONArray("model_detail_list"); if(a!=null)for(int i=0;i<Math.min(a.length(),LIMIT);i++){JSONObject d=a.optJSONObject(i);if(d!=null&&d.optString("model_name").endsWith(suffix))return d;}return null; }
-    private static JSONObject metadata(JSONObject m,String fn,JSONObject d) throws Exception {
+    private static JSONObject metadata(JSONObject m,String fn,JSONObject d,long catalogObservedAt) throws Exception {
         JSONObject out=new JSONObject().put("function",fn).put("maxSupported",false); if(d!=null){out.put("modelName",d.optString("model_name")); int n=positiveInt(d.opt("max_tokens"));if(n>0)out.put("maxOutput",n);}
         JSONObject display=m.optJSONObject("display_config"); Object multi=m.opt("multimodal"); if(!(multi instanceof Boolean)&&display!=null)multi=display.opt("multimodal"); if(multi instanceof Boolean)out.put("multimodal",multi);
         JSONObject levels=m.optJSONObject("reasoning_effort_config"); if(levels!=null){JSONArray options=levels.optJSONArray("options");if(options!=null){JSONArray wire=new JSONArray();for(int i=0;i<Math.min(options.length(),LIMIT);i++){Object value=options.opt(i);if(value instanceof String&&!((String)value).trim().isEmpty())wire.put(value);}out.put("levels",wire);}}
@@ -53,7 +53,9 @@ public final class TraeModels {
         if(window==0){JSONObject sizes=m.optJSONObject("context_window_size"); Object v=sizes==null?null:sizes.opt("max");if(v instanceof JSONArray)v=((JSONArray)v).opt(0);window=positiveInt(v);}
         if(window==0&&ctx!=null)window=positiveInt(ctx.opt("max")); if(window==0)window=positiveInt(m.opt("prompt_max_tokens")); if(window>0)out.put("contextWindow",window);
         String name=display==null?"":display.optString("display_name");if(name.isEmpty())name=m.optString("display_name",m.optString("display_model_name")); if(!name.isEmpty())out.put("displayName",name);
-        return out;
+        if(m.has("display_contact_config")) out.put("display_contact_config",m.opt("display_contact_config"));
+        if(catalogObservedAt>0)out.put("catalogObservedAt",catalogObservedAt);
+        return ModelBillingMetadata.normalize("trae",out);
     }
     private static int positiveInt(Object value) {
         if (!(value instanceof Number)) return 0;
@@ -71,7 +73,8 @@ public final class TraeModels {
         return false;
     }
     private static final class Entry { final String fn; final JSONObject model; Entry(String fn,JSONObject model){this.fn=fn;this.model=model;} }
-    public static JSONObject parse(JSONObject batch) throws Exception {
+    public static JSONObject parse(JSONObject batch) throws Exception { return parse(batch,0); }
+    private static JSONObject parse(JSONObject batch,long catalogObservedAt) throws Exception {
         JSONArray groups=groups(batch); if(groups==null)throw new TraeAuth.Failure("invalid_response");
         List<Entry> entries=new ArrayList<>(); int scanned=0; boolean recognized=false;
         for(String fn:FUNCTIONS) for(int g=0;g<Math.min(groups.length(),LIMIT)&&scanned<LIMIT;g++) {
@@ -91,7 +94,7 @@ public final class TraeModels {
             if(!selected.containsKey(id)||score>scores.get(id)){selected.put(id,e);scores.put(id,score);}
         }
         JSONArray models=new JSONArray(); JSONObject meta=new JSONObject();
-        for(Map.Entry<String,Entry> e:selected.entrySet()){Entry v=e.getValue();models.put(e.getKey());meta.put(e.getKey(),metadata(v.model,v.fn,detail(v.model,"__dev")));}
+        for(Map.Entry<String,Entry> e:selected.entrySet()){Entry v=e.getValue();models.put(e.getKey());meta.put(e.getKey(),metadata(v.model,v.fn,detail(v.model,"__dev"),catalogObservedAt));}
         return new JSONObject().put("models",models).put("modelMeta",meta);
     }
 }

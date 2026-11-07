@@ -106,7 +106,11 @@ public final class ProviderCatalogCommitOfflineTest {
             check(f.provider().getJSONArray("accounts").getJSONObject(0).getString("access").equals("new-token"), "lost refreshed token");
             check(f.provider().getJSONArray("keys").getString(0).equals("new-key"), "lost refreshed key");
             check(canonical(f.provider().getJSONArray("models")).equals(canonical(f.models)), "models not committed");
-            check(canonical(f.provider().getJSONObject("modelMeta")).equals(canonical(f.metadata)), "metadata not committed");
+            JSONObject committedMeta=new JSONObject(f.provider().getJSONObject("modelMeta").toString());
+            long observed=committedMeta.getJSONObject("new-model").getLong("catalogObservedAt");
+            check(observed>0 && observed<=System.currentTimeMillis(),"catalog timestamp missing");
+            committedMeta.getJSONObject("new-model").remove("catalogObservedAt");
+            check(canonical(committedMeta).equals(canonical(f.metadata)), "metadata not committed");
             check(f.config().getJSONObject("unrelated").getString("concurrent").equals("preserved"), "lost unrelated update");
             JSONObject onDisk = new JSONObject(new String(Files.readAllBytes(f.file.toPath()), StandardCharsets.UTF_8));
             check(canonical(onDisk).equals(canonical(f.config())), "actual file differs from published config");

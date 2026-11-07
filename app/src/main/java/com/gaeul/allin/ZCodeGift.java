@@ -319,7 +319,7 @@ final class ZCodeGift {
     static class Answer {
         int status; String body = ""; boolean refused, edge, held, sent;
         long retryAfterMillis; ZCodeRefusalPolicy.Kind classification = ZCodeRefusalPolicy.Kind.NONE;
-        String error = "";
+        String error = ""; String transportKind;
     }
     static Answer send(String jwt, String device, String site, String model,
                        JSONObject body, String session, int timeoutMs) {
@@ -331,12 +331,12 @@ final class ZCodeGift {
         Answer out = new Answer();
         out.status=stream.status; out.body=stream.errorBody; out.refused=stream.refused; out.edge=stream.edge;
         out.held=stream.held; out.sent=stream.sent; out.retryAfterMillis=stream.retryAfterMillis;
-        out.classification=stream.classification; out.error=stream.error;
+        out.classification=stream.classification; out.error=stream.error; out.transportKind=stream.transportKind;
         if (stream.is != null) try {
             byte[] bytes = readBounded(stream.is, 8 * 1024 * 1024);
             if (bytes == null) { out.status=-1; out.body=""; out.error="Response exceeds local limit"; }
             else out.body = new String(bytes, "UTF-8");
-        } catch (Exception ignored) { out.status=-1; out.error="ZCode transport failed"; }
+        } catch (Exception e) { out.status=-1; out.error="ZCode transport failed"; out.transportKind=FailureLayers.transportName(e); }
         finally { try { stream.is.close(); } catch (Exception ignored) {} }
         return out;
     }
@@ -366,11 +366,41 @@ final class ZCodeGift {
         return out;
     }
 
+    /**
+     * 覆盖某个型号的赠送额度还剩多少。返回 -1 表示读不出来（没有覆盖它的桶，
+     * 或桶里没有 remaining 字段）；调用方必须把 -1 当"未知"，不能当成 0。
+     *
+     * 摘要里的 remainingUnits 是全部未过期桶的合计，不区分型号。用它回答
+     * "测这个型号时还剩多少"，会把别的型号的额度算进来；这里按能力标签取
+     * 覆盖该型号的桶，读不出来就不写，不拿合计冒充。
+     */
+    static long remainingFor(JSONObject summary, String model) {
+        JSONArray buckets = summary == null ? null : summary.optJSONArray("buckets");
+        if (buckets == null) return -1;
+        String want = "model:" + (model == null ? "" : model);
+        long total = -1;
+        for (int i = 0; i < buckets.length(); i++) {
+            JSONObject b = buckets.optJSONObject(i);
+            if (b == null) continue;
+            JSONArray caps = b.optJSONArray("capabilities");
+            boolean covers = false;
+            for (int k = 0; caps != null && k < caps.length(); k++) {
+                if (want.equalsIgnoreCase(caps.optString(k, ""))) { covers = true; break; }
+            }
+            if (!covers) continue;
+            if (!b.has("remaining") || b.isNull("remaining")) return -1;
+            long rem = b.optLong("remaining", -1);
+            if (rem < 0) return -1;
+            total = total < 0 ? rem : total + rem;
+        }
+        return total;
+    }
+
     static class Stream {
         HttpURLConnection conn; int status; InputStream is; String errorBody = "";
         boolean refused, edge, held, sent; long retryAfterMillis;
         ZCodeRefusalPolicy.Kind classification = ZCodeRefusalPolicy.Kind.NONE;
-        String error = "";
+        String error = ""; String transportKind;
     }
     private static byte[] readBounded(InputStream in, int limit) throws java.io.IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] buf = new byte[4096]; int n;
@@ -485,7 +515,7 @@ final class ZCodeGift {
                 }
                 @Override public void close() { release(); }
             }; owned=true; return out;
-        } catch (Exception e) { out.status=-1; out.error="ZCode transport failed"; return out; }
+        } catch (Exception e) { out.status=-1; out.error="ZCode transport failed"; out.transportKind=FailureLayers.transportName(e); return out; }
         finally { if (!owned) { if (ctx != null && conn != null) ctx.detach(conn); if (conn != null) conn.disconnect();
             if (ctx != null && cleanup != null) ctx.removeCleanup(cleanup); if (ticket != null) ticket.close(); out.conn=null; } }
     }

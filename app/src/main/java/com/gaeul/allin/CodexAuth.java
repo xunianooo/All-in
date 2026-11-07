@@ -6,6 +6,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -570,37 +571,30 @@ public class CodexAuth {
         }
 
         HttpURLConnection conn = openHttp(WHAM_USAGE);
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(10000);
-        conn.setRequestProperty("Authorization", "Bearer " + info.accessToken);
-        if (!info.accountId.isEmpty()) {
-            conn.setRequestProperty("chatgpt-account-id", info.accountId);
-        }
-        conn.setRequestProperty("originator", ORIGINATOR);
-        conn.setRequestProperty("User-Agent", USER_AGENT);
-        conn.setRequestProperty("Accept", "application/json");
-
-        int code = conn.getResponseCode();
-        if (code == 401 && !info.refreshToken.isEmpty() && !retried) {
-            // 只重试一次：刷新成功但上游仍 401（账号被禁 / scope 变更）时不要再递归
-            refreshToken(info, "unauthorized_recovery");
-            return fetchUsage(info, true);
-        }
-
-        InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buf = new byte[2048];
-        int n;
-        while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-        is.close();
-
-        String str = bos.toString("UTF-8");
-        if (code != 200) {
-            throw new Exception("获取 Codex 用量失败 (" + code + "): " + str);
-        }
-
-        return new JSONObject(str);
+        try {
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10000); conn.setReadTimeout(10000);
+            conn.setRequestProperty("Authorization", "Bearer " + info.accessToken);
+            if (!info.accountId.isEmpty()) conn.setRequestProperty("chatgpt-account-id", info.accountId);
+            conn.setRequestProperty("originator", ORIGINATOR);
+            conn.setRequestProperty("User-Agent", USER_AGENT);
+            conn.setRequestProperty("Accept", "application/json");
+            int code = conn.getResponseCode();
+            if (code == 401 && !info.refreshToken.isEmpty() && !retried) {
+                conn.disconnect();
+                refreshToken(info, "unauthorized_recovery");
+                return fetchUsage(info, true);
+            }
+            if (code != 200) throw new IOException("Codex usage HTTP " + code);
+            try (InputStream is = conn.getInputStream(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                byte[] buf = new byte[2048]; int n, total = 0;
+                while ((n = is.read(buf)) != -1) {
+                    total += n; if (total > 1024 * 1024) throw new IOException("Codex usage response too large");
+                    bos.write(buf, 0, n);
+                }
+                return new JSONObject(bos.toString("UTF-8"));
+            }
+        } finally { conn.disconnect(); }
     }
 
     /**
@@ -687,12 +681,23 @@ public class CodexAuth {
     /**
      * 同步在线可用模型列表
      */
+    interface CatalogConnectionFactory { HttpURLConnection open(String url) throws Exception; }
+
+    /** Compatibility entry point for callers that explicitly accept the bundled snapshot. */
     public static List<String> syncModels(SignInInfo info) {
+        List<String> list = syncModelsStrict(info);
+        if (list.isEmpty()) Collections.addAll(list, DEFAULT_MODELS);
+        return list;
+    }
+
+    /** Empty means no live catalog; callers must preserve their existing catalog. */
+    public static List<String> syncModelsStrict(SignInInfo info) {
+        return syncModelsStrict(info, CodexAuth::openHttp);
+    }
+
+    static List<String> syncModelsStrict(SignInInfo info, CatalogConnectionFactory factory) {
         List<String> list = new ArrayList<>();
-        if ("apikey".equals(info.authMode)) {
-            Collections.addAll(list, DEFAULT_MODELS);
-            return list;
-        }
+        if (info == null || "apikey".equals(info.authMode)) return list;
 
         try {
             if (info.expiresAt > 0 && (info.expiresAt - System.currentTimeMillis() < 5 * 60 * 1000L) && !info.refreshToken.isEmpty()) {
@@ -703,7 +708,8 @@ public class CodexAuth {
             }
 
             String urlStr = CODEX_MODELS + "?client_version=" + URLEncoder.encode(CODEX_VERSION, "UTF-8");
-            HttpURLConnection conn = openHttp(urlStr);
+            HttpURLConnection conn = factory.open(urlStr);
+            conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
@@ -728,8 +734,9 @@ public class CodexAuth {
                 if (arr != null) {
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject m = arr.optJSONObject(i);
+                        if (m == null || !(m.opt("slug") instanceof String) || m.optString("slug", "").trim().isEmpty()) return new ArrayList<String>();
                         if (m != null) {
-                            String slug = m.optString("slug", "");
+                            String slug = m.optString("slug", "").trim();
                             String vis = m.optString("visibility", "");
                             if (!slug.isEmpty() && !"hide".equalsIgnoreCase(vis)) {
                                 if (!list.contains(slug)) list.add(slug);
@@ -740,11 +747,9 @@ public class CodexAuth {
             }
         } catch (RefreshCommitFailure failure) { throw failure; }
         catch (Throwable ignored) {
+            return new ArrayList<String>();
         }
 
-        if (list.isEmpty()) {
-            Collections.addAll(list, DEFAULT_MODELS);
-        }
         return list;
     }
 

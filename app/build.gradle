@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 24
-        versionName '1.2.18'
+        versionCode 25
+        versionName '1.2.19'
     }
 
     signingConfigs {
@@ -91,7 +91,20 @@ def offlineTestMains = [
         'com.gaeul.allin.ProviderTokenCandidateOfflineTest',
         'com.gaeul.allin.TokenPersistenceGatewayOfflineTest',
         'com.gaeul.allin.AccountSelectionGatewayOfflineTest',
+        'com.gaeul.allin.FailureLayersOfflineTest',
+        'com.gaeul.allin.ProviderLayersOfflineTest',
+        'com.gaeul.allin.CatalogReadIntegrityHttpTest',
+        'com.gaeul.allin.StandardModelCatalogHttpTest',
+        'com.gaeul.allin.QoderCatalogIntegrityHttpTest',
+        'com.gaeul.allin.QoderCatalogGatewayHttpTest',
+        'com.gaeul.allin.ClineUsageLayersHttpTest',
+        'com.gaeul.allin.ZCodeModelProbeLayersHttpTest',
         'com.gaeul.allin.ModelProbeDiagnosticsHttpTest',
+        'com.gaeul.allin.ModelBillingMetadataOfflineTest',
+        'com.gaeul.allin.MiniMaxModelMetadataOfflineTest',
+        'com.gaeul.allin.ProviderAllowanceOfflineTest',
+        'com.gaeul.allin.CatPawCatalogHttpTest',
+        'com.gaeul.allin.ProviderBillingGatewayHttpTest',
         'com.gaeul.allin.QoderPolicyOfflineTest',
         'com.gaeul.allin.QoderProtocolOfflineTest',
         'com.gaeul.allin.QoderTextToolsOfflineTest',

@@ -2345,11 +2345,16 @@
               const cfg = cfgMap[p.providerId] || {};
               const name = esc(cfg.name || p.providerId);
               const rate = p.successRate;
-              const rateColor = rate >= 95 ? '#34d399' : (rate >= 80 ? '#fbbf24' : '#f87171');
+              // 没有成功率不等于成功率低：缺数据时给中性色和一个破折号，
+              // 以前 undefined 两次比较都为假，直接渲染成红色「成功率 undefined%」。
+              const rateKnown = typeof rate === 'number' && Number.isFinite(rate);
+              const rateColor = !rateKnown ? 'var(--text-muted)'
+                : (rate >= 95 ? '#34d399' : (rate >= 80 ? '#fbbf24' : '#f87171'));
               return '<div style="background:rgba(255,255,255,0.03);border:1px solid var(--card-border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">'
                 + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
                 + '<b style="font-size:0.85rem;color:#fff;">' + name + '</b>'
-                + '<span style="font-size:0.72rem;color:' + rateColor + ';">成功率 ' + rate + '%</span>'
+                + '<span style="font-size:0.72rem;color:' + rateColor + ';">成功率 '
+                + (rateKnown ? rate + '%' : '—') + '</span>'
                 + '</div>'
                 + '<div style="font-size:0.72rem;color:var(--text-muted);line-height:1.7;">'
                 + '请求 ' + p.requests + ' 次 · Token ' + fmtTok(p.tokens)
@@ -2362,6 +2367,11 @@
         }
       } catch (e) {
         console.error('loadQuota error', e);
+        // 静默失败会让面板保留上次的数字，看起来一切都好
+        const provEl = document.getElementById('quota-providers');
+        if (provEl) provEl.innerHTML = '<div style="font-size:0.8rem;color:#f59e0b;">'
+          + esc('用量数据没读到（' + errText(e, '未知错误') + '）；上面的数字不是最新的，别据此判断用量。')
+          + '</div>';
       }
     }
 
@@ -2534,6 +2544,13 @@
       if (!result || result.ok !== true) return '<span style="color:#f59e0b;">'
         + esc(result && result.busy ? '探测繁忙：' + (result.error || '请稍后重试') : result && result.error || '未能完成探测，请稍后重试') + '</span><div>' + esc(endpointProbeScope) + '</div>';
       const rows = Array.isArray(result.results) ? result.results : [];
+      if (rows.length === 0) {
+        // 一条结果都没有是"没测到"，与"全都不可达"是两件事
+        return '<span style="color:#f59e0b;">' + esc('未返回任何端点结果（未知）')
+          + (result.summary ? esc(' · ' + result.summary) : '') + '</span>'
+          + '<div>' + esc(endpointProbeScope) + '</div>'
+          + '<div style="margin-top:8px;color:var(--text-muted);">没有结果不代表不可达；请稍后重试或检查网络。</div>';
+      }
       const reached = rows.filter(r => r && r.reachable === true).length;
       const warnings = rows.some(r => r && r.reachable === true && r.kind !== 'response' && r.kind !== 'auth_required');
       const color = reached === 0 ? '#f87171' : reached !== rows.length || warnings ? '#f59e0b' : 'var(--accent)';
@@ -2595,11 +2612,11 @@
         const res = await fetch(API_BASE + '/api/antigravity/probe');
         j = await res.json();
       } catch (e) {
-        if (box) box.innerHTML = '<span style="color:#f87171;">探测请求失败：' + e.message + '</span>';
+        if (box) box.innerHTML = '<span style="color:#f87171;">探测请求失败：' + esc(errText(e, '未知错误')) + '</span>';
         return;
       }
       if (!j || !j.ok) {
-        if (box) box.innerHTML = '<span style="color:#f87171;">探测失败：' + ((j && j.error) || '未知错误') + '</span>';
+        if (box) box.innerHTML = '<span style="color:#f87171;">探测失败：' + esc((j && j.error) || '未知错误') + '</span>';
         return;
       }
 
@@ -2607,26 +2624,26 @@
       const color = verdict === 'ok' ? '#34d399' : (verdict === 'degraded' ? '#fbbf24' : '#f87171');
       const label = verdict === 'ok' ? '双端点正常' : (verdict === 'degraded' ? '单端点可用（已自动切换）' : '两端点均不可达');
 
-      const rows = (j.results || []).map(r => {
+      const rows = (Array.isArray(j.results) ? j.results : []).filter(r => r && typeof r === 'object').map(r => {
         const roleText = r.role === 'chat' ? '聊天/模型' : '取项目';
         const host = String(r.name || '').replace('https://', '');
         if (r.alive) {
           const ms = r.ms >= 0 ? ' · ' + (r.ms / 1000).toFixed(1) + 's' : '';
-          return '<span style="color:#34d399;">✓ ' + host + '</span>'
-            + '<span style="color:#6b7280;"> · ' + roleText + ' · HTTP ' + r.status + ms + '</span>'
-            + '<br><span style="color:#4b5563; font-size:0.68rem;">&nbsp;&nbsp;' + (r.note || '') + '</span>';
+          return '<span style="color:#34d399;">✓ ' + esc(host) + '</span>'
+            + '<span style="color:#6b7280;"> · ' + roleText + ' · HTTP ' + esc(r.status == null ? '未知' : r.status) + ms + '</span>'
+            + '<br><span style="color:#4b5563; font-size:0.68rem;">&nbsp;&nbsp;' + esc(r.note || '') + '</span>';
         }
-        return '<span style="color:#f87171;">✗ ' + host + '</span>'
-          + '<span style="color:#6b7280;"> · ' + roleText + ' · 试了 ' + (r.tries || 0) + ' 次</span>'
-          + '<br><span style="color:#b91c1c; font-size:0.68rem;">&nbsp;&nbsp;' + (r.reason || '失败') + '</span>';
+        return '<span style="color:#f87171;">✗ ' + esc(host) + '</span>'
+          + '<span style="color:#6b7280;"> · ' + roleText + ' · 试了 ' + esc(r.tries == null ? 0 : r.tries) + ' 次</span>'
+          + '<br><span style="color:#b91c1c; font-size:0.68rem;">&nbsp;&nbsp;' + esc(r.reason || '失败') + '</span>';
       });
 
       if (box) {
         box.innerHTML = '<div style="margin-bottom:8px;">'
           + '<span style="color:' + color + '; font-weight:600;">' + label + '</span><br>'
-          + '<span style="color:#9ca3af;">' + (j.summary || '') + '</span>'
-          + (j.changed ? '<br><span style="color:#38bdf8; font-size:0.68rem;">已写入配置：chat=' + (j.chatBase || '')
-              + ' · load=' + (j.loadBase || '') + '</span>' : '')
+          + '<span style="color:#9ca3af;">' + esc(j.summary || '') + '</span>'
+          + (j.changed ? '<br><span style="color:#38bdf8; font-size:0.68rem;">已写入配置：chat=' + esc(j.chatBase || '')
+              + ' · load=' + esc(j.loadBase || '') + '</span>' : '')
           + '</div>'
           + rows.join('<div style="height:6px;"></div>')
           + '<div style="margin-top:8px; color:#4b5563; font-size:0.66rem; line-height:1.6;">'
@@ -2768,7 +2785,7 @@
         const res = await fetch(API_BASE + '/api/codex/usage');
         const d = await res.json();
         if (!res.ok) {
-          if (box) box.innerHTML = '<span style="color:#f87171;">读取用量失败: ' + (d.error || res.statusText) + '</span>';
+          if (box) box.innerHTML = '<span style="color:#f87171;">读取用量失败: ' + esc(d.error || res.statusText) + '</span>';
           return;
         }
         let txt = '<b>Codex 订阅状态</b>：Plan: <span style="color:#10a37f;">' + (d.plan_type || 'chatgpt') + '</span>';
@@ -4636,10 +4653,66 @@
       const heading = document.createElement('h3'); heading.textContent = p.name || p.id; info.appendChild(heading);
       const c = providerCounts(p), desc = document.createElement('p'); desc.textContent = '账号 ' + c.accounts + ' · Key ' + c.keys + ' · 模型 ' + c.models + '（配置） · 已配置 · 未验证'; info.appendChild(desc);
       if (c.accounts) { const b = document.createElement('button'); b.className = 'btn btn-outline'; b.textContent = '管理账号'; b.onclick = () => manageProviderAccounts(p.id); info.appendChild(b); }
+      renderProviderBilling(info, p.id);
       const hasCard = cards && Array.from(cards.children).some(x => !x.hidden), hasCommercial = details && !details.hidden;
       if (!hasCard && !hasCommercial && ['loomy','workbuddy-ai'].includes(p.id) && String(p.status || '').toLowerCase() !== 'placeholder') { const probe = document.createElement('div'); probe.innerHTML = endpointProbeControls(p.id); info.appendChild(probe); hydrateEndpointProbe(p.id); }
       if (!hasCard && !hasCommercial && Array.isArray(p.models)) { const models = document.createElement('p'); models.textContent = '模型：' + p.models.map(m => typeof m === 'string' ? m : (m && (m.name || m.id)) || '').filter(Boolean).join('、'); info.appendChild(models); }
       if (!hasCard && !hasCommercial) { const note = document.createElement('p'); note.textContent = '当前未提供该类型配置入口'; info.appendChild(note); }
+    }
+    const providerBillingCache = Object.create(null);
+    function billingSnapshot(previous, data, now) {
+      if (!data || data.ok !== true || !Array.isArray(data.accounts) || !data.models || typeof data.models !== 'object' || Array.isArray(data.models))
+        return previous ? {...previous, stale:true} : {accounts:[], models:{}, stale:true, observedAt:now};
+      const accounts = data.accounts.map(a => {
+        if (!a || a.accountId == null) return null;
+        return {...a, snapshotAt:a.errorKind ? null : now, stale:!!a.errorKind};
+      }).filter(Boolean);
+      return {accounts, models:data.models, observedAt:now, stale:false};
+    }
+    const billingRequests = Object.create(null);
+    async function refreshProviderBilling(id) {
+      const request = billingRequests[id] = (billingRequests[id] || 0) + 1;
+      const previous = providerBillingCache[id];
+      try {
+        if (['qoder_cn','workbuddy','raccoon','trae-cn','catpaw','antigravity'].includes(id)) {
+          const sync = await fetch(API_BASE + '/api/auth/' + encodeURIComponent(id) + '/sync-models', id === 'trae-cn' ? {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'} : undefined);
+          const catalog = await sync.json();
+          if (!sync.ok || catalog.ok !== true) throw new Error('catalog refresh failed');
+          await loadConfig();
+        }
+        const r = await fetch(API_BASE + '/api/providers/billing?provider=' + encodeURIComponent(id));
+        const data = await r.json();
+        if (!r.ok || data.provider !== id) throw new Error('invalid response');
+        if (billingRequests[id] !== request) return;
+        providerBillingCache[id] = billingSnapshot(previous, data, Date.now());
+      } catch (_) { if (billingRequests[id] !== request) return; providerBillingCache[id] = billingSnapshot(previous, null, Date.now()); }
+      if (providerView === 'detail' && providerDetail === id) applyProviderView();
+      renderAllModelsTags();
+    }
+    function renderProviderBilling(parent, id) {
+      const button = document.createElement('button'); button.className = 'btn btn-outline'; button.textContent = '刷新倍率与额度';
+      button.onclick = () => refreshProviderBilling(id); parent.appendChild(button);
+      const box = document.createElement('div'); parent.appendChild(box);
+      const snapshot = providerBillingCache[id];
+      const heading = document.createElement('p'); heading.textContent = '账户共享额度（按账号分别展示）' + (snapshot && snapshot.stale ? ' · 刷新失败，显示上次快照' : ''); box.appendChild(heading);
+      if (!snapshot) { const note = document.createElement('p'); note.textContent = '点击刷新查看'; box.appendChild(note); return; }
+      if (!snapshot.accounts.length) { const note = document.createElement('p'); note.textContent = snapshot.stale ? '刷新失败，暂无快照' : '暂无账户额度'; box.appendChild(note); }
+      snapshot.accounts.forEach(a => {
+        const row = document.createElement('p'), allowance = a.allowance || {};
+        const parts = [String(a.name || a.accountId)];
+        if (a.stale || snapshot.stale) parts.push('上次快照');
+        const direct = billingAllowanceText(allowance); if (direct) parts.push('剩余 ' + direct);
+        (Array.isArray(allowance.windows) ? allowance.windows : []).forEach(w => {
+          if (!w) return;
+          const amount = billingAllowanceText(w, allowance.unit);
+          if (amount) parts.push(String(w.name || '额度') + (w.scope === 'model' ? '（模型额度）' : '') + ' 剩 ' + amount + (w.resetAt ? ' · 重置 ' + String(w.resetAt) : ''));
+        });
+        const observed = allowance.observedAt || a.snapshotAt;
+        if (observed) { const date = new Date(observed); if (!isNaN(date.getTime())) parts.push('时间 ' + date.toLocaleString()); }
+        else if (a.stale || snapshot.stale) parts.push('时间未知');
+        if (a.errorKind) parts.push('刷新失败：' + String(a.errorKind));
+        row.textContent = parts.join(' · '); box.appendChild(row);
+      });
     }
     function renderProviderList() {
       const box = document.getElementById('provider-list'), search = document.getElementById('provider-search'); if (!box || !search) return;
@@ -4832,9 +4905,13 @@
         const res = await fetch(API_BASE + '/api/auth/' + providerId + '/sync-models', providerId === 'trae-cn' ? {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'} : undefined);
         const data = await res.json();
         if (data.ok) {
-          showToast(providerId === 'trae-cn' ? ('同步模型 ' + (data.count == null ? (Array.isArray(data.models) ? data.models.length : 0) : data.count) + ' 个' + (data.partial ? '（部分结果）' : '')) : ('🎉 ' + data.message));
+          showToast(providerId === 'trae-cn' ? ('同步模型 ' + (data.count == null ? (Array.isArray(data.models) ? data.models.length : 0) : data.count) + ' 个' + (data.partial ? '（部分结果）' : '')) : ('🎉 ' + (data.message || ('同步模型 ' + (data.count == null ? (Array.isArray(data.models) ? data.models.length : 0) : data.count) + ' 个'))));
           await loadConfig();
           renderAllModelsTags();
+          if (providerId === 'qoder_cn') {
+            const box = document.getElementById('qoder-status');
+            if (box) box.textContent = data.message || '目录已同步';
+          }
         } else {
           // 自动模式下不弹窗：这类供应商没有公开模型接口，保留预置清单即可
           if (silent) return;
@@ -4853,72 +4930,125 @@
       return String(r);
     }
 
+    function modelDisplayName(modelId, meta) {
+      for (const key of ['display_name', 'displayName', 'name']) {
+        const value = meta && meta[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      return String(modelId);
+    }
+
+    function billingNumber(v) {
+      if ((typeof v !== 'number' && typeof v !== 'string') || (typeof v === 'string' && !v.trim())) return null;
+      const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null;
+    }
+    function billingUnit(unit) {
+      const labels = {gift_units:'赠送单位', USD:'美元', usd:'美元', credits:'积分', request:'次数', requests:'次数'};
+      return labels[unit] || (typeof unit === 'string' ? unit : '');
+    }
+    function billingAllowanceText(allowance, fallbackUnit) {
+      if (!allowance) return '';
+      const remaining = billingNumber(allowance.remaining), percent = billingNumber(allowance.remainingPercent);
+      if (remaining !== null) { const unit = billingUnit(allowance.unit || fallbackUnit); return String(remaining) + (unit ? ' ' + unit : ''); }
+      return percent !== null && percent <= 100 ? String(percent) + '%' : '';
+    }
+    function billingFreshness(item) {
+      if (!item || !(item.staleKnown === true || item.source === 'saved_catalog')) return '';
+      const date = item.observedAt != null ? new Date(item.observedAt) : null;
+      return '上次记录 · ' + (date && !isNaN(date.getTime()) ? date.toLocaleString() : '时间未知');
+    }
+    function billingVariantsView(variants) {
+      if (!Array.isArray(variants) || !variants.length) return null;
+      const rows = variants.map(v => {
+        const b = v && v.billing, n = b && (!b.kind || b.kind === 'multiplier') && (!b.scope || b.scope === 'model') ? billingNumber(b.value) : null;
+        return {name:String(v && (v.name || v.accountId) || '账号'), value:n, billing:b};
+      });
+      if (rows.length < 2 || rows.every(r => r.value !== null && r.value === rows[0].value)) return null;
+      return {text:'因账号而异', tone:'info', title:rows.map(r => r.name + '：' + (r.value === null ? '未知' : r.value === 0 ? '免费' : '×' + fmtMultiplier(r.value)) + (billingFreshness(r.billing) ? '（' + billingFreshness(r.billing) + '）' : '')).join('\n')};
+    }
+    function billingScheduleRate(activity, now) {
+      const off = activity && activity.enable === true && activity.data && activity.data.off_peak;
+      if (!off || !Array.isArray(off.time_windows) || !off.time_windows.length) return null;
+      const base = billingNumber(off.before_consumption_rate), discounted = billingNumber(off.after_consumption_rate);
+      if (base === null || discounted === null) return {unknown:true};
+      try {
+        const zone = off.time_zone || 'Asia/Shanghai';
+        const parts = new Intl.DateTimeFormat('en-US', {timeZone:zone, weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).formatToParts(new Date(now));
+        const get = key => parts.find(x => x.type === key).value;
+        const day = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].indexOf(get('weekday')) + 1;
+        const minute = Number(get('hour')) * 60 + Number(get('minute'));
+        let active = false;
+        for (const w of off.time_windows) {
+          const a = w && w.start_minute, b = w && w.end_minute, days = w && w.weekdays;
+          if (!Array.isArray(days) || !Number.isInteger(a) || !Number.isInteger(b) || a < 0 || a > 1440 || b < 0 || b > 1440 || a === b || !days.every(d => Number.isInteger(d) && d >= 1 && d <= 7)) return {unknown:true};
+          if (a < b ? days.includes(day) && minute >= a && minute < b : (days.includes(day) && minute >= a) || (days.includes(day === 1 ? 7 : day - 1) && minute < b)) active = true;
+        }
+        return {value:active ? discounted : base, original:active && base > discounted ? base : null};
+      } catch (_) { return {unknown:true}; }
+    }
+    function modelBillingView(pid, modelId, meta, now) {
+      meta = meta || {}; const raw = meta.raw && typeof meta.raw === 'object' ? meta.raw : meta;
+      let billing = raw.billing || meta.billing;
+      let value = billing && billing.kind === 'multiplier' && billing.scope === 'model' ? billingNumber(billing.value) : null;
+      let original = billing && billingNumber(billing.original);
+      const schedule = raw.billingSchedule || meta.billingSchedule;
+      if (schedule && schedule.activity) {
+        const scheduled = billingScheduleRate(schedule.activity, now == null ? Date.now() : now);
+        if (!scheduled || scheduled.unknown) return {text:'活动倍率未知', tone:'unknown', title:'活动时间或倍率无法确认'};
+        value = scheduled.value; original = scheduled.original;
+      } else if (!billing && (pid === 'qoder_cn' || pid === 'qoder')) {
+        const price = raw.price_factor ?? raw.priceFactor;
+        value = typeof price === 'number' ? billingNumber(price) : null;
+        const promotion = raw.promotion || raw.prommotion;
+        if (value !== null && promotion && promotion.active === true) {
+          const before = billingNumber(promotion.before_promotion_price_factor ?? promotion.beforePromotionPriceFactor);
+          const discount = billingNumber(promotion.discount_factor ?? promotion.discountFactor);
+          if (before !== null && before > 0) { if (value === 0) value = discount === null ? null : before * discount; original = before; }
+        } else original = billingNumber(raw.original_price_factor ?? raw.originalPriceFactor);
+      }
+      if (!billing && value === null && !schedule && !(pid === 'qoder_cn' && (raw.price_factor != null || raw.priceFactor != null))) value = billingNumber(meta.multiplier);
+      if (value !== null) return {text:value === 0 ? '免费' : '×' + fmtMultiplier(value), tone:value === 0 ? 'free' : 'rate', original:original !== null && original > value ? '×' + fmtMultiplier(original) : null, title:billing && billing.source ? '来源：' + billing.source : ''};
+      const allowance = meta.allowance || raw.allowance;
+      if (allowance && allowance.kind === 'allowance' && allowance.scope === 'model') {
+        const amount = billingAllowanceText(allowance);
+        if (amount) return {text:'剩 ' + amount, tone:'info', title:'模型额度'};
+        const window = Array.isArray(allowance.windows) && allowance.windows.find(w => billingAllowanceText(w, allowance.unit));
+        if (window) return {text:'剩 ' + billingAllowanceText(window, allowance.unit), tone:'info', title:'模型额度'};
+      }
+      if (pid === 'antigravity') { const rem = billingNumber(meta.remaining); if (rem !== null && rem <= 1) return {text:'剩 ' + Math.round(rem * 100) + '%', tone:rem >= .3 ? 'free' : 'unknown', title:'模型剩余额度'}; }
+      if (meta.free === true && !(billing || raw.price_factor != null || raw.priceFactor != null)) return {text:'免费', tone:'free'};
+      if (meta.pass) return {text:'ClinePass', tone:'info'};
+      if (pid === 'zcode' && typeof zcodeGiftModels !== 'undefined' && zcodeGiftModels.includes(String(modelId).toLowerCase())) return {text:'🎁赠送', tone:'free'};
+      if (pid === 'minimax-code' || pid === 'minimax-code-global') {
+        const context = billingNumber(meta.contextWindow ?? meta.context ?? (meta.limit && meta.limit.context));
+        return context !== null && context > 0
+          ? {text:(context >= 1048576 ? fmtMultiplier(context / 1048576) + 'M' : context >= 1000000 ? fmtMultiplier(context / 1000000) + 'M' : fmtMultiplier(context / 1024) + 'K'), tone:'info', title:'上下文窗口：' + context + ' tokens（非消耗倍率）；订阅额度由账户共享'}
+          : {text:'订阅额度', tone:'info', title:'官方未提供模型消耗倍率；账户共享额度见上方'};
+      }
+      if (pid === 'codex') return {text:'账户共享额度', tone:'info', title:'额度由账户共享，详见账户额度'};
+      if (modelId === 'auto') return {text:'自动', tone:'info'};
+      return {text:pid === 'cline' ? '计费' : '—', tone:'unknown'};
+    }
     function buildModelTag(pid, modelName, meta) {
       const el = document.createElement('span');
-      const isFree = !!(meta && (meta.free === true || meta.multiplier === 0));
-      // ZCode 的赠送额度只覆盖部分型号，标出来，别让人以为整个池子都免费
-      const isGift = pid === 'zcode' && zcodeGiftModels.includes(String(modelName).toLowerCase());
-      el.className = 'model-tag' + (isFree || isGift ? ' is-free' : '');
-
+      const cached = typeof providerBillingCache !== 'undefined' && providerBillingCache[pid];
+      const entry = cached && cached.models && cached.models[modelName];
+      const effective = entry ? {...(meta || {}), ...(entry.allowance ? {allowance:entry.allowance} : {}), ...(entry.billing ? {billing:entry.billing, raw:{...(meta || {}), ...((meta && meta.raw) || {}), billing:entry.billing}} : {})} : (meta || {});
+      const view = (entry && billingVariantsView(entry.billingVariants)) || modelBillingView(pid, modelName, effective, Date.now());
+      const sources = [entry && entry.allowance, entry && entry.billing, entry, effective.allowance, effective.raw && effective.raw.billing, effective.billing, meta && meta.raw, meta];
+      const freshness = sources.map(billingFreshness).find(Boolean) || (cached && cached.stale ? '上次记录 · ' + (cached.observedAt ? new Date(cached.observedAt).toLocaleString() : '时间未知') : '');
+      el.className = 'model-tag' + (view.tone === 'free' ? ' is-free' : '');
       const nameSpan = document.createElement('span');
-      // 卡片本身已标明供应商，标签内只显示短模型名
-      nameSpan.innerText = modelName;
-      el.appendChild(nameSpan);
-
-      // 合并过的家族模型提示可选的思考档位（gemini-3.8-flash 的 low/medium/high）
+      const displayName = modelDisplayName(modelName, meta);
+      nameSpan.innerText = displayName; el.appendChild(nameSpan);
       if (pid === 'antigravity' && meta && meta.variants) {
         const levels = Object.keys(meta.variants).join('/');
-        if (levels) {
-          const lv = document.createElement('span');
-          lv.className = 'mt-rate badge-info';
-          lv.innerText = levels;
-          el.appendChild(lv);
-        }
+        if (levels) { const lv = document.createElement('span'); lv.className = 'mt-rate badge-info'; lv.innerText = levels; el.appendChild(lv); }
       }
-
-      const rateSpan = document.createElement('span');
-      const isPass = !!(meta && meta.pass);
-      if (isFree) {
-        rateSpan.className = 'mt-rate badge-free';
-        rateSpan.innerText = '免费';
-      } else if (isPass) {
-        rateSpan.className = 'mt-rate badge-info';
-        rateSpan.innerText = 'ClinePass';
-      } else if (isGift) {
-        rateSpan.className = 'mt-rate badge-free';
-        rateSpan.innerText = '🎁赠送';
-      } else if (modelName === 'auto') {
-        rateSpan.className = 'mt-rate badge-info';
-        rateSpan.innerText = '自动';
-      } else if (meta && meta.multiplier !== undefined && meta.multiplier !== null) {
-        const f = fmtMultiplier(meta.multiplier);
-        if (f !== null) {
-          rateSpan.className = 'mt-rate badge-rate';
-          rateSpan.innerText = '×' + f;
-        }
-      } else if (pid === 'antigravity') {
-        // Antigravity：fetchAvailableModels 自带剩余配额比例（0–1），比任何倍率都准
-        const rem = meta && meta.remaining;
-        if (typeof rem === 'number' && rem >= 0) {
-          const pct = Math.round(rem * 100);
-          rateSpan.className = 'mt-rate ' + (pct >= 30 ? 'badge-free' : 'badge-unknown');
-          rateSpan.innerText = '剩 ' + pct + '%';
-        } else {
-          rateSpan.className = 'mt-rate badge-unknown';
-          rateSpan.innerText = '—';
-        }
-      } else if (pid === 'cline') {
-        rateSpan.className = 'mt-rate badge-unknown';
-        rateSpan.innerText = '计费';
-      } else {
-        rateSpan.className = 'mt-rate badge-unknown';
-        rateSpan.innerText = '—';
-      }
-      el.appendChild(rateSpan);
-
-      if (meta && meta.desc) el.title = meta.desc;
-      el.onclick = () => executeModelPingTest(pid + '/' + modelName);
-      return el;
+      if (view.original) { const old = document.createElement('span'); old.className = 'mt-rate'; old.style.textDecoration = 'line-through'; old.innerText = view.original; el.appendChild(old); }
+      const rateSpan = document.createElement('span'); rateSpan.className = 'mt-rate badge-' + view.tone; rateSpan.innerText = view.text + (freshness ? ' · 上次' : ''); el.appendChild(rateSpan);
+      el.title = (displayName !== modelName ? displayName + '\n' : '') + '调用 ID：' + pid + '/' + modelName + (view.title ? '\n' + view.title : '') + (freshness ? '\n' + freshness : '') + (cached && cached.stale ? '\n上次快照：' + new Date(cached.observedAt).toLocaleString() : '') + (meta && typeof meta.desc === 'string' ? '\n' + meta.desc : '');
+      el.onclick = () => executeModelPingTest(pid + '/' + modelName); return el;
     }
 
     /** 供应商是否已有可用凭据（账号或 key）；没有就等于没登录，模型列表不该显示 */
@@ -6460,7 +6590,13 @@
           ? m
           : (m.indexOf(pid + '/') === 0 ? m.slice(pid.length + 1) : m);
         const isGift = pid === 'zcode' && zcodeGiftModels.includes(String(short).toLowerCase());
-        html += '<option value="' + escapeHtml(m) + '">' + escapeHtml(short) + (isGift ? '  🎁赠送额度' : '') + '</option>';
+        const providers = (appConfig && appConfig.providers) || [];
+        const split = m.indexOf('/');
+        const owner = providers.find(p => p.id === (split >= 0 ? m.slice(0, split) : pid));
+        const id = split >= 0 ? m.slice(split + 1) : short;
+        const label = modelDisplayName(id, owner && owner.modelMeta && owner.modelMeta[id]);
+        const shown = label === id ? short : label + ' · ' + id;
+        html += '<option value="' + escapeHtml(m) + '">' + escapeHtml(shown) + (isGift ? '  🎁赠送额度' : '') + '</option>';
       });
       sel.innerHTML = html;
       block.style.display = 'block';
@@ -6647,9 +6783,13 @@
 
     function modelPingFailureText(result) {
       result = result || {};
-      const parts = [errText(result.error, '连接超时或未配置有效 Key')];
+      // 兜底不再断言"连接超时或未配置有效 Key"：上游没给原因时说"没给原因"，
+      // 把未知写成确定的故障，用户会去换本来没坏的密钥。
+      const parts = [errText(result.error, '网关没有给出失败原因（未知，先别据此更换密钥）')];
+      if (result.failureLabel) parts.push('类别: ' + result.failureLabel);
+      else if (result.errorKind) parts.push('类别: ' + result.errorKind);
+      if (result.failureLayerLabel) parts.push('层: ' + result.failureLayerLabel);
       if (result.statusCode != null && result.statusCode !== '') parts.push('HTTP ' + result.statusCode);
-      if (result.errorKind) parts.push('类别: ' + result.errorKind);
       if (result.retryAfter != null && result.retryAfter !== '') parts.push('重试等待: ' + result.retryAfter);
       return parts.join(' · ');
     }
@@ -6673,13 +6813,16 @@
       const billTag = (data) => {
         if (data.billing === 'gift') {
           return ' · <span class="badge badge-success" style="font-size:0.64rem;">赠送额度</span>'
-            + (data.giftRemaining ? ' 剩 ' + Number(data.giftRemaining).toLocaleString() : '');
+            + (data.giftRemaining != null && data.giftRemaining !== '' && Number.isFinite(Number(data.giftRemaining)) ? ' 剩 ' + Number(data.giftRemaining).toLocaleString() : ' · 剩余未知');
         }
         if (data.billing === 'plan') {
           return ' · <span class="badge badge-info" style="font-size:0.64rem;">Coding Plan</span>';
         }
         return '';
       };
+
+      const executionWarning = data => data.executionUnknown === true
+        ? '<br><span style="font-size:0.74rem;color:#fbbf24;">执行状态未知：请求可能已经执行并产生费用，请核实后再操作，不能盲目重放。</span>' : '';
 
       try {
         const res = await fetch(API_BASE + '/api/test-model', {
@@ -6691,22 +6834,26 @@
 
         if (data.ok) {
           if (status) status.innerHTML = '<span style="color:#34d399;">✅ ' + escapeHtml(model)
-            + ' 连通正常 · ' + escapeHtml(data.latencyMs) + ' ms</span>' + billTag(data);
+            + ' 连通正常 · ' + escapeHtml(data.latencyMs) + ' ms</span>' + billTag(data) + executionWarning(data);
           if (out) {
             out.style.background = 'rgba(16, 185, 129, 0.10)';
             out.style.border = '1px solid rgba(16,185,129,0.4)';
             out.style.color = '#34d399';
             out.innerHTML = '<b>✅ ' + escapeHtml(model) + '</b> · ' + escapeHtml(data.latencyMs) + ' ms' + billTag(data)
               + '<br><span style="font-size:0.75rem;color:var(--text);">模型返回: "'
-              + escapeHtml(data.reply || 'OK') + '"</span>';
+              + escapeHtml(data.reply || 'OK') + '"</span>' + executionWarning(data);
           }
           if (!quiet) showToast('✅ ' + model + ' 连通正常 (' + data.latencyMs + 'ms)');
           return true;
         }
 
         const err = modelPingFailureText(data);
-        if (status) status.innerHTML = '<span style="color:#f87171;">❌ ' + escapeHtml(model) + ' 失败</span>'
-          + billTag(data);
+        const layerText = (data.failureLayerLabel ? data.failureLayerLabel : '')
+          + (data.failureLayerLabel && data.failureLabel ? ' · ' : '')
+          + (data.failureLabel ? data.failureLabel : '');
+        if (status) status.innerHTML = '<span style="color:#f87171;">❌ ' + escapeHtml(model) + ' 失败'
+          + (layerText ? ' · ' + escapeHtml(layerText) : '') + '</span>'
+          + billTag(data) + executionWarning(data);
         if (out) {
           out.style.background = 'rgba(239, 68, 68, 0.10)';
           out.style.border = '1px solid rgba(239,68,68,0.4)';
@@ -6714,19 +6861,27 @@
           out.innerHTML = '<b>❌ ' + escapeHtml(model) + '</b>'
             + (data.latencyMs ? ' · ' + escapeHtml(data.latencyMs) + ' ms' : '') + billTag(data)
             + '<br><code style="word-break:break-all;">' + escapeHtml(err) + '</code>'
-            + (data.hint ? '<br><span style="font-size:0.74rem;color:var(--text-muted);">' + escapeHtml(data.hint) + '</span>' : '');
+            + (data.hint ? '<br><span style="font-size:0.74rem;color:var(--text-muted);">' + escapeHtml(data.hint) + '</span>' : '')
+            + (data.advice ? '<br><span style="font-size:0.74rem;color:var(--text);">该怎么做: ' + escapeHtml(data.advice) + '</span>' : '')
+            + (data.inferenceImpact === 'unknown' || data.affectsInference == null || data.affectsInference === 'unknown'
+                ? '<br><span style="font-size:0.74rem;color:#fbbf24;">对推理的影响未知。</span>' : '')
+            + executionWarning(data)
+            + (data.giftFallbackReason
+                ? '<br><span style="font-size:0.74rem;color:var(--text-muted);">赠送额度没接手这次测试（' + escapeHtml(data.giftFallbackReason) + '），下面走的是 Coding Plan。</span>'
+                : '');
         }
         if (!quiet) showToast('❌ ' + model + ' 测试失败');
         return false;
       } catch (e) {
-        if (status) status.innerHTML = '<span style="color:#f87171;">❌ 网络请求异常</span>';
+        if (status) status.innerHTML = '<span style="color:#f87171;">❌ 未取得可判读结果</span>';
         if (out) {
           out.style.background = 'rgba(239, 68, 68, 0.10)';
           out.style.border = '1px solid rgba(239,68,68,0.4)';
           out.style.color = '#f87171';
-          out.innerHTML = '<b>❌ 网络请求异常:</b> ' + escapeHtml(errText(e, '未知错误'));
+          out.innerHTML = '<b>❌ 未取得可判读结果：</b> ' + escapeHtml(errText(e, '未知错误'))
+            + '<br><span style="font-size:0.74rem;color:var(--text-muted);">执行状态未知，请求可能已经执行并产生费用；不能盲目重放，也不能据此判断供应商、账号或密钥。</span>';
         }
-        if (!quiet) showToast('❌ 网络请求异常');
+        if (!quiet) showToast('❌ 未取得可判读结果');
         return false;
       }
     }
@@ -6967,13 +7122,13 @@
         const res = await fetch(API_BASE + '/api/zcode/gift?action=summary');
         const d = await res.json();
         if (!d.ok) {
-          box.innerHTML = '<span style="color:#f59e0b;">' + (d.error || '查询失败') + '</span>';
+          box.innerHTML = '<span style="color:#f59e0b;">' + esc(d.error || '查询失败') + '</span>';
           return;
         }
         const lines = [];
-        const rem = Number(d.remainingUnits || 0);
-        lines.push('剩余合计：<b style="color:' + (rem > 0 ? '#34d399' : '#9ca3af') + '">' + rem.toLocaleString() + '</b> 单位');
-        const buckets = d.buckets || [];
+        const rem = d.remainingUnits == null || d.remainingUnits === '' ? NaN : Number(d.remainingUnits);
+        lines.push('剩余合计：<b style="color:' + (rem > 0 ? '#34d399' : '#9ca3af') + '">' + (Number.isFinite(rem) ? rem.toLocaleString() : '未知') + '</b> 单位');
+        const buckets = (Array.isArray(d.buckets) ? d.buckets : []).filter(b => b && typeof b === 'object');
         if (buckets.length === 0) {
           lines.push('当前没有生效中的额度包。');
         } else {
@@ -6981,34 +7136,32 @@
             const r = Number(b.remaining ?? -1);
             const t = Number(b.total || 0);
             const exp = b.expiresAt ? new Date(b.expiresAt * 1000).toLocaleString() : '';
-            lines.push('· ' + (b.name || b.planId) + '：剩 ' + (r < 0 ? '未知' : r.toLocaleString())
+            lines.push('· ' + esc(b.name || b.planId || '') + '：剩 ' + (r < 0 ? '未知' : r.toLocaleString())
               + (t > 0 ? ' / ' + t.toLocaleString() : '') + (exp ? '（至 ' + exp + '）' : ''));
           });
         }
-        const cl = d.claimable || [];
+        const cl = (Array.isArray(d.claimable) ? d.claimable : []).filter(p => p && typeof p === 'object');
         if (cl.length > 0) {
           lines.push('<span style="color:#34d399;">今天可领 ' + cl.length + ' 个：'
-            + cl.map(p => p.name || p.planId).join('、') + '，点「一键领取」</span>');
+            + cl.map(p => esc(p.name || p.planId || '')).join('、') + '，点「一键领取」</span>');
         }
         // 说清楚一件事：赠送额度只覆盖它列出的模型，其余型号需要 GLM Coding Plan，否则会 1113
         const giftModels = [];
-        buckets.forEach(b => (b.capabilities || []).forEach(c => {
+        buckets.forEach(b => (Array.isArray(b.capabilities) ? b.capabilities : []).forEach(c => {
+          if (typeof c !== 'string') return;
           if (c.startsWith('model:') && !giftModels.includes(c.slice(6))) giftModels.push(c.slice(6));
         }));
         zcodeGiftModels = giftModels.map(x => x.toLowerCase());
         renderAllModelsTags();
         try { renderPingProviders(); } catch (e) {}
-        buckets.forEach(b => (b.capabilities || []).forEach(c => {
-          if (c.startsWith('model:')) giftModels.push(c.slice(6));
-        }));
         if (giftModels.length > 0) {
           lines.push('<span style="color:#9ca3af;">赠送额度只能调：'
-            + giftModels.map(m => '<code>zcode/' + m + '</code>').join('、')
+            + giftModels.map(m => '<code>zcode/' + esc(m) + '</code>').join('、')
             + '；其余型号需要 GLM Coding Plan。</span>');
         }
         box.innerHTML = lines.join('<br>');
       } catch (e) {
-        box.innerHTML = '<span style="color:#f59e0b;">查询失败：' + e + '</span>';
+        box.innerHTML = '<span style="color:#f59e0b;">查询失败：' + esc(errText(e, '未知错误')) + '</span>';
       }
     }
 
@@ -7019,21 +7172,21 @@
         const res = await fetch(API_BASE + '/api/zcode/gift?action=claimall');
         const d = await res.json();
         if (!d.ok) {
-          if (box) box.innerHTML = '<span style="color:#f59e0b;">' + (d.error || '领取失败') + '</span>';
+          if (box) box.innerHTML = '<span style="color:#f59e0b;">' + esc(d.error || '领取失败') + '</span>';
           return;
         }
         const got = (d.claimed || []).length;
-        const failed = d.failed || [];
+        const failed = Array.isArray(d.failed) ? d.failed : [];
         if (box) {
           box.innerHTML = got > 0
             ? '<span style="color:#34d399;">已领取 ' + got + ' 个额度包</span>'
             : (failed.length > 0
-              ? '<span style="color:#f59e0b;">领取未成功：' + (failed[0].error || '') + '</span>'
+              ? '<span style="color:#f59e0b;">领取未成功：' + esc((failed[0] && failed[0].error) || '') + '</span>'
               : '<span style="color:#9ca3af;">今天没有可领取的额度</span>');
         }
         setTimeout(loadZCodeGift, 800);
       } catch (e) {
-        if (box) box.innerHTML = '<span style="color:#f59e0b;">领取失败：' + e + '</span>';
+        if (box) box.innerHTML = '<span style="color:#f59e0b;">领取失败：' + esc(errText(e, '未知错误')) + '</span>';
       }
     }
 

@@ -46,7 +46,7 @@ public final class CatPawAuth {
     /** 桌面客户端的模型表：id -> {展示名, modelType, 是否收图} */
     private static final Map<String, Object[]> MODELS = new LinkedHashMap<String, Object[]>();
     static {
-        MODELS.put("longcat-2.0", new Object[]{"LongCat-2.0 (限时免费)", 77, Boolean.TRUE});
+        MODELS.put("longcat-2.0", new Object[]{"LongCat-2.0", 77, Boolean.TRUE});
         MODELS.put("glm-5.3-flashx", new Object[]{"GLM-5.3-FlashX", 98, Boolean.TRUE});
         MODELS.put("glm-5.3-flash", new Object[]{"GLM-5.3-Flash", 91, Boolean.TRUE});
         MODELS.put("glm-5.3", new Object[]{"GLM-5.3", 89, Boolean.FALSE});
@@ -86,6 +86,97 @@ public final class CatPawAuth {
         Object[] m = MODELS.get(id);
         if (m == null) return 77;
         return ((Integer) m[1]).intValue();
+    }
+
+    public interface CatalogConnectionFactory { HttpURLConnection open(String url) throws Exception; }
+
+    /** Throws on failed or unusable catalog; metaOut is untouched until validation succeeds. */
+    public static java.util.List<String> fetchCatalog(String token, JSONObject metaOut) throws Exception {
+        return fetchCatalog(token, metaOut, url -> NetworkPolicy.openHttp(url));
+    }
+
+    public static java.util.List<String> fetchCatalog(String token, JSONObject metaOut,
+            CatalogConnectionFactory factory) throws Exception {
+        if (token == null || token.trim().isEmpty() || metaOut == null || factory == null)
+            throw new java.io.IOException("CatPaw catalog requires a token");
+        HttpURLConnection conn = null;
+        try {
+            conn = factory.open(ORIGIN + "/api/agent/maas/model-types");
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(10000); conn.setReadTimeout(15000);
+            conn.setRequestMethod("POST"); conn.setDoOutput(true);
+            for (Map.Entry<String, String> h : gatewayHeaders(token).entrySet())
+                conn.setRequestProperty(h.getKey(), h.getValue());
+            byte[] request = new JSONObject().put("tenant", "CatDesk").put("scene", "CATX_APP")
+                    .put("env", "EXTERNAL").toString().getBytes("UTF-8");
+            try (OutputStream out = conn.getOutputStream()) { out.write(request); }
+            int status = conn.getResponseCode();
+            if (status < 200 || status >= 300) throw new java.io.IOException("CatPaw catalog HTTP " + status);
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] b = new byte[4096]; int n;
+                while ((n = in.read(b)) != -1) {
+                    if (body.size() + n > 2 * 1024 * 1024) throw new java.io.IOException("CatPaw catalog too large");
+                    body.write(b, 0, n);
+                }
+            }
+            Object parsed = new org.json.JSONTokener(body.toString("UTF-8")).nextValue();
+            JSONArray rows;
+            if (parsed instanceof JSONArray) rows = (JSONArray) parsed;
+            else if (parsed instanceof JSONObject) {
+                JSONObject result = (JSONObject) parsed;
+                Object code = result.opt("code");
+                if (code instanceof Number && ((Number) code).doubleValue() != 0 && ((Number) code).doubleValue() != 200)
+                    throw new java.io.IOException("CatPaw catalog rejected");
+                rows = result.optJSONArray("data");
+            } else rows = null;
+            if (rows == null) throw new java.io.IOException("CatPaw catalog malformed");
+            JSONObject pending = new JSONObject();
+            java.util.List<String> ids = new java.util.ArrayList<>();
+            Map<String, Integer> types = new LinkedHashMap<>();
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row == null) throw new java.io.IOException("CatPaw catalog malformed row");
+                Object rawType = row.opt("modelTypeId");
+                if (!(rawType instanceof Number)) throw new java.io.IOException("CatPaw catalog missing type");
+                double d = ((Number) rawType).doubleValue();
+                if (!Double.isFinite(d) || d != Math.rint(d) || d > Integer.MAX_VALUE || d < Integer.MIN_VALUE)
+                    throw new java.io.IOException("CatPaw catalog invalid type");
+                int type = (int) d;
+                if (type < 0 || "USER_CUSTOM".equals(row.optString("provider"))) continue;
+                String name = row.optString("modelTypeName", "").trim();
+                String id = "";
+                for (Map.Entry<String, Object[]> known : MODELS.entrySet())
+                    if (((Integer) known.getValue()[1]).intValue() == type) { id = known.getKey(); break; }
+                if (id.isEmpty()) id = name.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "-");
+                if (id.isEmpty()) throw new java.io.IOException("CatPaw catalog missing name");
+                if (types.containsKey(id)) continue;
+                Object extValue = row.opt("extendedInfo");
+                JSONObject ext = extValue instanceof JSONObject ? (JSONObject) extValue : null;
+                if (extValue instanceof String) {
+                    try { ext = new JSONObject((String) extValue); } catch (Exception ignored) { }
+                }
+                JSONObject info = new JSONObject(row.toString());
+                String label = row.optString("description", "").trim();
+                if (label.isEmpty() && ext != null) label = ext.optString("shortName", "").trim();
+                if (label.isEmpty()) label = name;
+                if (MODELS.containsKey(id)) label = (String) MODELS.get(id)[0];
+                info.put("name", label); info.put("modelType", type);
+                info.put("image", row.optBoolean("supportImage", false));
+                if (ext != null) {
+                    Object rate = ext.opt("rateMultiplier");
+                    String text = rate instanceof Number || rate instanceof String ? rate.toString().trim() : "";
+                    if (text.matches("(?i)\\d+(?:\\.\\d+)?\\s*[x×]?")) {
+                        double mult = Double.parseDouble(text.replaceFirst("(?i)\\s*[x×]$", ""));
+                        if (Double.isFinite(mult)) { info.put("multiplier", mult); info.put("free", mult == 0); }
+                    }
+                }
+                ids.add(id); types.put(id, type); pending.put(id, info);
+            }
+            if (ids.isEmpty()) throw new java.io.IOException("CatPaw catalog empty");
+            for (String id : ids) metaOut.put(id, pending.get(id));
+            return ids;
+        } finally { if (conn != null) conn.disconnect(); }
     }
 
     private static String hex32() {
@@ -353,8 +444,22 @@ public final class CatPawAuth {
     }
 
     public static JSONObject chat(String token, String model, JSONArray messages, ChatTransport transport) throws Exception {
-        if (unsupportedReason(messages, null) != null || transport == null) throw new Failure(400, null, false);
-        int modelType = modelTypeOf(model);
+        return chatWithCatalogMetadata(token, model, messages, null, transport);
+    }
+
+    /** trustedModelType must come from the persisted CatPaw catalog entry for this exact model. */
+    public static JSONObject chatWithCatalogMetadata(String token, String model, JSONArray messages,
+                                                      Integer trustedModelType) throws Exception {
+        return chatWithCatalogMetadata(token, model, messages, trustedModelType, HTTP_CHAT);
+    }
+
+    public static JSONObject chatWithCatalogMetadata(String token, String model, JSONArray messages,
+                                                      Integer trustedModelType, ChatTransport transport) throws Exception {
+        if (unsupportedReason(messages, null) != null || transport == null
+                || (trustedModelType != null && trustedModelType.intValue() <= 0))
+            throw new Failure(400, null, false);
+        int modelType = MODELS.containsKey(model) || trustedModelType == null
+                ? modelTypeOf(model) : trustedModelType.intValue();
         String convId = UUID.randomUUID().toString();
         String msgId = UUID.randomUUID().toString();
         String turnId = UUID.randomUUID().toString();

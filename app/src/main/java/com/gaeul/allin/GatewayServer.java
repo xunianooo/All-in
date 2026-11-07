@@ -304,6 +304,151 @@ public class GatewayServer extends NanoHTTPD {
         }
     }
 
+    private final Object qoderSyncLock = new Object();
+    private static boolean qoderEnabled(JSONObject a) {
+        return a != null && a.optBoolean("enabled", true) && !a.optBoolean("off", false) && !"off".equalsIgnoreCase(a.optString("status", ""));
+    }
+    private static QoderAuth.SignIn qoderSignIn(JSONObject a) {
+        QoderAuth.SignIn s=new QoderAuth.SignIn();
+        s.access=a.optString("token", ""); s.refresh=a.optString("refresh", "");
+        s.deviceToken=a.optString("deviceToken", ""); s.deviceRefresh=a.optString("deviceRefresh", "");
+        s.uid=a.optString("uid", ""); s.email=a.optString("email", ""); s.name=a.optString("name", "");
+        s.machineId=a.optString("machineId", ""); s.deviceChat=a.optBoolean("deviceChat", false); s.expiresAt=a.optLong("expiresAt", 0);
+        return s;
+    }
+    private static JSONObject qoderGeneration(JSONObject a) throws Exception {
+        JSONObject g=new JSONObject();
+        for (String k : new String[]{"token","refresh","deviceToken","deviceRefresh","deviceChat","expiresAt","uid","machineId"})
+            if (a.has(k)) g.put(k,a.opt(k));
+        return g;
+    }
+    private synchronized JSONObject qoderLive(String id) throws Exception {
+        JSONObject a=storedTokenAccount(configJson,"qoder_cn",id);
+        if (backupRetired || stopping || !qoderEnabled(a)) throw new IOException("Qoder account unavailable");
+        return new JSONObject(a.toString());
+    }
+    private static JSONObject qoderAccountGuard(JSONObject a) throws Exception {
+        JSONObject g=new JSONObject(a.toString());
+        for(String k:new String[]{"models","modelMeta","catalogFreeView","catalogRenewedAt"}) g.remove(k);
+        return g;
+    }
+    private synchronized JSONObject qoderPersistRefresh(String id, JSONObject expected, QoderAuth.SignIn next) throws Exception {
+        JSONObject live=storedTokenAccount(configJson,"qoder_cn",id);
+        if (backupRetired || stopping || !qoderEnabled(live) || !jsonEquivalent(qoderAccountGuard(live),qoderAccountGuard(expected)))
+            throw new IOException("Qoder account changed");
+        JSONObject copy=new JSONObject(configJson.toString()); JSONObject dst=storedTokenAccount(copy,"qoder_cn",id);
+        dst.put("token",next.access); dst.put("refresh",next.refresh); dst.put("deviceToken",next.deviceToken);
+        dst.put("deviceRefresh",next.deviceRefresh); dst.put("expiresAt",next.expiresAt); dst.put("catalogRenewedAt",System.currentTimeMillis());
+        AtomicConfigFile.write(configFile,copy.toString(2)); configJson=copy;
+        return new JSONObject(dst.toString());
+    }
+    private QoderAuth.Catalog qoderRead(QoderAuth.SignIn s) throws Exception {
+        return qoderConnectionsForTests == null ? QoderAuth.readCatalog(s) : QoderAuth.readCatalog(s,qoderConnectionsForTests);
+    }
+    private QoderAuth.SignIn qoderRefresh(QoderAuth.SignIn s) throws Exception {
+        return qoderConnectionsForTests == null ? QoderAuth.refreshCandidate(s) : QoderAuth.refreshCandidate(s,qoderConnectionsForTests);
+    }
+    private Response syncQoderCatalog(JSONObject initial) throws Exception {
+        synchronized(qoderSyncLock) {
+            JSONObject latest;
+            synchronized(this) {
+                JSONObject p=getProviderById("qoder_cn");
+                if(backupRetired || stopping || p==null || !p.optBoolean("enabled",true)) return errorResponse(409,"Qoder 供应商不可用");
+                latest=new JSONObject(p.toString());
+            }
+            JSONArray originals=latest.optJSONArray("accounts");
+            java.util.LinkedHashMap<String,JSONObject> updated=new java.util.LinkedHashMap<String,JSONObject>();
+            boolean partial=false, freeView=false; int eligible=0, successes=0; java.util.HashSet<String> discoveredKeys=new java.util.HashSet<>(); JSONArray disabledListing=new JSONArray(); int lastFailureStatus=502; String lastFailureStage="catalog";
+            for (int i=0; originals!=null && i<originals.length(); i++) {
+                JSONObject old=originals.optJSONObject(i); if (!qoderEnabled(old)) continue;
+                String id=storedTokenIdentity(old); if (id==null) { partial=true; continue; }
+                eligible++;
+                String stage="account";
+                try {
+                    JSONObject live=qoderLive(id); QoderAuth.SignIn si=qoderSignIn(live);
+                    boolean generationChanged=!jsonEquivalent(qoderGeneration(old),qoderGeneration(live));
+                    boolean expired=si.expiresAt>0 && si.expiresAt<=System.currentTimeMillis();
+                    QoderAuth.Catalog catalog=null;
+                    if (!expired) { stage="catalog"; catalog=qoderRead(si); }
+                    if (expired || (catalog.freeView && !generationChanged && (live.optLong("catalogRenewedAt",0)<=0 || System.currentTimeMillis()-live.optLong("catalogRenewedAt",0)>=300000))) {
+                        stage="refresh"; QoderAuth.SignIn candidate=qoderRefresh(si);
+                        stage="persist_refresh"; live=qoderPersistRefresh(id,live,candidate);
+                        stage="catalog_after_refresh"; catalog=qoderRead(qoderSignIn(live));
+                    }
+                    JSONObject result=new JSONObject(live.toString());
+                    JSONObject normalizedQoder=new JSONObject(catalog.meta.toString()); normalizeCatalog("qoder_cn",normalizedQoder);
+                    result.put("models",new JSONArray(catalog.models.toString())); result.put("modelMeta",normalizedQoder);
+                    result.put("catalogFreeView",catalog.freeView);
+                    for(int di=0;di<catalog.models.length();di++) discoveredKeys.add(catalog.models.optString(di));
+                    for(int di=0;di<catalog.disabledModels.length();di++) { JSONObject dm=catalog.disabledModels.getJSONObject(di); if(discoveredKeys.add(dm.getString("key"))) disabledListing.put(dm); }
+                    updated.put(id,result); successes++; freeView |= catalog.freeView;
+                } catch (Exception failure) { partial=true; lastFailureStage=stage;
+                    if (failure.getMessage()!=null && failure.getMessage().startsWith("Qoder refresh failed: "))
+                        lastFailureStage += ":"+failure.getMessage().substring("Qoder refresh failed: ".length());
+                    lastFailureStatus=failure instanceof QoderAuth.QoderHttpException ? ((QoderAuth.QoderHttpException)failure).status : 502;
+                }
+            }
+            if (eligible==0) return errorResponse(400,"请先启用 Qoder 账号");
+            if (successes==0) return errorResponse(lastFailureStatus >= 400 && lastFailureStatus <=599 ? lastFailureStatus : 502,
+                    "Qoder 模型同步失败（"+lastFailureStage+", HTTP "+lastFailureStatus+"），保留原目录；认证被拒时需重新登录");
+            synchronized(this) {
+                JSONObject current=getProviderById("qoder_cn");
+                if (backupRetired || stopping || current==null || !current.optBoolean("enabled",true) || !jsonEquivalent(providerCatalogGuard(current),providerCatalogGuard(latest))) return errorResponse(409,"Qoder 账号已变化或保存失败");
+                JSONObject copy=new JSONObject(configJson.toString());
+                JSONObject cp=null; JSONArray providers=copy.optJSONArray("providers");
+                for(int i=0; providers!=null && i<providers.length();i++) { JSONObject p=providers.optJSONObject(i); if(p!=null && "qoder_cn".equals(p.optString("id"))) { if(cp!=null) return errorResponse(409,"Qoder 供应商冲突"); cp=p; } }
+                if(cp==null) return errorResponse(409,"Qoder 供应商不可用");
+                JSONArray as=cp.optJSONArray("accounts"), models=new JSONArray(); JSONObject meta=new JSONObject();
+                java.util.HashSet<String> seen=new java.util.HashSet<String>();
+                java.util.HashSet<String> applied=new java.util.HashSet<String>(); boolean firstQoder=true;
+                for(int i=0; as!=null && i<as.length();i++) {
+                    JSONObject a=as.optJSONObject(i); if(!qoderEnabled(a)) continue;
+                    String id=storedTokenIdentity(a); JSONObject result=updated.get(id);
+                    if(result!=null) {
+                        if (!applied.add(id)) return errorResponse(409,"Qoder 账号冲突");
+                        if(!jsonEquivalent(qoderAccountGuard(a),qoderAccountGuard(result))) return errorResponse(409,"Qoder 账号已变化");
+                        a.put("models",result.getJSONArray("models")); a.put("modelMeta",result.getJSONObject("modelMeta")); a.put("catalogFreeView",result.optBoolean("catalogFreeView"));
+                    }
+                    if(firstQoder && as.length()==1 && a.optJSONArray("models")==null && result==null) {
+                        JSONArray legacy=cp.optJSONArray("models"); JSONObject legacyMeta=cp.optJSONObject("modelMeta");
+                        if(legacy!=null && legacyMeta!=null) { a.put("models",new JSONArray(legacy.toString())); a.put("modelMeta",new JSONObject(legacyMeta.toString())); }
+                    }
+                    firstQoder=false;
+                    JSONArray am=a.optJSONArray("models"); JSONObject mm=a.optJSONObject("modelMeta");
+                    freeView |= a.optBoolean("catalogFreeView",false);
+                    for(int j=0; am!=null && j<am.length();j++) { String m=am.optString(j,""); if(m.isEmpty() || mm==null || mm.optJSONObject(m)==null) continue; if(seen.add(m)) { models.put(m); meta.put(m,mm.optJSONObject(m)); } }
+                }
+                if(applied.size()!=updated.size()) return errorResponse(409,"Qoder 账号已变化");
+                if(models.length()==0) return errorResponse(502,"Qoder 目录不可用，保留原目录");
+                cp.put("models",models); cp.put("modelMeta",meta);
+                try { AtomicConfigFile.write(configFile,copy.toString(2)); configJson=copy; } catch(Exception e) { return errorResponse(409,"Qoder 目录保存失败"); }
+                return jsonResponse(new JSONObject().put("ok",true).put("provider","qoder_cn").put("models",models).put("count",models.length()).put("partial",partial).put("freeView",freeView).put("discoveredCount",discoveredKeys.size()).put("disabledModels",disabledListing).put("message",partial?"部分账号同步失败，保留原目录":disabledListing.length()>0?"上游列出 "+discoveredKeys.size()+" 个模型，当前凭据启用 "+models.length()+" 个；其余由上游禁用，可重新授权后再同步":"同步成功"));
+            }
+        }
+    }
+
+    private boolean replaceQoderAuthorization(JSONObject expected, QoderAuth.SignIn si) throws Exception {
+        if (expected==null || si==null || si.uid==null || si.uid.trim().isEmpty()
+                || !si.uid.equals(expected.optString("uid", ""))) return false;
+        String id=storedTokenIdentity(expected); if(id==null) return false;
+        synchronized(qoderSyncLock) {
+            synchronized(this) {
+                if(backupRetired || stopping) throw new IOException("Qoder account unavailable");
+                JSONObject copy=new JSONObject(configJson.toString()); JSONArray ps=copy.optJSONArray("providers"); JSONObject found=null; int providersFound=0;
+                for(int i=0;ps!=null && i<ps.length();i++) {
+                    JSONObject p=ps.optJSONObject(i); if(p==null || !"qoder_cn".equals(p.optString("id"))) continue;
+                    providersFound++; JSONArray as=p.optJSONArray("accounts");
+                    for(int j=0;as!=null && j<as.length();j++) { JSONObject a=as.optJSONObject(j); if(a!=null && id.equals(storedTokenIdentity(a))) { if(found!=null) throw new IOException("Qoder account conflict"); found=a; } }
+                }
+                if(providersFound!=1 || found==null || !jsonEquivalent(found,expected) || !si.uid.equals(found.optString("uid",""))) throw new IOException("Qoder account changed");
+                found.put("token",si.access); found.put("refresh",si.refresh); found.put("deviceToken",si.deviceToken);
+                found.put("deviceRefresh",si.deviceRefresh); found.put("deviceChat",si.deviceChat); found.put("expiresAt",si.expiresAt);
+                found.put("machineId",si.machineId); found.remove("catalogRenewedAt");
+                AtomicConfigFile.write(configFile,copy.toString(2)); configJson=copy; return true;
+            }
+        }
+    }
+
     private static JSONObject providerCatalogGuard(JSONObject provider) throws Exception {
         JSONObject guard=new JSONObject(provider.toString());
         guard.remove("accounts");guard.remove("keys");return guard;
@@ -322,7 +467,8 @@ public class GatewayServer extends NanoHTTPD {
             if(item!=null && provider.equals(item.optString("id"))) {if(target!=null)throw new IOException("Ambiguous provider");target=item;}
         }
         if(target==null)throw new IOException("Provider unavailable");
-        target.put("models",new JSONArray(models.toString()));target.put("modelMeta",new JSONObject(metadata.toString()));
+        JSONObject normalizedMetadata=new JSONObject(metadata.toString()); stampCatalog(normalizedMetadata); normalizeCatalog(provider,normalizedMetadata);
+        target.put("models",new JSONArray(models.toString()));target.put("modelMeta",normalizedMetadata);
         AtomicConfigFile.write(configFile,copy.toString(2));configJson=copy;
     }
 
@@ -547,6 +693,9 @@ public class GatewayServer extends NanoHTTPD {
         // Keep every attempted refresh fingerprint across account deletion.
     }
     private synchronized void persistMiniMaxAux(MiniMaxLifecycle.Lease lease, JSONArray models, JSONObject result) throws Exception {
+        persistMiniMaxAux(lease,models,result,null);
+    }
+    private synchronized void persistMiniMaxAux(MiniMaxLifecycle.Lease lease, JSONArray models, JSONObject result, JSONObject modelMetadata) throws Exception {
         if(backupRetired || !minimaxLifecycle().isCurrent(lease) || miniAccount(configJson,lease.id)==null) throw new IOException("MiniMax account changed");
         JSONObject copy=new JSONObject(configJson.toString()); JSONObject account=miniAccount(copy,lease.id);
         if(result!=null && result.optBoolean("ok",false)) {
@@ -558,7 +707,7 @@ public class GatewayServer extends NanoHTTPD {
             JSONArray providers=copy.optJSONArray("providers"); JSONObject provider=null;
             for(int i=0;providers!=null && i<providers.length();i++) { JSONObject p=providers.optJSONObject(i); if(p!=null && "minimax-code".equals(p.optString("id"))) { if(provider!=null) throw new IOException("duplicate provider"); provider=p; } }
             if(provider==null || !provider.optBoolean("enabled",true)) throw new IOException("MiniMax provider changed");
-            provider.put("models",models); provider.put("modelMeta",new JSONObject());
+            provider.put("models",models); provider.put("modelMeta",modelMetadata==null ? new JSONObject() : new JSONObject(modelMetadata.toString()));
         }
         persistConfigStrict(copy);
     }
@@ -632,6 +781,198 @@ public class GatewayServer extends NanoHTTPD {
     private final File watchdogFile;
     private volatile JSONObject watchdogState;
     private final java.util.List<JSONObject> watchdogLog = new java.util.ArrayList<JSONObject>();
+
+    interface ProviderBillingTransport {
+        JSONObject allowance(String provider, JSONObject account) throws Exception;
+    }
+    private volatile ProviderBillingTransport billingTransport;
+    void setProviderBillingTransportForTest(ProviderBillingTransport transport) { billingTransport = transport; }
+    private static final java.util.Set<String> billingBusy = java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    private JSONObject fetchBillingAllowance(String provider, JSONObject account) throws Exception {
+        ProviderBillingTransport fixture = billingTransport;
+        if (fixture != null) return fixture.allowance(provider, account);
+        String token = account.optString("token", "");
+        switch (provider) {
+        case "codex": {
+            CodexAuth.SignInInfo info = new CodexAuth.SignInInfo();
+            info.accessToken=account.optString("access", token); info.refreshToken=account.optString("refresh", "");
+            info.idToken=account.optString("idToken", ""); info.accountId=account.optString("accountId", "");
+            info.authMode=account.optString("authMode", "chatgpt"); info.expiresAt=account.optLong("expires", 0);
+            bindCodexPersistence(account, info);
+            JSONObject result=ProviderAllowance.fromCodex(CodexAuth.fetchUsage(info));
+            synchronized(this) { JSONObject current=findCodexAccount(configJson,account);
+                if(current!=null && codexCandidateMatches(current,info)) billingAdoptRefresh(account,current); }
+            return result;
+        }
+        case "cline": return ProviderAllowance.fromCline(ClineAuth.fetchUsage(token, !"api".equals(account.optString("type", "oauth"))));
+        case "github-copilot": return ProviderAllowance.fromCopilot(CopilotAuth.fetchAllowance(account.optString("refresh", "")));
+        case "catpaw": return ProviderAllowance.fromCatPaw(CatPawAuth.balance(token));
+        case "minimax-code": {
+            MiniMaxLifecycle.Lease lease=miniLease(account,false,null);
+            JSONObject result=ProviderAllowance.fromMiniMax(MiniMaxAuth.fetchAllowance(lease.credentials.access,account.optString("opGroupId",account.optString("groupId",""))));
+            synchronized(this) { JSONObject current=miniAccount(configJson,lease.id);
+                if(!minimaxLifecycle().isCurrent(lease) || current==null) throw new IOException("account changed");
+                billingAdoptRefresh(account,current); }
+            return result;
+        }
+        default: return null;
+        }
+    }
+    private static String billingProvider(String id) { return "qoder_cn".equals(id) ? "qoder" : id; }
+    private static JSONObject normalizeBilling(String provider, JSONObject raw) throws Exception {
+        if(raw==null) return ModelBillingMetadata.normalize(billingProvider(provider),null);
+        JSONObject input=new JSONObject(raw.toString());
+        if("workbuddy".equals(provider) || "workbuddy-ai".equals(provider)) {
+            String text=raw.optString("credits","");
+            java.util.regex.Matcher match=java.util.regex.Pattern.compile("(?i)(?<![a-z0-9])(?:x|×)\\s*([0-9]+(?:\\.[0-9]+)?)(?![0-9.])").matcher(text);
+            if(match.find()) input.put("credits","x"+match.group(1));
+        }
+        JSONObject out=ModelBillingMetadata.normalize(billingProvider(provider),input);
+        if(raw.has("credits")) out.put("credits",raw.opt("credits"));
+        JSONObject billing=out.optJSONObject("billing");
+        if(billing!=null) { long at=raw.optLong("catalogObservedAt",0);
+            if(at<=0) { JSONObject old=raw.optJSONObject("billing"); at=old==null?0:old.optLong("observedAt",0); }
+            if(at>0) billing.put("observedAt",at); else billing.remove("observedAt");
+        }
+        return out;
+    }
+    private static void stampCatalog(JSONObject meta) throws Exception {
+        long now=System.currentTimeMillis(); java.util.Iterator<String> it=meta.keys();
+        while(it.hasNext()) { JSONObject row=meta.optJSONObject(it.next()); if(row!=null) row.put("catalogObservedAt",now); }
+    }
+    private static void normalizeCatalog(String provider, JSONObject meta) throws Exception {
+        java.util.Iterator<String> it=meta.keys();
+        while(it.hasNext()) { String id=it.next(); JSONObject raw=meta.optJSONObject(id);
+            if(raw!=null) meta.put(id,normalizeBilling(provider,raw)); }
+    }
+    private static JSONObject safeAllowance(JSONObject raw) throws Exception {
+        if(raw==null || !"allowance".equals(raw.optString("kind")) || !"account".equals(raw.optString("scope"))) return null;
+        String unit=raw.optString("unit","");
+        if(!java.util.Arrays.asList("percent","USD","credits","requests").contains(unit)) return null;
+        JSONObject out=new JSONObject().put("kind","allowance").put("scope","account").put("unit",unit);
+        Object remaining=raw.opt("remaining");
+        if(remaining instanceof Number && Double.isFinite(((Number)remaining).doubleValue()) && ((Number)remaining).doubleValue()>=0) out.put("remaining",remaining);
+        JSONArray windows=new JSONArray(), src=raw.optJSONArray("windows");
+        for(int i=0;src!=null && i<src.length() && i<20;i++) {
+            JSONObject w=src.optJSONObject(i); if(w==null) continue; String name=w.optString("name","");
+            if(!name.matches("[A-Za-z][A-Za-z0-9_ -]{0,31}") || name.toLowerCase(java.util.Locale.ROOT).contains("secret")) continue;
+            Object v=w.opt("remainingPercent"); if(!(v instanceof Number)) continue; double n=((Number)v).doubleValue();
+            if(!Double.isFinite(n)||n<0||n>100) continue;
+            JSONObject clean=new JSONObject().put("name",name).put("remainingPercent",n); Object reset=w.opt("resetAt");
+            if(reset instanceof Number && ((Number)reset).longValue()>0) clean.put("resetAt",reset);
+            else if(reset instanceof String && ((String)reset).matches("[0-9TtZz:+.\\-]{4,40}")) clean.put("resetAt",reset);
+            windows.put(clean);
+        }
+        out.put("windows",windows); Object observed=raw.opt("observedAt");
+        if(observed instanceof Number && ((Number)observed).longValue()>0) out.put("observedAt",observed);
+        return out.has("remaining") || windows.length()>0 ? out : null;
+    }
+    static void billingAdoptRefresh(JSONObject snapshot, JSONObject current) throws Exception {
+        JSONObject before=new JSONObject(snapshot.toString()), after=new JSONObject(current.toString());
+        String[] fields={"access","token","refresh","idToken","expires","lastRefresh"};
+        for(String field:fields) { before.remove(field); after.remove(field); }
+        if(!jsonEquivalent(before,after)) throw new IOException("account changed");
+        for(String field:fields) { snapshot.remove(field); if(current.has(field)) snapshot.put(field,current.opt(field)); }
+    }
+    private synchronized boolean billingAccountCurrent(String provider, JSONObject original) {
+        JSONObject p=getProviderById(provider); if(p==null || !p.optBoolean("enabled",true)) return false;
+        JSONArray accounts=p.optJSONArray("accounts"); String id=original.optString("id",""); if(id.isEmpty()) return false;
+        JSONObject found=null; for(int i=0;accounts!=null && i<accounts.length();i++) { JSONObject a=accounts.optJSONObject(i);
+            if(a!=null && id.equals(a.optString("id",""))) { if(found!=null) return false; found=a; } }
+        return qoderEnabled(found) && jsonEquivalent(found,original);
+    }
+    private JSONObject billingSnapshot(String id, JSONObject provider) throws Exception {
+        JSONObject models=new JSONObject();
+        JSONArray ids=provider.optJSONArray("models"); JSONObject meta=provider.optJSONObject("modelMeta");
+        for(int i=0;ids!=null && i<ids.length();i++) {
+            String model=ids.optString(i, ""); if(model.isEmpty()) continue;
+            JSONObject raw=meta==null?null:meta.optJSONObject(model);
+            JSONObject normalized=normalizeBilling(id,raw), clean=new JSONObject();
+            if(normalized.optJSONObject("billing")!=null) clean.put("billing",normalized.optJSONObject("billing"));
+            if("antigravity".equals(id) && raw!=null && raw.opt("remaining") instanceof Number) {
+                double n=raw.optDouble("remaining",-1);
+                if(Double.isFinite(n) && n>=0 && n<=1) {
+                    JSONObject allowance=new JSONObject().put("kind","allowance").put("scope","model").put("unit","percent").put("remainingPercent",n*100).put("source","saved_catalog");
+                    long observed=raw.optLong("catalogObservedAt",raw.optLong("observedAt",0)); if(observed>0) allowance.put("observedAt",observed); else allowance.put("staleKnown",true);
+                    clean.put("allowance",allowance);
+                }
+            }
+            if("qoder_cn".equals(id)) {
+                JSONArray accounts=provider.optJSONArray("accounts"), variants=new JSONArray(); Double value=null; boolean differs=false;
+                for(int j=0;accounts!=null && j<accounts.length();j++) { JSONObject a=accounts.optJSONObject(j); if(!qoderEnabled(a)) continue;
+                    JSONObject am=a.optJSONObject("modelMeta"), ar=am==null?null:am.optJSONObject(model);
+                    if(ar==null) continue; JSONObject bill=normalizeBilling(id,ar).optJSONObject("billing");
+                    if(bill==null || !(bill.opt("value") instanceof Number)) continue;
+                    double v=bill.optDouble("value"); if(value==null) value=v; else if(Double.compare(value,v)!=0) differs=true;
+                    variants.put(new JSONObject().put("accountId",a.optString("id","")).put("name",a.optString("name","")).put("billing",bill));
+                }
+                if(variants.length()>0) clean.put("billingVariants",variants);
+                if(differs) { clean.remove("billing"); clean.put("billingScope","account"); }
+                else if(variants.length()>0) clean.put("billing",variants.getJSONObject(0).getJSONObject("billing"));
+            }
+            models.put(model,clean);
+        }
+        JSONArray results=new JSONArray(), accounts=provider.optJSONArray("accounts");
+        boolean supported=java.util.Arrays.asList("codex","cline","github-copilot","catpaw","minimax-code").contains(id);
+        for(int i=0;accounts!=null && i<accounts.length();i++) {
+            if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
+            JSONObject a=accounts.optJSONObject(i); if(!qoderEnabled(a)) continue;
+            JSONObject item=new JSONObject().put("accountId",a.optString("id", "")).put("name",a.optString("name", ""));
+            if("zcode".equals(id) && !a.optString("jwt","").isEmpty()) {
+                try {
+                    JSONObject gift=currentGift(a.optString("jwt",""),a.optString("device","")); JSONArray windows=new JSONArray();
+                    if(gift!=null && gift.optBoolean("ok",false)) for(int j=0;ids!=null && j<ids.length();j++) {
+                        String model=ids.optString(j,""); long rem=ZCodeGift.remainingFor(gift,model);
+                        if(rem>=0) windows.put(new JSONObject().put("name",model).put("scope","model").put("unit","gift_units").put("remaining",rem));
+                    }
+                    if(windows.length()>0) item.put("allowance",new JSONObject().put("kind","allowance").put("scope","account").put("unit","gift_units").put("windows",windows).put("observedAt",System.currentTimeMillis()));
+                    else item.put("errorKind","unknown");
+                } catch(Exception e) { item.put("errorKind","unavailable"); }
+            } else if(!supported && billingTransport==null) item.put("errorKind",java.util.Arrays.asList("qoder_cn","workbuddy","workbuddy-ai","raccoon","trae-cn","trae-international","loomy","antigravity").contains(id)?"not_provided":"unsupported");
+            else try { JSONObject allowance=safeAllowance(fetchBillingAllowance(id,a)); if(allowance==null) item.put("errorKind","unknown"); else item.put("allowance",allowance); }
+            catch(Exception e) { item.put("errorKind","unavailable"); }
+            if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
+            if(billingAccountCurrent(id,a)) results.put(item);
+        }
+        return new JSONObject().put("ok",true).put("provider",id).put("accounts",results).put("models",models);
+    }
+    private Response billingResponse(IHTTPSession session) throws Exception {
+        if(session.getMethod()!=Method.GET) return errorResponse(405,"GET required");
+        if(!isLocalRequest(session)) return errorResponse(403,"Loopback only");
+        List<String> values=session.getParameters().get("provider");
+        if(values==null || values.size()!=1) return errorResponse(400,"Provider required");
+        String id=values.get(0); JSONObject snapshot;
+        synchronized(this) { JSONObject provider=getProviderById(id);
+            if(provider==null) return errorResponse(404,"Provider unavailable");
+            if(!provider.optBoolean("enabled",true)) return errorResponse(403,"Provider disabled");
+            snapshot=new JSONObject(provider.toString());
+        }
+        if(!billingBusy.add(id)) return errorResponse(409,"Provider busy");
+        java.util.concurrent.FutureTask<JSONObject> task=new java.util.concurrent.FutureTask<>(() -> billingSnapshot(id,snapshot));
+        try { new Thread(scopedTask(() -> { try { task.run(); } finally { billingBusy.remove(id); } }),"provider-billing").start(); }
+        catch(Throwable failure) { billingBusy.remove(id); return errorResponse(503,"Billing unavailable"); }
+        try {
+            JSONObject result=task.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            synchronized(this) {
+                JSONObject current=getProviderById(id);
+                if(current==null || !current.optBoolean("enabled",true)) return errorResponse(409,"Provider changed");
+                JSONArray original=snapshot.optJSONArray("accounts"), returned=result.optJSONArray("accounts"), filtered=new JSONArray();
+                for(int i=0;returned!=null && i<returned.length();i++) { JSONObject row=returned.optJSONObject(i); if(row==null) continue;
+                    for(int j=0;original!=null && j<original.length();j++) { JSONObject a=original.optJSONObject(j);
+                        if(a!=null && row.optString("accountId").equals(a.optString("id")) && billingAccountCurrent(id,a)) { filtered.put(row); break; } }
+                }
+                result.put("accounts",filtered);
+                if("qoder_cn".equals(id)) {
+                    for(int j=0;original!=null && j<original.length();j++) { JSONObject a=original.optJSONObject(j);
+                        if(qoderEnabled(a) && !billingAccountCurrent(id,a)) return errorResponse(409,"Provider accounts changed"); }
+                }
+                return jsonResponse(result);
+            }
+        }
+        catch(java.util.concurrent.TimeoutException timeout) { task.cancel(true); return errorResponse(504,"Billing timed out"); }
+        catch(Exception e) { return errorResponse(503,"Billing unavailable"); }
+    }
 
     public GatewayServer(Context context, int port) {
         super(port);
@@ -1595,6 +1936,8 @@ public class GatewayServer extends NanoHTTPD {
         }
 
         try {
+            if ("/api/providers/billing".equals(uri)) return billingResponse(session);
+
             // 0. Codex 原生 Responses / Models 端点直通拦截
             if (uri.startsWith("/backend-api/codex")) {
                 return handleCodexNative(session, uri, method, session.getHeaders(), rawBody);
@@ -2666,6 +3009,16 @@ public class GatewayServer extends NanoHTTPD {
                                 : (!si.uid.isEmpty() ? si.uid : "Qoder CN 账号");
                         // 同名同账号不重复入池（复用统一判定）
                         JSONObject dup = findDuplicateAccount(getProviderById("qoder_cn"), accName, si.access);
+                        if (dup == null && si.uid != null && !si.uid.trim().isEmpty()) {
+                            JSONObject qp=getProviderById("qoder_cn"); JSONArray qa=qp==null?null:qp.optJSONArray("accounts");
+                            for(int qi=0;qa!=null && qi<qa.length();qi++) { JSONObject a=qa.optJSONObject(qi); if(a!=null && si.uid.equals(a.optString("uid", ""))) { if(dup!=null) throw new IOException("Qoder account conflict"); dup=a; } }
+                        }
+                        if (dup != null && replaceQoderAuthorization(new JSONObject(dup.toString()),si)) {
+                            ret.put("keyId",dup.optString("id", "")); ret.put("account",accName);
+                            ret.put("deviceChat",si.deviceChat); ret.put("updated",true);
+                            ret.put("message","已有 Qoder 账号授权已更新，请同步模型目录");
+                            qoderFlows.remove(flowId); return jsonResponse(ret);
+                        }
                         if (dup != null) {
                             ret.put("ok", false);
                             ret.put("status", "duplicate");
@@ -2969,7 +3322,7 @@ public class GatewayServer extends NanoHTTPD {
                 if (token.isEmpty()) {
                     JSONArray keys = prov.optJSONArray("keys");
                     if (keys != null && keys.length() > 0) {
-                        token = keys.optString(0, "");
+                        for (int i=0; i<keys.length(); i++) { String k=keys.optString(i, "").trim(); if (!k.isEmpty()) { token=k; break; } }
                         isOauth = false;
                     }
                 }
@@ -3993,10 +4346,11 @@ public class GatewayServer extends NanoHTTPD {
                     prov.put("models",modes); saveConfig(configJson);
                     return jsonResponse(new JSONObject().put("ok",true).put("provider",provId).put("count",modes.length()).put("models",modes).put("message","网页模式别名，非云端模型目录"));
                 }
+                if ("qoder_cn".equals(provId)) return syncQoderCatalog(new JSONObject(prov.toString()));
                 String token = "";
                 JSONArray accounts = prov.optJSONArray("accounts");
                 if (accounts != null && accounts.length() > 0) {
-                    token = accounts.getJSONObject(0).optString("token", "");
+                    for (int i=0; i<accounts.length(); i++) { JSONObject a=accounts.optJSONObject(i); if (qoderEnabled(a) && !a.optString("token", "").trim().isEmpty()) { token=a.optString("token", ""); break; } }
                 }
                 if (token.isEmpty()) {
                     JSONArray keys = prov.optJSONArray("keys");
@@ -4046,13 +4400,13 @@ public class GatewayServer extends NanoHTTPD {
                             bindCodexPersistence(ca, cinfo);
                         }
                     }
-                    fetched = CodexAuth.syncModels(cinfo);
+                    fetched = CodexAuth.syncModelsStrict(cinfo);
                     prov = getProviderById("codex");
                     if (prov == null) return errorResponse(409, "Codex account unavailable");
                 } else if ("cline".equals(provId)) {
                     fetched = new ArrayList<String>();
                     JSONObject cmeta = new JSONObject();
-                    List<String> cms = ClineAuth.fetchFeed(cmeta);
+                    List<String> cms = ClineAuth.fetchFeedStrict(cmeta);
                     for (String cm : cms) fetched.add(cm);
                     java.util.Iterator<String> ck = cmeta.keys();
                     while (ck.hasNext()) {
@@ -4061,41 +4415,8 @@ public class GatewayServer extends NanoHTTPD {
                     }
                 } else if ("raccoon".equals(provId)) {
                     fetched = fetchRaccoonModels(token, modelMeta);
-                } else if ("qoder_cn".equals(provId)) {
-                    JSONObject acc = null;
-                    JSONArray qaccs = prov.optJSONArray("accounts");
-                    if (qaccs != null && qaccs.length() > 0) acc = qaccs.optJSONObject(0);
-                    if (acc == null) return errorResponse(400, "请先登录 Qoder CN 再同步模型");
-                    QoderAuth.SignIn qsi = new QoderAuth.SignIn();
-                    qsi.access = acc.optString("token", "");
-                    qsi.deviceToken = acc.optString("deviceToken", "");
-                    qsi.uid = acc.optString("uid", "");
-                    qsi.email = acc.optString("email", "");
-                    qsi.name = acc.optString("name", "");
-                    qsi.machineId = acc.optString("machineId", "");
-                    qsi.deviceChat = acc.optBoolean("deviceChat", false);
-                    fetched = new ArrayList<String>();
-                    JSONObject qmeta = new JSONObject();
-                    JSONArray qms = QoderAuth.fetchModels(qsi, qmeta);
-                    for (int qi = 0; qi < qms.length(); qi++) fetched.add(qms.optString(qi));
-                    // 注意：这里必须合入公共的 modelMeta 变量，
-                    // 因为尾部还有 prov.put("modelMeta", modelMeta) 会整体覆盖
-                    java.util.Iterator<String> qk = qmeta.keys();
-                    while (qk.hasNext()) {
-                        String kk = qk.next();
-                        modelMeta.put(kk, qmeta.opt(kk));
-                    }
                 } else if ("catpaw".equals(provId)) {
-                    // 妙手的模型是桌面客户端内置表，没有远端目录接口
-                    fetched = new ArrayList<String>();
-                    JSONArray cm = CatPawAuth.modelList();
-                    for (int ci = 0; ci < cm.length(); ci++) fetched.add(cm.optString(ci));
-                    JSONObject cmm = CatPawAuth.modelMeta();
-                    java.util.Iterator<String> ck = cmm.keys();
-                    while (ck.hasNext()) {
-                        String kk = ck.next();
-                        modelMeta.put(kk, cmm.opt(kk));
-                    }
+                    fetched = CatPawAuth.fetchCatalog(token, modelMeta);
                 } else if ("github-copilot".equals(provId)) {
                     JSONObject cacc = null;
                     JSONArray caccs = prov.optJSONArray("accounts");
@@ -4120,11 +4441,11 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     if (macc == null) return errorResponse(400, "请先登录 MiniMax Code 再同步模型");
                     MiniMaxLifecycle.Lease ml = miniLease(macc,false,null);
-                    fetched = miniMaxAuxTransport==null ? MiniMaxAuth.models(ml.credentials.access) : miniMaxAuxTransport.models(ml.credentials.access);
+                    fetched = miniMaxAuxTransport==null ? MiniMaxAuth.models(ml.credentials.access,modelMeta) : miniMaxAuxTransport.models(ml.credentials.access);
                     if(fetched==null || fetched.isEmpty()) return errorResponse(500,"MiniMax 模型同步失败");
                     JSONArray result=new JSONArray(); for(String model:fetched) result.put(model);
-                    try { persistMiniMaxAux(ml,result,null); } catch(Exception stale) { return errorResponse(409,"MiniMax 账号已变化或保存失败"); }
-                    return jsonResponse(new JSONObject().put("ok",true).put("provider",provId).put("count",fetched.size()).put("models",result));
+                    try { persistMiniMaxAux(ml,result,null,modelMeta); } catch(Exception stale) { return errorResponse(409,"MiniMax 账号已变化或保存失败"); }
+                    return jsonResponse(new JSONObject().put("ok",true).put("provider",provId).put("count",fetched.size()).put("models",result).put("message","成功同步 MiniMax " + fetched.size() + " 个模型（上下文信息，非消耗倍率）"));
                 } else if ("antigravity".equals(provId)) {
                     JSONObject aacc = null;
                     JSONArray aaccs = prov.optJSONArray("accounts");
@@ -4232,9 +4553,11 @@ public class GatewayServer extends NanoHTTPD {
                 String testModel = req.optString("model", "workbuddy/hy3");
 
                 // zcode 多一层赠送额度信息，先单独问（能顺带把余额数带回来）
+                String giftFallback = null;
                 if ("zcode".equals(providerIdOf(testModel))) {
-                    JSONObject giftProbe = probeZCodeGift(testModel);
-                    if (giftProbe != null) return jsonResponse(giftProbe);
+                    ZCodeGiftProbe giftProbe = probeZCodeGift(testModel);
+                    if (giftProbe.answer != null) return jsonResponse(giftProbe.answer);
+                    giftFallback = giftProbe.fallback;
                 }
 
                 List<RouteTarget> cands = resolveCandidates(testModel);
@@ -4242,15 +4565,29 @@ public class GatewayServer extends NanoHTTPD {
                     JSONObject errRet = new JSONObject();
                     errRet.put("ok", false);
                     errRet.put("model", testModel);
-                    errRet.put("error", "未配置有效密钥或账号未就绪 (" + testModel + ")");
+                    String why = noCandidateReason(testModel);
+                    errRet.put("error", "unknown_provider".equals(why) ? "未找到对应供应商" : "未配置有效密钥或账号未就绪 (" + testModel + ")");
+                    errRet.put("reason", why);
+                    // 模型不在这个供应商的清单里，是「模型与端点」层的问题，不是没登录，
+                    // 两者的处置完全不同，不能都报「未就绪」。
+                    FailureLayers.describe(errRet, ("model_not_listed".equals(why) || "unknown_provider".equals(why))
+                            ? FailureLayers.Kind.NOT_FOUND : FailureLayers.Kind.NO_CANDIDATE);
                     return jsonResponse(errRet);
                 }
                 RouteTarget target = cands.get(0);
                 if (target.commercialCandidates != null) {
                     target.commercialCredential = commercialPool().choose(commercialScope(target), target.upstreamModel,
                             target.commercialCandidates, new java.util.HashSet<String>());
-                    if (target.commercialCredential == null)
-                        return jsonResponse(new JSONObject().put("ok", false).put("model", testModel).put("error", "All credentials are cooling down"));
+                    if (target.commercialCredential == null) {
+                        JSONObject cool = new JSONObject();
+                        cool.put("ok", false);
+                        cool.put("model", testModel);
+                        cool.put("provider", target.providerId);
+                        cool.put("reason", "all_keys_cooling");
+                        cool.put("error", "这家的商业 Key 全在冷却中，这次没有请求上游");
+                        FailureLayers.describe(cool, FailureLayers.Kind.COOLDOWN);
+                        return jsonResponse(cool);
+                    }
                     target.apiKey = target.commercialCredential.secret();
                 }
 
@@ -4278,7 +4615,21 @@ public class GatewayServer extends NanoHTTPD {
                 ret.put("provider", target.providerId);
                 ret.put("localRejection",a.localRejection);
                 ret.put("executionUnknown",a.sent && !a.ok && (a.status<=0 || a.protocolFailure));
-                if(a.failure!=null)ret.put("errorKind",a.failure.kind.name().toLowerCase(java.util.Locale.ROOT));
+                if(giftFallback!=null) ret.put("giftFallbackReason", giftFallback);
+                if(!a.ok) {
+                    // 传输层已经判出来的，就用那个更具体的类；否则按状态码与正文判。
+                    // 这里不再把一切都折成「查询失败」，面板要能说出是哪一层坏了。
+                    FailureLayers.Kind kind = a.localRejection ? FailureLayers.Kind.LOCAL_REJECTION
+                            : (a.transportKind != null
+                                ? FailureLayers.fromName(a.transportKind)
+                                : a.protocolFailure ? FailureLayers.Kind.SCHEMA
+                                : FailureLayers.fromResponse(a.status, a.body));
+                    FailureLayers.describe(ret, kind);
+                    if(a.transportKind!=null) ret.put("transportKind", a.transportKind);
+                    FailureLayers.describeExecution(ret, a.sent, a.sent && (a.status<=0 || a.protocolFailure));
+                } else if(a.failure!=null) {
+                    ret.put("errorKind",a.failure.kind.name().toLowerCase(java.util.Locale.ROOT));
+                }
                 String probeWait=a.retryAfter;
                 if(probeWait==null && a.response!=null)probeWait=a.response.getHeader("Retry-After");
                 probeWait=ProviderRetryPolicy.safeRetryAfter(probeWait);
@@ -4291,13 +4642,21 @@ public class GatewayServer extends NanoHTTPD {
                 if (a.ok) {
                     String reply = a.textOut == null ? "" : a.textOut.trim();
                     if (reply.isEmpty() && a.reasoningOut != null) reply = a.reasoningOut.trim();
-                    if (reply.isEmpty()) reply = "握手成功";
+                    if (reply.isEmpty()) {
+                        // 200 但正文和思考都为空：以前补一句「握手成功」，等于把上游改协议、
+                        // 被风控回空都记成「可用」。这里如实报空回包，仍保留上游 200。
+                        ret.put("ok", false);
+                        FailureLayers.describe(ret, FailureLayers.Kind.EMPTY_REPLY);
+                        ret.put("error", "上游回了 HTTP 200，但正文与思考都为空；不能据此判定可用。");
+                        return jsonResponse(ret);
+                    }
                     if (reply.length() > 80) reply = reply.substring(0, 80) + "...";
                     ret.put("ok", true);
                     ret.put("reply", reply);
                 } else {
                     ret.put("ok", false);
                     String err = (a.body == null || a.body.isEmpty()) ? ("HTTP " + a.status) : a.body;
+                    err = scrubUpstreamSecrets(err, target);
                     if (err.length() > 300) err = err.substring(0, 300);
                     ret.put("error", err);
                     if ("zcode".equals(target.providerId) && err.contains("1113")) {
@@ -4942,8 +5301,9 @@ public class GatewayServer extends NanoHTTPD {
                 JSONObject meta = new JSONObject();
                 org.json.JSONArray ms = QoderAuth.fetchModels(si, meta);
                 if (ms != null && ms.length() > 0) {
-                    qp.put("models", ms);
-                    qp.put("modelMeta", meta);
+                    acc.put("models", new JSONArray(ms.toString()));
+                    acc.put("modelMeta", new JSONObject(meta.toString()));
+                    if (accounts.length()==1) { qp.put("models", ms); qp.put("modelMeta", meta); }
                 }
             } catch (Exception ignored) {
             }
@@ -7829,6 +8189,7 @@ public class GatewayServer extends NanoHTTPD {
             // 连接/DNS/TLS/超时：状态记 0，让 retryable 认为"换一家可能就通了"
             out.ok = false;
             out.status = 0;
+            out.transportKind = FailureLayers.transportName(e);
             if (target.commercialCandidates != null || "raccoon".equals(target.providerId)) {
                 out.body = "Upstream connection failed; execution outcome unknown";
                 out.response = errorResponse(502, out.body);
@@ -7915,7 +8276,14 @@ public class GatewayServer extends NanoHTTPD {
             si.uid=account.optString("uid",""); si.email=account.optString("email","");
             si.name=account.optString("name",""); si.machineId=account.optString("machineId","");
             si.deviceChat=account.optBoolean("deviceChat",false);
-            JSONObject provider=getProviderById(target.providerId), all=provider==null?null:provider.optJSONObject("modelMeta");
+            if (account.optLong("expiresAt",0)>0 && account.optLong("expiresAt",0)<=System.currentTimeMillis())
+                throw new IllegalArgumentException("Qoder token expired; synchronize models");
+            JSONObject all=account.optJSONObject("modelMeta");
+            if (account.optJSONArray("models")==null && all==null) {
+                JSONObject provider=getProviderById(target.providerId);
+                JSONArray accounts=provider==null?null:provider.optJSONArray("accounts");
+                all=accounts!=null && accounts.length()==1?provider.optJSONObject("modelMeta"):null;
+            }
             JSONObject meta=all==null?null:all.optJSONObject(target.upstreamModel);
             if(meta==null || !target.upstreamModel.equals(meta.optString("key","")))
                 throw new IllegalArgumentException("Qoder model catalog missing or mismatched; synchronize models");
@@ -8488,6 +8856,47 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     /**
+     * gift 分支的两种结果：要么直接给出答案，要么说明为什么回落去打 Plan。
+     * 回落原因必须带出去——否则用户只看到 Plan 路径的 1113（「没额度」），
+     * 而真实原因可能是没有 session、摘要不完整、或这个型号本来就不在赠送范围。
+     */
+    private static final class ZCodeGiftProbe {
+        final JSONObject answer;
+        final String fallback;
+        private ZCodeGiftProbe(JSONObject answer, String fallback) { this.answer = answer; this.fallback = fallback; }
+        static ZCodeGiftProbe answer(JSONObject o) { return new ZCodeGiftProbe(o, null); }
+        static ZCodeGiftProbe fallback(String why) { return new ZCodeGiftProbe(null, why); }
+    }
+
+    /** 没有候选时说清是哪一种：供应商不认识、被关掉、没有凭据、模型不在清单。 */
+    private String noCandidateReason(String model) {
+        try {
+            String pid = providerIdOf(model);
+            if (pid == null || pid.isEmpty()) return "unknown_provider";
+            JSONObject p = getProviderById(pid);
+            if (p == null) return "unknown_provider";
+            if (!p.optBoolean("enabled", true)) return "provider_disabled";
+            JSONArray accs = p.optJSONArray("accounts");
+            JSONArray keys = p.optJSONArray("keys");
+            boolean anyAccount = accs != null && accs.length() > 0;
+            boolean anyKey = keys != null && keys.length() > 0;
+            if (!anyAccount && !anyKey) return "no_credential";
+            JSONArray ms = p.optJSONArray("models");
+            if (ms != null && ms.length() > 0) {
+                String bare = model.startsWith(pid + "/") ? model.substring(pid.length() + 1) : model;
+                boolean known = false;
+                for (int i = 0; i < ms.length(); i++) {
+                    if (bare.equals(ms.optString(i, ""))) { known = true; break; }
+                }
+                if (!known) return "model_not_listed";
+            }
+            return "no_usable_credential";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    /**
      * 连通性测试的 zcode gift 分支。
      *
      * 为什么必须有：/api/test-model 是独立实现，自己拼 baseUrl + /chat/completions，
@@ -8497,9 +8906,23 @@ public class GatewayServer extends NanoHTTPD {
      *
      * 返回 null 表示 gift 覆盖不了这个模型，让调用方继续走原来的 Plan 路径。
      */
-    private JSONObject probeZCodeGift(String testModel) {
+    private static boolean validGiftProbeContent(JSONObject msg) {
+        JSONArray blocks = msg == null ? null : msg.optJSONArray("content");
+        if (blocks == null || blocks.length() == 0) return false;
+        for (int i = 0; i < blocks.length(); i++) {
+            JSONObject block = blocks.optJSONObject(i);
+            if (block == null) return false;
+            String type = block.optString("type", "");
+            if ("text".equals(type)) { if (!(block.opt("text") instanceof String)) return false; }
+            else if ("thinking".equals(type)) { if (!(block.opt("thinking") instanceof String)) return false; }
+            else return false;
+        }
+        return true;
+    }
+
+    private ZCodeGiftProbe probeZCodeGift(String testModel) {
         JSONObject acc = zcodeSessionAccount();
-        if (acc == null) return null;
+        if (acc == null) return ZCodeGiftProbe.fallback("no_session");
 
         String jwt = acc.optString("jwt", "");
         String device = acc.optString("device", "");
@@ -8507,22 +8930,37 @@ public class GatewayServer extends NanoHTTPD {
         String upstream = testModel.startsWith("zcode/") ? testModel.substring(6) : testModel;
 
         ZCodeRefusalPolicy.Hold giftHold=ZCodeGift.hold(jwt,device,REQUEST_CONTEXT.get());
-        if(giftHold!=null){try{return new JSONObject().put("ok",false).put("model",testModel).put("billing","gift").put("statusCode",429).put("error","ZCode gift 本地冷却中，未请求上游");}catch(Exception ignored){return null;}}
+        if(giftHold!=null){
+            try{
+                JSONObject cool=new JSONObject().put("ok",false).put("model",testModel).put("billing","gift")
+                        .put("statusCode",429).put("error","ZCode gift 本地冷却中，这次没有请求上游");
+                FailureLayers.describe(cool, FailureLayers.Kind.COOLDOWN, FailureLayers.Layer.ACTIVITY);
+                if(giftHold.retryAfterMillis>0) cool.put("retryAfter",Long.toString((giftHold.retryAfterMillis+999)/1000));
+                return ZCodeGiftProbe.answer(cool);
+            }catch(Exception ignored){return ZCodeGiftProbe.fallback("hold_failed");}
+        }
         JSONObject summary = currentGift(jwt, device);
-        if (!summary.optBoolean("ok", false)) {
-            // 查不到额度状态≠额度没了：明确报错，别伪装成「走 Plan」再给一个 1113
+        if (summary == null || !summary.optBoolean("ok", false) || !summary.optBoolean("complete", false)) {
             JSONObject err = new JSONObject();
             try {
-                err.put("ok", false);
-                err.put("model", testModel);
-                err.put("billing", "gift");
-                err.put("error", "赠送额度状态查询失败：" + summary.optString("error", "未知原因")
-                        + "（已重试一次，这不代表额度没了）");
+                err.put("ok", false).put("model", testModel).put("billing", "gift")
+                        .put("error", "赠送额度状态未知，无法确认模型覆盖范围；未请求推理。")
+                        .put("giftStatus", "unread").put("executionUnknown", false);
+                int status = summary == null ? 0 : summary.optInt("status", 0);
+                if (status > 0) err.put("statusCode", status);
+                if (summary != null && summary.has("businessCode")) {
+                    Object code = summary.opt("businessCode");
+                    if (code instanceof Number) err.put("businessCode", code);
+                }
+                FailureLayers.Kind kind = status > 0 ? FailureLayers.http(status) : FailureLayers.Kind.UNREAD;
+                FailureLayers.Layer layer = (kind == FailureLayers.Kind.AUTH || kind == FailureLayers.Kind.RESTRICTED)
+                        ? FailureLayers.Layer.LOGIN : FailureLayers.Layer.NONE;
+                FailureLayers.describe(err, kind, layer);
             } catch (Exception ignored) {}
-            return err;
+            return ZCodeGiftProbe.answer(err);
         }
         java.util.List<String> allowed = ZCodeGift.allowedModels(summary);
-        if (allowed.isEmpty()) return null;
+        if (allowed.isEmpty()) return ZCodeGiftProbe.fallback("gift_covers_no_model");
 
         String useModel = null;
         boolean exact = false;
@@ -8534,7 +8972,7 @@ public class GatewayServer extends NanoHTTPD {
             }
         }
         // 型号不在赠送范围时不冒充：让调用方走 Plan 路径，如实报 1113 更诚实
-        if (!exact) return null;
+        if (!exact) return ZCodeGiftProbe.fallback("model_not_in_gift");
 
         long start = System.currentTimeMillis();
         JSONObject ret = new JSONObject();
@@ -8556,45 +8994,84 @@ public class GatewayServer extends NanoHTTPD {
 
             ret.put("model", testModel);
             ret.put("latencyMs", latency);
-            ret.put("statusCode", ans.status);
+            ret.put("statusCode", ans.status <= 0 ? 502 : ans.status);
+            ret.put("executionUnknown", ans.sent && ans.status <= 0);
             ret.put("billing", "gift");
             ret.put("billingName", "ZCode 赠送额度");
-            ret.put("giftRemaining", summary.optLong("remainingUnits", 0));
+            // 摘要里的 remainingUnits 是全部桶的合计，不区分型号；测某个型号时拿它当
+            // 「这个型号还剩多少」会把别的型号的额度算进来。这里按覆盖该型号的桶取，
+            // 读不出来就不写这个字段，不拿合计冒充。
+            long remaining = ZCodeGift.remainingFor(summary, useModel);
+            if (remaining >= 0) ret.put("giftRemaining", remaining);
 
-            if (ans.status >= 200 && ans.status < 400) {
+            if (ans.status >= 200 && ans.status < 300) {
                 JSONObject msg = null;
                 try {
                     msg = new JSONObject(ans.body);
                 } catch (Exception ignored) {
                 }
+                FailureLayers.Kind business = FailureLayers.fromResponse(ans.status, ans.body);
+                if (business != FailureLayers.Kind.OTHER) {
+                    ret.put("ok", false);
+                    FailureLayers.describe(ret, business);
+                    ret.put("error", "ZCode 赠送通道返回业务错误。");
+                    FailureLayers.describeExecution(ret, ans.sent, false);
+                    return ZCodeGiftProbe.answer(ret);
+                }
+                if (!validGiftProbeContent(msg)) {
+                    ret.put("ok", false).put("executionUnknown", ans.sent);
+                    FailureLayers.describe(ret, FailureLayers.Kind.SCHEMA);
+                    FailureLayers.describeExecution(ret, ans.sent, ans.sent);
+                    ret.put("error", "ZCode 赠送通道返回的数据格式无效。");
+                    return ZCodeGiftProbe.answer(ret);
+                }
                 String reply = ZCodeGift.textOf(msg);
                 if (reply.trim().isEmpty()) reply = ZCodeGift.thinkingOf(msg);
                 reply = reply.trim();
-                if (reply.isEmpty()) reply = "握手成功";
+                if (reply.isEmpty()) {
+                    ret.put("ok", false);
+                    FailureLayers.describe(ret, FailureLayers.Kind.EMPTY_REPLY);
+                    ret.put("error", "ZCode 赠送通道回了 2xx，但正文与思考都为空；不能据此判定可用。");
+                    ret.put("executionUnknown", ans.sent);
+                    FailureLayers.describeExecution(ret, ans.sent, ans.sent);
+                    return ZCodeGiftProbe.answer(ret);
+                }
+                if (!jwt.isEmpty()) reply = reply.replace(jwt, "[redacted]");
+                if (!device.isEmpty()) reply = reply.replace(device, "[redacted]");
                 if (reply.length() > 80) reply = reply.substring(0, 80) + "...";
                 ret.put("ok", true);
                 ret.put("reply", reply);
             } else {
                 ret.put("ok", false);
                 String err;
-                if (ans.refused) {
-                    err = ans.edge
-                            ? "ZCode 返回边缘访问拒绝；本地已短暂暂停重复请求"
-                            : "ZCode 返回请求拒绝（可能含 3012），请稍后检查官方客户端；不能据此判定封禁";
+                if (ans.edge) {
+                    err = "ZCode 边缘防火墙拦了这台机器的来源地址（不是你账号被封）；换网络或代理再试";
+                    FailureLayers.describe(ret, FailureLayers.Kind.NETWORK);
+                    ret.put("hint", "边缘拦截按来源 IP 判定，账号与额度都没参与，不要因此重新登录。");
+                } else if (ans.refused) {
+                    err = "ZCode 风控拦了这次请求（可能含 3012）；这与密码无关，按官方客户端能否用再判断";
+                    FailureLayers.describe(ret, FailureLayers.Kind.RESTRICTED);
                 } else {
-                    err = "HTTP " + ans.status + ": " + (ans.body.length() > 200
-                            ? ans.body.substring(0, 200) : ans.body);
+                    err = ans.status <= 0 ? "ZCode 赠送通道连接或读取失败。" : "ZCode 赠送通道请求失败。";
+                    FailureLayers.describe(ret, ans.transportKind != null ? FailureLayers.fromName(ans.transportKind) : FailureLayers.fromResponse(ans.status, ans.body));
                 }
                 ret.put("error", err);
+                if (ans.transportKind != null) ret.put("transportKind", ans.transportKind);
+                FailureLayers.describeExecution(ret, ans.sent, ans.sent && ans.status <= 0);
             }
-            return ret;
+            return ZCodeGiftProbe.answer(ret);
         } catch (Exception e) {
             ret.put("model", testModel);
             ret.put("latencyMs", System.currentTimeMillis() - start);
             ret.put("billing", "gift");
             ret.put("ok", false);
-            ret.put("error", "连接异常: " + (e.getMessage() == null ? "未知" : e.getMessage()));
-            return ret;
+            FailureLayers.Kind kind = FailureLayers.transport(e);
+            FailureLayers.describe(ret, kind);
+            ret.put("transportKind", FailureLayers.name(kind));
+            ret.put("statusCode", 502);
+            ret.put("executionUnknown", false);
+            ret.put("error", "ZCode 赠送通道探测异常。");
+            return ZCodeGiftProbe.answer(ret);
         }
     }
 
@@ -8826,6 +9303,7 @@ public class GatewayServer extends NanoHTTPD {
         } catch (Throwable e) {
             out.ok = false;
             out.status = 0;
+            out.transportKind = FailureLayers.transportName(e);
             if (target.commercialCandidates != null || "raccoon".equals(target.providerId)) {
                 out.body = "Upstream connection failed; execution outcome unknown";
                 out.response = errorResponse(502, out.body);
@@ -8972,7 +9450,16 @@ public class GatewayServer extends NanoHTTPD {
                 return out;
             }
 
-            JSONObject res = CatPawAuth.chat(token, target.upstreamModel, msgs);
+            JSONObject catProvider=getProviderById("catpaw");
+            JSONObject catMeta=catProvider==null?null:catProvider.optJSONObject("modelMeta");
+            JSONObject savedType=catMeta==null?null:catMeta.optJSONObject(target.upstreamModel);
+            Integer trustedType=null;
+            if(!"auto".equalsIgnoreCase(target.upstreamModel) && savedType!=null) {
+                Object value=savedType.opt("modelTypeId");
+                if(value instanceof Number) { double d=((Number)value).doubleValue();
+                    if(Double.isFinite(d) && d>0 && d<=Integer.MAX_VALUE && d==Math.rint(d)) trustedType=(int)d; }
+            }
+            JSONObject res = CatPawAuth.chatWithCatalogMetadata(token, target.upstreamModel, msgs, trustedType);
             String finalText = PrivacyMasker.unmaskText(res.optString("text", ""), maskSession);
             String finalReason = res.optString("reasoning", "");
             out.ok = true;
@@ -9093,6 +9580,9 @@ public class GatewayServer extends NanoHTTPD {
         String retryAfter;
         String providerId;
         String modelRef;
+        /** 传输层判定（dns/tls/timeout/refused/network），没判出来时为空。
+         *  以前这里一律 status=0 再折成 502，DNS 失败和上游 502 在面板上长得一模一样。 */
+        String transportKind;
         /** 成功时把回复正文留一份，供 /api/test-model 显示（免得再解析一遍 Response 流） */
         String textOut;
         String reasoningOut;
@@ -9198,16 +9688,19 @@ public class GatewayServer extends NanoHTTPD {
             if (route.commercialCandidates.isEmpty()) return null;
             return route;
         }
-        if ("trae-cn".equals(route.providerId)) {
+        if ("trae-cn".equals(route.providerId) || "qoder_cn".equals(route.providerId)) {
             // Catalogs are per account; a provider-wide union grants no entitlement.
             JSONArray accounts = chosenProvider.optJSONArray("accounts");
             ArrayList<JSONObject> eligible = new ArrayList<JSONObject>();
+            boolean firstEnabled=true;
             for (int i = 0; accounts != null && i < accounts.length(); i++) {
                 JSONObject account = accounts.optJSONObject(i);
-                if (account == null || !account.optBoolean("enabled", true)
+                if (!qoderEnabled(account)
                         || account.optString("id", "").isEmpty()
                         || account.optString("token", "").isEmpty()) continue;
                 JSONArray models = account.optJSONArray("models");
+                if ("qoder_cn".equals(route.providerId) && accounts.length()==1 && firstEnabled && models==null) models=chosenProvider.optJSONArray("models");
+                firstEnabled=false;
                 for (int j = 0; models != null && j < models.length(); j++) {
                     if (mName.equals(models.optString(j))) { eligible.add(account); break; }
                 }
@@ -9565,10 +10058,10 @@ public class GatewayServer extends NanoHTTPD {
                     double mult = model.optDouble("billing_effective_multiplier", model.optDouble("billing_multiplier", -1));
                     String statusName = model.optString("billing_status", "normal");
                     String category = model.optString("billing_category", "");
-                    JSONObject info = new JSONObject();
+                    JSONObject info = new JSONObject(model.toString());
                     if (mult >= 0 && !Double.isInfinite(mult) && !Double.isNaN(mult)) {
                         info.put("multiplier", mult);
-                        info.put("free", mult == 0 || "free".equalsIgnoreCase(statusName) || "free".equalsIgnoreCase(category));
+                        info.put("free", mult == 0);
                     }
                     String desc = model.optString("display_description", model.optString("description", ""));
                     if (!desc.isEmpty()) info.put("desc", desc);
@@ -9593,55 +10086,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private List<String> fetchStandardModels(String providerId, String baseUrl, String token, JSONObject metaOut) {
-        List<String> list = new ArrayList<>();
-        try {
-            String base = baseUrl == null ? "" : baseUrl.trim();
-            while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-            if (base.endsWith("/v1")) base = base.substring(0, base.length() - 3);
-
-            String urlStr = base + "/v1/models";
-            HttpURLConnection conn = NetworkPolicy.openHttp(urlStr);
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("User-Agent", "MagpiePocket/1.0");
-            if ("anthropic".equals(providerId)) {
-                conn.setRequestProperty("x-api-key", token);
-                conn.setRequestProperty("anthropic-version", "2023-06-01");
-            } else {
-                conn.setRequestProperty("Authorization", "Bearer " + token);
-            }
-
-            if (conn.getResponseCode() >= 200 && conn.getResponseCode() < 400) {
-                BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) sb.append(line);
-                br.close();
-
-                JSONObject res = new JSONObject(sb.toString());
-                JSONArray data = res.optJSONArray("data");
-                if (data == null) data = res.optJSONArray("models");
-                if (data != null) {
-                    for (int i = 0; i < data.length(); i++) {
-                        Object o = data.opt(i);
-                        if (o instanceof JSONObject) {
-                            JSONObject m = (JSONObject) o;
-                            String id = m.optString("id", "");
-                            if (id.isEmpty()) id = m.optString("name", "");
-                            if (!id.isEmpty() && !list.contains(id)) list.add(id);
-                        } else if (o != null) {
-                            String id = String.valueOf(o);
-                            if (!id.isEmpty() && !list.contains(id)) list.add(id);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return list;
+        return StandardModelCatalog.fetch(providerId, baseUrl, token, metaOut, this::openVendorConnection);
     }
 
     private JSONObject getWorkBuddyProvider() {
@@ -9711,30 +10156,32 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
             if (!foundCli || list.isEmpty()) throw new IOException();
-            java.util.Map<String, String> creditsByModel = new java.util.HashMap<>();
+            java.util.Map<String, JSONObject> officialByModel = new java.util.HashMap<>();
             JSONArray allModels = data.optJSONArray("models");
             if (allModels != null) {
                 for (int i = 0; i < allModels.length(); i++) {
-                    JSONObject model = allModels.optJSONObject(i);
-                    if (model == null) continue;
-                    String id = model.optString("id", "").trim();
-                    String credits = model.optString("credits", "");
-                    if (!id.isEmpty() && !credits.isEmpty() && !"null".equals(credits)) creditsByModel.put(id, credits);
+                    JSONObject entry = allModels.optJSONObject(i);
+                    if (entry == null) continue;
+                    String id = entry.optString("id", "").trim();
+                    if (!id.isEmpty()) officialByModel.put(id, entry);
                 }
             }
             JSONObject pendingMeta = new JSONObject();
             for (String model : list) {
-                String credits = creditsByModel.get(model);
-                if (credits == null) continue;
+                JSONObject original = officialByModel.get(model);
+                if (original == null) continue;
+                JSONObject info = new JSONObject(original.toString());
+                String credits = original.optString("credits", "");
                 java.util.regex.Matcher matcher = java.util.regex.Pattern
-                        .compile("([0-9]+(?:\\.[0-9]+)?)").matcher(credits);
+                        .compile("(?i)(?<![a-z0-9])(?:x|×)\\s*([0-9]+(?:\\.[0-9]+)?)(?![0-9.])").matcher(credits);
                 if (matcher.find()) {
                     double multiplier = Double.parseDouble(matcher.group(1));
                     if (!Double.isInfinite(multiplier) && !Double.isNaN(multiplier)) {
-                        pendingMeta.put(model, new JSONObject().put("multiplier", multiplier)
-                                .put("free", multiplier == 0).put("credits", credits));
+                        info.put("multiplier", multiplier);
+                        info.put("free", multiplier == 0);
                     }
                 }
+                pendingMeta.put(model, info);
             }
             java.util.Iterator<String> keys = pendingMeta.keys();
             while (keys.hasNext()) {

@@ -416,13 +416,45 @@ public class ClineAuth {
     /**
      * 拉取 Cline 推荐模型与全量云端目录（免登录）
      */
+    interface CatalogFeedReader { Object read(String url) throws Exception; }
+
     public static List<String> fetchFeed(JSONObject metaOut) {
+        return fetchFeedInternal(metaOut, false, ClineAuth::readCatalogFeed);
+    }
+
+    /** Returns an empty list on incomplete/invalid remote feeds; never synthesizes defaults. */
+    public static List<String> fetchFeedStrict(JSONObject metaOut) {
+        return fetchFeedInternal(metaOut, true, ClineAuth::readCatalogFeed);
+    }
+
+    static List<String> fetchFeedStrict(JSONObject metaOut, CatalogFeedReader reader) {
+        return fetchFeedInternal(metaOut, true, reader);
+    }
+
+    private static Object readCatalogFeed(String url) throws Exception {
+        HttpURLConnection conn = openHttp(url);
+        try {
+            conn.setInstanceFollowRedirects(false);
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10000); conn.setReadTimeout(12000);
+            conn.setRequestProperty("Accept", "application/json");
+            for (Map.Entry<String, String> e : clientHeaders(null).entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) return null;
+            return new org.json.JSONTokener(readStream(conn.getInputStream())).nextValue();
+        } finally { conn.disconnect(); }
+    }
+
+    private static List<String> fetchFeedInternal(JSONObject metaOut, boolean strict, CatalogFeedReader reader) {
+        JSONObject pending = new JSONObject();
         List<String> result = new ArrayList<String>();
         Set<String> seen = new HashSet<String>();
 
         try {
             // 1. 获取推荐模型列表（包含 recommended, free, clinePass）
-            JSONObject recFeed = fetchJson(API + "/ai/cline/recommended-models");
+            Object recRaw = reader.read(API + "/ai/cline/recommended-models");
+            JSONObject recFeed = recRaw instanceof JSONObject ? (JSONObject) recRaw : null;
+            boolean validRec = false;
             if (recFeed != null) {
                 JSONObject data = recFeed.optJSONObject("data");
                 if (data != null) recFeed = data;
@@ -430,10 +462,11 @@ public class ClineAuth {
                 String[] groups = new String[]{"recommended", "free", "clinePass"};
                 for (String g : groups) {
                     JSONArray list = recFeed.optJSONArray(g);
-                    if (list == null) continue;
-                    boolean isFree = "free".equals(g);
+                    if (list == null) { if (strict && recFeed.has(g)) return new ArrayList<String>(); continue; }
+                    validRec = true;
                     boolean isPass = "clinePass".equals(g);
                     for (int i = 0; i < list.length(); i++) {
+                        boolean isFree = "free".equals(g);
                         Object item = list.get(i);
                         String id = "";
                         String name = "";
@@ -445,16 +478,17 @@ public class ClineAuth {
                             name = optFirst(o.optString("name", ""), o.optString("displayName", ""), o.optString("label", ""));
                             if (o.optBoolean("free", false)) isFree = true;
                         }
-                        if (id.isEmpty()) continue;
+                        if (id.trim().isEmpty()) { if (strict) return new ArrayList<String>(); continue; }
+                        id = id.trim();
                         if (!seen.contains(id)) {
                             seen.add(id);
                             result.add(id);
                         }
-                        if (metaOut != null) {
-                            JSONObject m = metaOut.optJSONObject(id);
+                        if (pending != null) {
+                            JSONObject m = pending.optJSONObject(id);
                             if (m == null) {
                                 m = new JSONObject();
-                                metaOut.put(id, m);
+                                pending.put(id, m);
                             }
                             if (name.isEmpty() || name.equals(id)) name = prettify(id);
                             m.put("name", name);
@@ -464,47 +498,71 @@ public class ClineAuth {
                     }
                 }
             }
+            if (strict && (!validRec || result.isEmpty())) return new ArrayList<String>();
         } catch (Throwable e) {
-            e.printStackTrace();
+            if (strict) return new ArrayList<String>();
         }
 
         // 2. 尝试获取云端目录，补充上下文长度
         try {
-            JSONObject cloudFeed = fetchJson(API + "/ai/cline/models");
-            if (cloudFeed != null) {
-                JSONArray list = cloudFeed.optJSONArray("data");
-                if (list == null && cloudFeed.has("models")) list = cloudFeed.optJSONArray("models");
+            Object cloudRaw = reader.read(API + "/ai/cline/models");
+            if (cloudRaw instanceof JSONObject || cloudRaw instanceof JSONArray) {
+                JSONObject cloudFeed = cloudRaw instanceof JSONObject ? (JSONObject) cloudRaw : null;
+                JSONArray list = cloudRaw instanceof JSONArray ? (JSONArray) cloudRaw : cloudFeed.optJSONArray("data");
+                if (list == null && cloudFeed != null) list = cloudFeed.optJSONArray("models");
+                if (strict && (list == null || list.length() == 0)) return new ArrayList<String>();
+                int validCloud = 0;
                 if (list != null) {
                     for (int i = 0; i < list.length(); i++) {
                         JSONObject o = list.optJSONObject(i);
-                        if (o == null) continue;
-                        String id = o.optString("id", "").trim();
-                        if (id.isEmpty()) continue;
+                        if (o == null) { if (strict) return new ArrayList<String>(); continue; }
+                        Object rawId = o.opt("id");
+                        if (!(rawId instanceof String) || ((String) rawId).trim().isEmpty()) { if (strict) return new ArrayList<String>(); continue; }
+                        String id = ((String) rawId).trim();
+                        validCloud++;
+                        if (seen.add(id)) result.add(id);
+                        JSONObject cloudMeta = pending.optJSONObject(id);
+                        if (cloudMeta == null) {
+                            cloudMeta = new JSONObject();
+                            String name = optFirst(o.optString("display_name", ""), o.optString("displayName", ""), o.optString("name", ""));
+                            cloudMeta.put("name", name.isEmpty() ? prettify(id) : name);
+                            if (id.startsWith("cline-pass/")) cloudMeta.put("pass", true);
+                            pending.put(id, cloudMeta);
+                        }
                         int ctx = o.optInt("context_length", 0);
-                        if (metaOut != null) {
-                            JSONObject m = metaOut.optJSONObject(id);
+                        JSONObject top = o.optJSONObject("top_provider");
+                        if (ctx <= 0 && top != null) ctx = top.optInt("context_length", 0);
+                        if (ctx <= 0) ctx = o.optInt("context", 0);
+                        if (pending != null) {
+                            JSONObject m = pending.optJSONObject(id);
                             if (m != null && ctx > 0) {
                                 m.put("context", ctx);
                             }
                         }
                     }
                 }
-            }
+                if (strict && validCloud == 0) return new ArrayList<String>();
+            } else if (strict) return new ArrayList<String>();
         } catch (Throwable ignored) {
+            if (strict) return new ArrayList<String>();
         }
 
         // 如果网络完全不可达或未抓到模型，使用内置默认模型快照
-        if (result.isEmpty()) {
+        if (!strict && result.isEmpty()) {
             for (String defM : DEFAULT_MODELS) {
                 result.add(defM);
-                if (metaOut != null) {
+                if (pending != null) {
                     JSONObject m = new JSONObject();
                     m.put("name", prettify(defM));
                     if (defM.contains("-free/")) m.put("free", true);
                     if (defM.startsWith("cline-pass/")) m.put("pass", true);
-                    metaOut.put(defM, m);
+                    pending.put(defM, m);
                 }
             }
+        }
+        if (metaOut != null) {
+            java.util.Iterator<String> keys = pending.keys();
+            while (keys.hasNext()) { String key = keys.next(); try { metaOut.put(key, pending.get(key)); } catch (Exception e) { return new ArrayList<String>(); } }
         }
         return result;
     }
@@ -512,81 +570,177 @@ public class ClineAuth {
     /**
      * 查询 Cline 账号额度与 ClinePass 限额
      */
-    public static JSONObject fetchUsage(String token, boolean isOauth) throws Exception {
-        JSONObject out = new JSONObject();
-        String bearer = token;
-        if (isOauth && !bearer.toLowerCase().startsWith(WORKOS_PREFIX)) {
-            bearer = WORKOS_PREFIX + bearer;
-        }
+    private static final int USAGE_BODY_LIMIT = 1024 * 1024;
 
+    private static final class UsageRead {
+        int status;
+        JSONObject json;
+        FailureLayers.Kind kind;
+    }
+
+    private static UsageRead usageRead(String url, Map<String, String> headers) {
+        UsageRead result = new UsageRead();
+        HttpURLConnection conn = null;
+        try {
+            conn = openHttp(url);
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(12000);
+            conn.setRequestProperty("Accept", "application/json");
+            for (Map.Entry<String, String> e : headers.entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
+            result.status = conn.getResponseCode();
+            if (result.status < 200 || result.status >= 300) {
+                result.kind = readKind(result.status);
+                return result;
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    if (bytes.size() + n > USAGE_BODY_LIMIT) {
+                        result.kind = FailureLayers.Kind.SCHEMA;
+                        return result;
+                    }
+                    bytes.write(buf, 0, n);
+                }
+            }
+            try { result.json = new JSONObject(bytes.toString("UTF-8")); }
+            catch (org.json.JSONException e) { result.kind = FailureLayers.Kind.SCHEMA; return result; }
+            if (businessFailure(result.json)) result.kind = FailureLayers.Kind.BUSINESS;
+        } catch (Exception e) {
+            result.kind = FailureLayers.transport(e);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return result;
+    }
+
+    private static boolean businessFailure(JSONObject obj) {
+        Object error = obj.opt("error");
+        if (error != null && error != JSONObject.NULL && !Boolean.FALSE.equals(error)
+                && !(error instanceof String && ((String) error).isEmpty())) return true;
+        if (Boolean.FALSE.equals(obj.opt("success")) || Boolean.FALSE.equals(obj.opt("ok"))) return true;
+        Object code = obj.opt("code");
+        if (code instanceof Number) {
+            double value = ((Number) code).doubleValue();
+            if (value != 0 && value != 200) return true;
+        } else if (code instanceof String && !((String) code).isEmpty()
+                && !"0".equals(code) && !"200".equals(code)) return true;
+        return false;
+    }
+
+    private static JSONObject usageData(UsageRead r) {
+        if (r.json == null || r.kind != null) return null;
+        if (r.json.has("data")) {
+            JSONObject data = r.json.optJSONObject("data");
+            if (data == null) { r.kind = FailureLayers.Kind.SCHEMA; return null; }
+            if (businessFailure(data)) { r.kind = FailureLayers.Kind.BUSINESS; return null; }
+            return data;
+        }
+        return r.json;
+    }
+
+    private static FailureLayers.Layer usageLayer(FailureLayers.Kind kind, String section) {
+        FailureLayers.Layer known = FailureLayers.layer(kind);
+        if (known == FailureLayers.Layer.NETWORK || kind == FailureLayers.Kind.AUTH || kind == FailureLayers.Kind.RESTRICTED) return known;
+        return "账号信息".equals(section) ? FailureLayers.Layer.LOGIN : FailureLayers.Layer.BALANCE;
+    }
+
+    private static JSONObject usageSection(UsageRead r, boolean valid, String name, JSONArray unread) throws Exception {
+        JSONObject section = new JSONObject();
+        section.put("status", valid ? "ok" : "unknown");
+        if (r.status > 0) section.put("httpStatus", r.status);
+        if (!valid) {
+            if (r.kind == null) r.kind = FailureLayers.Kind.SCHEMA;
+            FailureLayers.describe(section, r.kind, usageLayer(r.kind, name));
+            section.put("affectsInference", JSONObject.NULL);
+            section.put("inferenceStatus", "unknown");
+            unread.put(name + ": " + (r.status > 0 && (r.status < 200 || r.status >= 300)
+                    ? readFailure(r.status) : "数据未能读取"));
+        }
+        return section;
+    }
+
+    public static JSONObject fetchUsage(String token, boolean isOauth) throws Exception {
+        JSONObject out = new JSONObject(), sections = new JSONObject();
+        JSONArray unread = new JSONArray();
+        String bearer = token;
+        if (isOauth && !bearer.toLowerCase(Locale.US).startsWith(WORKOS_PREFIX)) bearer = WORKOS_PREFIX + bearer;
         Map<String, String> headers = clientHeaders(null);
         headers.put("Authorization", "Bearer " + bearer);
 
-        // 1. /users/me
-        String meUrl = API + "/users/me";
-        JSONObject meObj = fetchJsonWithHeaders(meUrl, headers);
+        UsageRead me = usageRead(API + "/users/me", headers);
+        JSONObject identity = usageData(me);
         String userId = "";
-        String plan = "";
-        if (meObj != null) {
-            JSONObject data = meObj.optJSONObject("data");
-            if (data != null) meObj = data;
-            userId = optFirst(meObj.optString("clineUserId", ""), meObj.optString("subject", ""), meObj.optString("id", ""));
-            plan = optFirst(meObj.optString("plan", ""), meObj.optString("planType", ""), meObj.optString("planName", ""));
-            out.put("user", optFirst(meObj.optString("email", ""), meObj.optString("name", ""), userId));
+        if (identity != null) {
+            userId = optFirst(identity.opt("clineUserId") instanceof String ? identity.optString("clineUserId") : "",
+                    identity.opt("subject") instanceof String ? identity.optString("subject") : "",
+                    identity.opt("id") instanceof String ? identity.optString("id") : "");
+        }
+        boolean identityOk = !userId.trim().isEmpty();
+        if (identityOk) {
+            String plan = optFirst(identity.optString("plan", ""), identity.optString("planType", ""), identity.optString("planName", ""));
+            out.put("user", optFirst(identity.optString("email", ""), identity.optString("name", ""), userId));
             if (!plan.isEmpty()) out.put("plan", plan);
         }
+        sections.put("identity", usageSection(me, identityOk, "账号信息", unread));
 
-        // 2. /users/{userId}/balance
-        if (!userId.isEmpty()) {
-            try {
-                String balUrl = API + "/users/" + URLEncoder.encode(userId, "UTF-8") + "/balance";
-                JSONObject balObj = fetchJsonWithHeaders(balUrl, headers);
-                if (balObj != null) {
-                    JSONObject data = balObj.optJSONObject("data");
-                    if (data != null) balObj = data;
-                    double balUnits = balObj.optDouble("balance", -1.0);
-                    if (balUnits >= 0) {
-                        double dollars = balUnits / 1e6;
-                        String balStr = dollars >= 0.01
-                                ? String.format(Locale.US, "$%.2f", dollars)
-                                : String.format(Locale.US, "$%.4f", dollars);
-                        out.put("balance", balStr);
-                        out.put("balanceUSD", dollars);
-                    }
+        UsageRead balance = new UsageRead();
+        JSONObject bal = null;
+        if (identityOk) {
+            balance = usageRead(API + "/users/" + URLEncoder.encode(userId, "UTF-8") + "/balance", headers);
+            bal = usageData(balance);
+        }
+        Object value = bal == null ? null : bal.opt("balance");
+        double units = value instanceof Number ? ((Number) value).doubleValue() : Double.NaN;
+        boolean balanceOk = !Double.isNaN(units) && !Double.isInfinite(units) && units >= 0;
+        if (balanceOk) {
+            double dollars = units / 1e6;
+            out.put("balance", String.format(Locale.US, dollars >= 0.01 ? "$%.2f" : "$%.4f", dollars));
+            out.put("balanceUSD", dollars);
+        }
+        sections.put("balance", usageSection(balance, balanceOk, "余额", unread));
+
+        UsageRead limitsRead = usageRead(API + "/users/me/plan/usage-limits", headers);
+        JSONObject limitData = usageData(limitsRead);
+        JSONArray limits = limitData == null ? null : limitData.optJSONArray("limits");
+        boolean limitsOk = limits != null;
+        JSONArray winOut = new JSONArray();
+        if (limits != null) {
+            for (int i = 0; i < limits.length(); i++) {
+                JSONObject l = limits.optJSONObject(i);
+                Object percent = l == null ? null : l.opt("percentUsed");
+                double pct = percent instanceof Number ? ((Number) percent).doubleValue() : Double.NaN;
+                if (l == null || !(l.opt("type") instanceof String) || l.optString("type").isEmpty()
+                        || Double.isNaN(pct) || Double.isInfinite(pct) || pct < 0) {
+                    limitsOk = false;
+                    continue;
                 }
-            } catch (Throwable ignored) {
+                JSONObject w = new JSONObject().put("type", l.optString("type")).put("percentUsed", pct);
+                if (l.opt("resetsAt") instanceof String) w.put("resetsAt", l.optString("resetsAt"));
+                winOut.put(w);
+            }
+            if (limitsOk || winOut.length() > 0) out.put("limits", winOut);
+        }
+        sections.put("limits", usageSection(limitsRead, limitsOk, "套餐限额", unread));
+        boolean complete = identityOk && balanceOk && limitsOk;
+        out.put("ok", identityOk);
+        out.put("complete", complete);
+        out.put("partial", !complete && (identityOk || balanceOk || limitsOk || winOut.length() > 0));
+        out.put("sections", sections);
+        out.put("readAt", System.currentTimeMillis());
+        if (unread.length() > 0) out.put("unread", unread);
+        if (!complete) {
+            UsageRead failed = !identityOk ? me : !balanceOk ? balance : limitsRead;
+            FailureLayers.describe(out, failed.kind, usageLayer(failed.kind, !identityOk ? "账号信息" : "余额"));
+            out.put("affectsInference", JSONObject.NULL);
+            out.put("inferenceStatus", "unknown");
+            if (!identityOk) {
+                out.put("reason", "identity_unread");
+                out.put("error", "Cline 账号信息未能读取；这不代表账号有问题，也不代表额度为零。");
             }
         }
-
-        // 3. /users/me/plan/usage-limits (ClinePass 限制)
-        try {
-            String limUrl = API + "/users/me/plan/usage-limits";
-            JSONObject limObj = fetchJsonWithHeaders(limUrl, headers);
-            if (limObj != null) {
-                JSONObject data = limObj.optJSONObject("data");
-                if (data != null) limObj = data;
-                JSONArray limits = limObj.optJSONArray("limits");
-                if (limits != null) {
-                    JSONArray winOut = new JSONArray();
-                    for (int i = 0; i < limits.length(); i++) {
-                        JSONObject l = limits.optJSONObject(i);
-                        if (l == null) continue;
-                        String type = l.optString("type", "");
-                        double pct = l.optDouble("percentUsed", 0.0);
-                        String resetsAt = l.optString("resetsAt", "");
-                        JSONObject w = new JSONObject();
-                        w.put("type", type);
-                        w.put("percentUsed", pct);
-                        w.put("resetsAt", resetsAt);
-                        winOut.put(w);
-                    }
-                    out.put("limits", winOut);
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-
-        out.put("ok", true);
         return out;
     }
 
@@ -611,6 +765,16 @@ public class ClineAuth {
     }
 
     private static JSONObject fetchJsonWithHeaders(String urlStr, Map<String, String> headers) {
+        return fetchJsonWithHeaders(urlStr, headers, null);
+    }
+
+    /**
+     * 读一个 JSON，同时把这次读的结果交回去。status[0]：&gt;0 是 HTTP 码，0 是连接没通。
+     *
+     * <p>原来只有一个返回 null 的版本，401、404 和断网看起来一模一样，于是
+     * fetchUsage 最后无条件写 ok:true——账号信息一段没读出来也会被当成"账号正常"。
+     */
+    private static JSONObject fetchJsonWithHeaders(String urlStr, Map<String, String> headers, int[] status) {
         try {
             HttpURLConnection conn = openHttp(urlStr);
             conn.setRequestMethod("GET");
@@ -622,13 +786,35 @@ public class ClineAuth {
                     conn.setRequestProperty(e.getKey(), e.getValue());
                 }
             }
-            if (conn.getResponseCode() >= 200 && conn.getResponseCode() < 400) {
+            int code = conn.getResponseCode();
+            if (status != null) status[0] = code;
+            if (code >= 200 && code < 400) {
                 String str = readStream(conn.getInputStream());
                 return new JSONObject(str);
             }
         } catch (Throwable ignored) {
         }
         return null;
+    }
+
+    /** 一次读取失败的说法：把 HTTP 码与连接没通分开。 */
+    static String readFailure(int status) {
+        if (status == 401) return "登录态被拒 (401)";
+        if (status == 403) return "被限制访问 (403)";
+        if (status == 404) return "端点不存在 (404)";
+        if (status == 429) return "被限流 (429)";
+        if (status > 0) return "HTTP " + status;
+        return "连接没通";
+    }
+
+    /** 一次读取失败属于哪一类，喂给 FailureLayers 决定层与建议。 */
+    static FailureLayers.Kind readKind(int status) {
+        if (status == 401) return FailureLayers.Kind.AUTH;
+        if (status == 403) return FailureLayers.Kind.RESTRICTED;
+        if (status == 404) return FailureLayers.Kind.NOT_FOUND;
+        if (status == 429) return FailureLayers.Kind.RATE;
+        if (status > 0) return FailureLayers.Kind.UNREAD;
+        return FailureLayers.Kind.NETWORK;
     }
 
     public static String prettify(String id) {

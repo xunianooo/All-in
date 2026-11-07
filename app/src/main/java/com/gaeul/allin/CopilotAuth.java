@@ -100,6 +100,37 @@ public class CopilotAuth {
         public long expires = 0L;
     }
 
+    /** Read only: the GitHub OAuth token is required, never the inference token.
+     * Returns a sanitized allowance, or null when it cannot be read. */
+    public static JSONObject fetchAllowance(String githubToken) {
+        if (githubToken == null || githubToken.trim().isEmpty()) return null;
+        HttpURLConnection conn = null;
+        try {
+            conn = open("https://api.github.com/copilot_internal/user");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setInstanceFollowRedirects(false);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Authorization", "token " + githubToken);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("User-Agent", "GitHubCopilotChat/0.68.0");
+            conn.setRequestProperty("Editor-Version", "vscode/1.140.0");
+            conn.setRequestProperty("Editor-Plugin-Version", "copilot-chat/0.68.0");
+            conn.setRequestProperty("Copilot-Integration-Id", "vscode-chat");
+            if (conn.getResponseCode() != 200) return null;
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buffer = new byte[4096]; int n;
+                while ((n = in.read(buffer)) != -1) {
+                    if (out.size() + n > 262144) return null;
+                    out.write(buffer, 0, n);
+                }
+            }
+            return ProviderAllowance.fromCopilot(new JSONObject(out.toString("UTF-8")));
+        } catch (Exception ignored) { return null; }
+        finally { if (conn != null) conn.disconnect(); }
+    }
+
     private static HttpURLConnection open(String urlStr) throws Exception {
         HttpURLConnection conn = NetworkPolicy.openHttp(urlStr);
         conn.setConnectTimeout(15000);
