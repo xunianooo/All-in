@@ -23,7 +23,7 @@ public final class ForegroundServicePolicyTest {
         for(int i=0;i<services.getLength();i++) { Element e=(Element)services.item(i); if(attr(e,"name").equals("com.gaeul.allin.GatewayService")) gateway=e; }
         check(gateway!=null, "gateway service declaration");
         Set<String> types=new HashSet<>(Arrays.asList(attr(gateway,"foregroundServiceType").split("\\|")));
-        check(types.equals(new HashSet<>(Arrays.asList("dataSync","specialUse"))), "only declared compatibility types");
+        check(types.equals(new HashSet<>(Arrays.asList("dataSync","specialUse","mediaPlayback"))), "only declared compatibility types");
         check("false".equals(attr(gateway,"exported")), "service private");
         NodeList props=gateway.getElementsByTagName("property"); boolean subtype=false;
         for(int i=0;i<props.getLength();i++) { Element e=(Element)props.item(i); if(attr(e,"name").equals("android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE")) {
@@ -52,6 +52,13 @@ public final class ForegroundServicePolicyTest {
             catch(SecurityException expected) { check(r.typedCalls==1 && r.legacyCalls==0,"no silent legacy/manifest fallback"); }
         }
         check(ForegroundServicePolicy.name(0x40000001).equals("unknown"),"union must not masquerade as specialUse");
+        for(int sdk : new int[]{24,28,29,33,34,36,37}) {
+            Recording r = new Recording();
+            int mask = ForegroundServicePolicy.promote(sdk,true,r);
+            int expected = sdk>=34?0x40000002:sdk>=29?3:0;
+            check(mask==expected,"audio opt-in type SDK "+sdk);
+            check(ForegroundServicePolicy.typeForSdk(sdk,false)==ForegroundServicePolicy.typeForSdk(sdk),"default unchanged");
+        }
         manifest();
         System.out.println("ForegroundServicePolicyTest OK (API24-37 dispatch, failure, manifest)");
     }

@@ -38,6 +38,30 @@ public class GatewayService extends Service {
     private final java.util.concurrent.atomic.AtomicBoolean checkQueued = new java.util.concurrent.atomic.AtomicBoolean();
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private BackgroundKeepAlive backgroundKeepAlive;
+
+    public static void refreshKeepAlive(Context context) {
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+            public void run() { GatewayService s = current; if (s != null && !s.disposed && s.foreground) s.refreshBackgroundExperiment(); }
+        });
+    }
+
+    private void refreshBackgroundExperiment() {
+        if (backgroundKeepAlive == null) backgroundKeepAlive = new BackgroundKeepAlive(this);
+        final boolean wantsAudio = BackgroundKeepAlive.audioEnabled(this);
+        int target = ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT, wantsAudio);
+        if (foreground && FOREGROUND_TYPE_MASK != target) {
+            int previousType = FOREGROUND_TYPE_MASK;
+            if (!startForegroundNotification()) {
+                // A rejected type update does not cancel an already established foreground service.
+                foreground = true; TYPED_FOREGROUND_OK = Build.VERSION.SDK_INT >= 29;
+                FOREGROUND_TYPE_MASK = previousType;
+                backgroundKeepAlive.refresh(false); return;
+            }
+        }
+        boolean allowed = foreground && (Build.VERSION.SDK_INT < 29 || (FOREGROUND_TYPE_MASK & ForegroundServicePolicy.MEDIA_PLAYBACK) != 0);
+        backgroundKeepAlive.refresh(allowed);
+    }
 
     public static boolean isTypedForeground() { return TYPED_FOREGROUND_OK; }
     public static int foregroundTypeMask() { return FOREGROUND_TYPE_MASK; }
@@ -92,11 +116,12 @@ public class GatewayService extends Service {
             o.put("typedForeground", TYPED_FOREGROUND_OK);
             o.put("foregroundTypeMask", FOREGROUND_TYPE_MASK);
             o.put("foregroundTypeName", foregroundTypeName());
-            o.put("expectedForegroundTypeMask", ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT));
-            o.put("expectedForegroundTypeName", ForegroundServicePolicy.name(ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT)));
+            o.put("expectedForegroundTypeMask", ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT, BackgroundKeepAlive.audioEnabled(context)));
+            o.put("expectedForegroundTypeName", ForegroundServicePolicy.name(ForegroundServicePolicy.typeForSdk(Build.VERSION.SDK_INT, BackgroundKeepAlive.audioEnabled(context))));
             o.put("foregroundStartError", foregroundStartError);
             o.put("wakeLockHeld", s != null && s.wakeLock != null && s.wakeLock.isHeld());
             o.put("wifiLockHeld", s != null && s.wifiLock != null && s.wifiLock.isHeld());
+            o.put("backgroundKeepAlive", BackgroundKeepAlive.status(context));
             o.put("phase", s == null ? "stopped" : s.phase);
             o.put("healthState", s == null ? "stopped" : s.phase);
             o.put("activeRequests", server == null ? 0 : server.activeForwardRequests());
@@ -132,12 +157,14 @@ public class GatewayService extends Service {
             return;
         }
         acquireLocks();
+        backgroundKeepAlive = new BackgroundKeepAlive(this);
+        refreshBackgroundExperiment();
         worker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         worker.scheduleWithFixedDelay(new Runnable() {
             public void run() {
                 try { check("periodic"); } catch (Throwable t) { RUNNING = false; errorType = t.getClass().getSimpleName(); phase = "checkError"; }
             }
-        }, 2, 30, java.util.concurrent.TimeUnit.SECONDS);
+        }, 2, 12, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     private void enqueue(final String reason) {
@@ -364,13 +391,20 @@ public class GatewayService extends Service {
 
     /** API 34+ uses specialUse; 29-33 retains dataSync; older releases use legacy FGS. */
     private void startForegroundWithType(final Notification notification) throws Exception {
-        int type = ForegroundServicePolicy.promote(Build.VERSION.SDK_INT, new ForegroundServicePolicy.Promoter() {
+        ForegroundServicePolicy.Promoter promoter = new ForegroundServicePolicy.Promoter() {
             @Override public void typed(int type) throws Exception {
                 Method method = Service.class.getMethod("startForeground", int.class, Notification.class, int.class);
                 method.invoke(GatewayService.this, Integer.valueOf(NOTIFICATION_ID), notification, Integer.valueOf(type));
             }
             @Override public void legacy() { startForeground(NOTIFICATION_ID, notification); }
-        });
+        };
+        int type;
+        try { type = ForegroundServicePolicy.promote(Build.VERSION.SDK_INT, BackgroundKeepAlive.audioEnabled(this), promoter); }
+        catch (Exception experimentalFailure) {
+            if (!BackgroundKeepAlive.audioEnabled(this)) throw experimentalFailure;
+            // Keep the base gateway running even when an OEM rejects the optional media type.
+            type = ForegroundServicePolicy.promote(Build.VERSION.SDK_INT, false, promoter);
+        }
         foreground = true;
         TYPED_FOREGROUND_OK = Build.VERSION.SDK_INT >= 29;
         FOREGROUND_TYPE_MASK = type;
@@ -389,7 +423,7 @@ public class GatewayService extends Service {
         try {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "MagpiePocket::WifiLock");
+                wifiLock = wm.createWifiLock(Build.VERSION.SDK_INT >= 29 ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY : WifiManager.WIFI_MODE_FULL_HIGH_PERF, "MagpiePocket::WifiLock");
                 wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
             }
@@ -495,6 +529,7 @@ public class GatewayService extends Service {
 
     @Override public void onDestroy() {
         final GatewayServer toStop;
+        if (backgroundKeepAlive != null) backgroundKeepAlive.close();
         synchronized (ENGINE_SERIAL) {
             disposed = true;
             if (worker != null) worker.shutdownNow();

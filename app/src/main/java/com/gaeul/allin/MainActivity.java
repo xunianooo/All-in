@@ -468,6 +468,28 @@ public class MainActivity extends Activity {
      */
     private class NativeBridge {
         @android.webkit.JavascriptInterface
+        public boolean configureBackgroundKeepAlive(String option, boolean enabled) {
+            if (!bridgeAllowed() || !("overlay".equals(option) || "audio".equals(option))) return false;
+            if (!BackgroundKeepAlive.setOption(MainActivity.this, option, enabled)) return false;
+            GatewayService.refreshKeepAlive(MainActivity.this);
+            return true;
+        }
+
+        @android.webkit.JavascriptInterface
+        public boolean openPermissionSettings(final String target) {
+            if (!bridgeAllowed() || !("overlay".equals(target) || "autostart".equals(target)
+                    || "powersave".equals(target) || "battery".equals(target)
+                    || "notifications".equals(target) || "app".equals(target))) return false;
+            runOnUiThread(() -> {
+                if (!bridgeAllowed() || isFinishing()) return;
+                if ("notifications".equals(target) && requestNotificationPermission()) return;
+                if (!PermissionCenter.openSettings(MainActivity.this, target))
+                    Toast.makeText(MainActivity.this, "无法打开设置，请手动前往系统设置", Toast.LENGTH_SHORT).show();
+            });
+            return true;
+        }
+
+        @android.webkit.JavascriptInterface
         public boolean openEncryptedBackup(final String action) {
             if (!bridgeAllowed() || !("export".equals(action) || "import".equals(action) || "rollback".equals(action))) return false;
             runOnUiThread(() -> {
@@ -892,6 +914,7 @@ public class MainActivity extends Activity {
         super.onResume();
         if (isGatewayEnabledPref()) {
             GatewayService.requestHealthCheck(this, "resume");
+            GatewayService.refreshKeepAlive(this);
         }
         if (webView != null) {
             webView.postDelayed(new Runnable() {

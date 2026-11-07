@@ -46,6 +46,7 @@ jobs:
           node tests/dashboard-routing-audit.cjs
           node tests/dashboard-exposed.cjs
           node tests/dashboard-background.cjs
+          node tests/dashboard-background-experiment.cjs
           node tests/dashboard-heatmap.cjs
           node tests/dashboard-live-status.cjs
           node tests/dashboard-provider-management.cjs

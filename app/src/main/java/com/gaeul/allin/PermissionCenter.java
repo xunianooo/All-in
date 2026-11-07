@@ -115,8 +115,8 @@ public class PermissionCenter {
         boolean typed = GatewayService.isTypedForeground();
         put(fgs, "type", typeMask);
         put(fgs, "name", GatewayService.foregroundTypeName());
-        put(fgs, "expectedName", Build.VERSION.SDK_INT >= 34 ? "specialUse"
-                : Build.VERSION.SDK_INT >= 29 ? "dataSync" : "legacy");
+        put(fgs, "expectedName", ForegroundServicePolicy.name(ForegroundServicePolicy.typeForSdk(
+                Build.VERSION.SDK_INT, BackgroundKeepAlive.audioEnabled(ctx))));
         put(fgs, "typed", typed);
         put(fgs, "ok", Build.VERSION.SDK_INT < 29 ? GatewayService.isForegroundStarted() : typed);
         put(fgs, "source", "runtime");
@@ -153,6 +153,9 @@ public class PermissionCenter {
         put(powersave, "ok", false);
         put(out, "powersave", powersave);
 
+        put(out, "backgroundKeepAlive", BackgroundKeepAlive.status(ctx));
+        put(out, "manufacturer", Build.MANUFACTURER);
+        put(out, "brand", Build.BRAND);
         put(out, "sdk", Build.VERSION.SDK_INT);
         put(out, "packageName", pkg);
         put(out, "rom", brandFamily(Build.MANUFACTURER, Build.BRAND));
@@ -264,34 +267,64 @@ public class PermissionCenter {
             return openAppDetails(ctx);
         }
 
-        if ("autostart".equals(t)) {
+        if ("overlay".equals(t)) {
+            try {
+                Intent i = new Intent("android.settings.action.MANAGE_OVERLAY_PERMISSION");
+                i.setData(Uri.parse("package:" + pkg));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(i);
+                return true;
+            } catch (Throwable ignored) { return openAppDetails(ctx); }
+        }
+
+        if ("autostart".equals(t) || "powersave".equals(t)) {
             String rom = brandFamily(Build.MANUFACTURER, Build.BRAND);
-            if ("miui".equals(rom) && openAppDetails(ctx)) return true;
-            String[][] candidates;
-            if ("miui".equals(rom)) candidates = new String[][]{
-                    {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"}};
-            else if ("coloros".equals(rom)) candidates = new String[][]{
+            boolean auto = "autostart".equals(t);
+            String[][] candidates = new String[0][];
+            if ("miui".equals(rom)) candidates = auto ? new String[][] {
+                    {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"}
+            } : new String[][] {
+                    {"com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"}
+            };
+            else if ("coloros".equals(rom)) candidates = auto ? new String[][] {
                     {"com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"},
                     {"com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"},
-                    {"com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"}};
-            else if ("vivo".equals(rom)) candidates = new String[][]{
-                    {"com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"}};
-            else if ("huawei".equals(rom)) candidates = new String[][]{
-                    {"com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"}};
-            else candidates = new String[0][];
+                    {"com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"}
+            } : new String[][] {
+                    {"com.oplus.battery", "com.oplus.powermanager.fuelgaue.PowerControlActivity"},
+                    {"com.coloros.oppoguardelf", "com.coloros.powermanager.fuelgaue.PowerUsageModelActivity"},
+                    {"com.coloros.athena", "com.coloros.athena.powermanager.PowerUsageModelActivity"},
+                    {"com.oplus.battery", "com.oplus.powermanager.fuelgaue.PowerUsageModelActivity"}
+            };
+            else if ("vivo".equals(rom)) candidates = auto ? new String[][] {
+                    {"com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"},
+                    {"com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"}
+            } : new String[][] {
+                    {"com.vivo.abe", "com.vivo.applicationbehaviorengine.ui.ExcessivePowerManagerActivity"}
+            };
+            else if ("huawei".equals(rom) || "honor".equals(rom)) candidates = auto ? new String[][] {
+                    {"com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
+                    {"com.hihonor.systemmanager", "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
+                    {"com.hihonor.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"}
+            } : new String[][] {
+                    {"com.huawei.systemmanager", "com.huawei.systemmanager.power.ui.PowerSettingsActivity"},
+                    {"com.hihonor.systemmanager", "com.huawei.systemmanager.power.ui.PowerSettingsActivity"}
+            };
             for (String[] c : candidates) {
                 try {
                     Intent i = new Intent();
                     i.setClassName(c[0], c[1]);
+                    i.putExtra("package_label", "All In");
+                    i.putExtra("package_name", pkg);
+                    i.putExtra("packageName", pkg);
+                    i.putExtra("extra_pkgname", pkg);
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     ctx.startActivity(i);
                     return true;
-                } catch (Throwable ignoredAuto) { }
+                } catch (Throwable ignored) { }
             }
             return openAppDetails(ctx);
         }
-
-        if ("powersave".equals(t)) return openAppDetails(ctx);
 
         return openAppDetails(ctx);
     }

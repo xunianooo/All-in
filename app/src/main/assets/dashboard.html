@@ -3142,9 +3142,53 @@
     // 通过 magpie:// scheme 让原生层拉起对应的系统设置页
     function openPermSettings(target) {
       try {
+        if (window.AllInNative && typeof window.AllInNative.openPermissionSettings === 'function') {
+          if (!window.AllInNative.openPermissionSettings(target)) showToast('请在手机 App 中打开系统设置');
+          return;
+        }
+        if (!window.AllInNative) { showToast('请在手机 App 中操作系统设置'); return; }
         window.location.href = 'magpie://settings?target=' + encodeURIComponent(target);
       } catch (e) {
         showToast('当前环境无法跳转，请手动到系统设置中操作');
+      }
+    }
+
+    function backgroundExperimentHtml(k, nativeAvailable) {
+      k = k || {};
+      const disabled = nativeAvailable ? '' : ' disabled';
+      const row = (option, title, description, active, detail) =>
+        '<div style="padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
+        + '<label style="display:flex;justify-content:space-between;gap:10px;align-items:center;">'
+        + '<span>' + title + '</span><input type="checkbox" role="switch" aria-label="' + title + '"'
+        + (active ? ' checked' : '') + disabled + ' onchange="configureBackgroundExperiment(\'' + option + '\',this)"></label>'
+        + '<div style="font-size:0.72rem;color:var(--text-muted);line-height:1.6;">' + description + '<br>' + detail + '</div></div>';
+      const overlayDetail = '悬浮权限：' + (k.overlayGranted === true ? '已授予' : '未授予或未知')
+        + '；悬浮窗：' + (k.overlayAttached === true ? '已附着' : '未附着')
+        + (k.overlayError ? '；' + escapeHtml(String(k.overlayError)) : '')
+        + (nativeAvailable ? ' <button class="btn btn-outline" onclick="openPermSettings(\'overlay\')">悬浮权限设置</button>' : '；请在手机 App 中设置悬浮权限');
+      const audioDetail = '音频：' + (k.audioPlaying === true ? '静音数据写入中（不代表系统保活已生效）' : '未播放')
+        + (k.audioError ? '；' + escapeHtml(String(k.audioError)) : '');
+      return '<div style="margin-top:12px;font-size:0.78rem;"><b>实验性后台保活</b>'
+        + '<div style="color:var(--text-muted);font-size:0.72rem;">两项默认关闭，可能增加耗电；效果因系统而异，不能保证后台持续运行。'
+        + (nativeAvailable ? '' : ' 请在手机 App 中更改。') + '</div>'
+        + row('overlay', '悬浮窗实验', '需要悬浮窗权限，可能显示悬浮内容并增加耗电。', k.overlayEnabled === true, overlayDetail)
+        + row('audio', '静音音频实验', '可能影响其他应用的音频播放或音频焦点，并增加耗电。', k.audioEnabled === true, audioDetail) + '</div>';
+    }
+
+    function configureBackgroundExperiment(option, input) {
+      if (option !== 'overlay' && option !== 'audio') return;
+      try {
+        if (!window.AllInNative || typeof window.AllInNative.configureBackgroundKeepAlive !== 'function'
+            || !window.AllInNative.configureBackgroundKeepAlive(option, input.checked)) {
+          input.checked = !input.checked;
+          showToast('设置失败，请在手机 App 中重试');
+          return;
+        }
+        showToast('设置已保存，正在刷新状态');
+        setTimeout(loadPermissions, 500);
+      } catch (e) {
+        input.checked = !input.checked;
+        showToast('设置失败，请在手机 App 中重试');
       }
     }
 
@@ -3169,7 +3213,8 @@
         html += permRow(fgs.ok === true, '前台服务类型', fgsDescription(fgs), 'app');
         const auto = p.autostart || {}, ps = p.powersave || {};
         html += ackRow('自启动', '如系统提供此选项，请允许本应用自启动；系统未验证', 'autostart', auto.acked === true, auto.ackedAt || 0, '');
-        html += ackRow('省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0, '');
+        html += ackRow('省电策略', '允许后台运行；入口可能因系统版本不同，请按页面提示查找；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0, '');
+        if (typeof backgroundExperimentHtml === 'function') html += backgroundExperimentHtml(p.backgroundKeepAlive, !!(window.AllInNative && typeof window.AllInNative.configureBackgroundKeepAlive === 'function'));
         const wd = d.watchdog || {};
         const wi = watchdogInfo(wd);
         html += infoRow(wi.tone, '防冻结守护进程', wi.desc, wi.badge);
@@ -5894,7 +5939,7 @@
     function fgsDescription(fgs) {
       fgs = fgs || {};
       const name = fgs.name;
-      const known = name === 'specialUse' || name === 'dataSync' || name === 'legacy';
+      const known = name === 'specialUse' || name === 'dataSync' || name === 'legacy' || name === 'mediaPlayback' || name === 'specialUse|mediaPlayback' || name === 'dataSync|mediaPlayback';
       const actual = known ? name : '未知';
       const status = fgs.ok === true ? (name === 'legacy' ? '已确认旧版前台服务启动' : '已确认类型化前台服务启动') : '尚未确认前台服务启动成功';
       return '实际类型：' + actual + '；' + status + '。服务类型是系统分类，不保证免于冻结';
@@ -6036,7 +6081,7 @@
       html += setupPermRow(measuredPermission(batt), '电池优化白名单', batt.known === true ? (batt.ignored ? '系统报告已加入白名单' : '系统报告未加入白名单') : '系统未提供查询结果', 'battery');
       html += setupPermRow(fgs.ok === true, '前台服务类型', fgsDescription(fgs), 'app');
       html += setupPermRow('info', '自启动', '如系统提供此选项，请允许自启动；系统未验证', 'autostart', auto.acked === true, auto.ackedAt || 0);
-      html += setupPermRow('info', '省电策略', '在应用详情中允许后台运行；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0);
+      html += setupPermRow('info', '省电策略', '允许后台运行；入口可能因系统版本不同，请按页面提示查找；系统未验证', 'powersave', ps.acked === true, ps.ackedAt || 0);
       html += '<div style="font-size:0.74rem;color:var(--text-muted);">' + backgroundBrandHint(p.rom) + '</div>';
       box.innerHTML = html;
     }

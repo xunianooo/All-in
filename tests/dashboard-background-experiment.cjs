@@ -1,0 +1,37 @@
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+const html = fs.readFileSync('app/src/main/assets/dashboard.html', 'utf8');
+function extract(name) {
+  const start = html.indexOf('    function ' + name + '(');
+  assert(start >= 0, name);
+  const end = html.indexOf('\n    }', start);
+  return html.slice(start, end + 6);
+}
+const calls = [], toasts = [], timers = [];
+const ctx = {window:{}, showToast: s => toasts.push(s), setTimeout: fn => timers.push(fn), loadPermissions() {}, escapeHtml: s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')};
+vm.createContext(ctx);
+vm.runInContext(['backgroundExperimentHtml', 'configureBackgroundExperiment'].map(extract).join('\n'), ctx);
+let page = ctx.backgroundExperimentHtml({}, true);
+assert.strictEqual((page.match(/type="checkbox"/g) || []).length, 2);
+assert.doesNotMatch(page, / checked/);
+assert.match(page, /实验/);
+assert.match(page, /耗电/);
+assert.match(page, /音频/);
+assert.match(page, /不能保证/);
+page = ctx.backgroundExperimentHtml({overlayEnabled:true, audioEnabled:true, overlayGranted:true, overlayAttached:true, audioPlaying:true, overlayError:'<img>'}, false);
+assert.strictEqual((page.match(/ disabled/g) || []).length, 2);
+assert.strictEqual((page.match(/ checked/g) || []).length, 2);
+assert.match(page, /&lt;img&gt;/);
+assert.match(page, /手机 App/);
+let input = {checked:true};
+ctx.configureBackgroundExperiment('audio', input);
+assert.strictEqual(input.checked, false);
+ctx.window.AllInNative = {configureBackgroundKeepAlive: (option, enabled) => {calls.push([option,enabled]); return true;}};
+input = {checked:true};
+ctx.configureBackgroundExperiment('audio', input);
+assert.deepStrictEqual(calls, [['audio', true]]);
+assert.strictEqual(timers.length, 1);
+ctx.configureBackgroundExperiment('other', input);
+assert.strictEqual(calls.length, 1);
+console.log('dashboard background experiments passed');
