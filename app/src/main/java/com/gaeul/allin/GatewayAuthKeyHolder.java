@@ -23,6 +23,7 @@ final class GatewayAuthKeyHolder {
     static synchronized void init(File dir) {
         if (filesDir == null ? dir != null : !filesDir.equals(dir)) cached = null;
         filesDir = dir;
+        GatewayManagementCredential.init(dir);
     }
 
     static synchronized String get() {

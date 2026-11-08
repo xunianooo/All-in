@@ -42,7 +42,7 @@ public final class ProviderEnabledOfflineTest {
         JSONObject snapshot = new JSONObject(new String(configResponse.getData().readAllBytes(),StandardCharsets.UTF_8));
         String token = snapshot.getJSONObject("providerStateTokens").getString("alpha");
         check(!cfg.has("providerStateTokens") && !token.contains("fixture"),"tokens are opaque and do not pollute config");
-        check(snapshot.getJSONArray("providers").getJSONObject(0).toString().equals(a.toString()),"token snapshot matches provider");
+        check(snapshot.getJSONArray("providers").getJSONObject(0).toString().equals(ConfigurationView.redact(cfg, GatewayManagementCredential.get()).getJSONArray("providers").getJSONObject(0).toString()) && !snapshot.toString().contains("fixture-token") && !snapshot.toString().contains("fixture-key"),"snapshot matches redacted provider");
         for (Object invalid : new Object[]{"", " ", 1, JSONObject.NULL})
             check(post(s,new JSONObject(body("alpha",true)).put("expectedStateToken",invalid).toString())==400,"invalid token");
         String conditional = new JSONObject(body("alpha",true)).put("expectedStateToken",token).toString();
@@ -102,17 +102,18 @@ public final class ProviderEnabledOfflineTest {
         check(post(s,body("alpha",false))==500 && a.getBoolean("enabled"),"failure rolls back value");
         a.remove("enabled");
         check(post(s,body("alpha",false))==500 && !a.has("enabled"),"failure restores absence");
-        check(status(s,"127.0.0.1","/backend-api/codex/responses","POST","{}",null)==403,"disabled codex blocked");
-        check(status(s,"127.0.0.1","/legacy/responses","POST","{\"model\":\"github-copilot/test\"}",null)==403,"disabled copilot blocked");
+        check(status(s,"127.0.0.1","/backend-api/codex/responses","POST","{}","fixture-auth")==403,"disabled codex blocked");
+        check(status(s,"127.0.0.1","/responses","POST","{\"model\":\"github-copilot/test\"}","fixture-auth")==403,"disabled copilot blocked");
+        check(status(s,"127.0.0.1","/legacy/responses","POST","{}","fixture-auth")==404,"legacy alias is not registered");
         codex.put("enabled",true); copilot.put("enabled",true);
-        check(status(s,"127.0.0.1","/backend-api/codex/responses","POST","{}",null)==401,"disabled codex account blocked");
-        check(status(s,"127.0.0.1","/legacy/responses","POST","{\"model\":\"github-copilot/test\"}",null)==401,"disabled copilot account blocked");
+        check(status(s,"127.0.0.1","/backend-api/codex/responses","POST","{}","fixture-auth")==401,"disabled codex account blocked");
+        check(status(s,"127.0.0.1","/responses","POST","{\"model\":\"github-copilot/test\"}","fixture-auth")==401,"disabled copilot account blocked");
         // A valid cached token ensures the wrong account-selection path would attempt
         // a connection to loopback instead of failing early during token refresh.
         JSONObject cpAccount = copilot.getJSONArray("accounts").getJSONObject(0);
         cpAccount.put("access", "fixture-access").put("expires", System.currentTimeMillis()+3600000L);
         copilot.put("baseUrl", "http://127.0.0.1:1").put("protocol", "copilot");
-        check(status(s,"127.0.0.1","/legacy/responses","POST","{\"model\":\"github-copilot/test\"}",null)==401,"legacy disabled account rejected before upstream");
+        check(status(s,"127.0.0.1","/responses","POST","{\"model\":\"github-copilot/test\"}","fixture-auth")==401,"legacy disabled account rejected before upstream");
         check(RoutingSetupOfflineTest.candidates(s,"github-copilot/test").isEmpty(),"ordinary copilot disabled account rejected");
         JSONObject miniAccount = new JSONObject().put("enabled",false).put("token","fixture-token").put("access","fixture-access").put("expires",System.currentTimeMillis()+3600000L);
         JSONObject mini = new JSONObject().put("id","minimax-code").put("protocol","minimax").put("accounts",new JSONArray().put(miniAccount));

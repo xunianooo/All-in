@@ -164,7 +164,7 @@ public final class ZCodeGiftUsageHttpTest {
     static String read(InputStream in) throws IOException { ByteArrayOutputStream b = new ByteArrayOutputStream(); byte[] buf = new byte[4096]; int n; while ((n = in.read(buf)) != -1) b.write(buf, 0, n); return b.toString("UTF-8"); }
     static HttpURLConnection post(int port, boolean messages, boolean stream) throws Exception {
         HttpURLConnection c = (HttpURLConnection)new URL("http://127.0.0.1:" + port + (messages ? "/v1/messages" : "/v1/chat/completions")).openConnection();
-        c.setConnectTimeout(5000); c.setReadTimeout(10000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("Accept-Encoding", "gzip");
+        c.setConnectTimeout(5000); c.setReadTimeout(10000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("Accept-Encoding", "gzip"); c.setRequestProperty("Authorization", "Bearer fixture-gateway");
         if (messages) c.setRequestProperty("anthropic-version", "2023-06-01");
         try (OutputStream out = c.getOutputStream()) { out.write(body(stream).getBytes(StandardCharsets.UTF_8)); } return c;
     }
@@ -187,7 +187,7 @@ public final class ZCodeGiftUsageHttpTest {
     static void cancel(Gateway g, boolean messages) throws Exception {
         try (Socket socket = new Socket("127.0.0.1", g.getListeningPort())) {
             socket.setSoTimeout(10000); byte[] b = body(true).getBytes(StandardCharsets.UTF_8);
-            OutputStream out = socket.getOutputStream(); out.write(("POST " + (messages ? "/v1/messages" : "/v1/chat/completions") + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + b.length + "\r\n\r\n").getBytes(StandardCharsets.UTF_8)); out.write(b); out.flush();
+            OutputStream out = socket.getOutputStream(); out.write(("POST " + (messages ? "/v1/messages" : "/v1/chat/completions") + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer fixture-gateway\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + b.length + "\r\n\r\n").getBytes(StandardCharsets.UTF_8)); out.write(b); out.flush();
             InputStream in = socket.getInputStream(); ByteArrayOutputStream received = new ByteArrayOutputStream(); byte[] buf = new byte[512];
             while (!received.toString("UTF-8").contains("hello")) { int n = in.read(buf); check(n > 0, "cancel first content"); received.write(buf, 0, n); }
             socket.setSoLinger(true, 0);
@@ -258,6 +258,37 @@ public final class ZCodeGiftUsageHttpTest {
                     full.put("usage", new JSONObject().put("input_tokens", 11).put("cache_read_input_tokens", 3).put("cache_creation_input_tokens", 4));
                     converted = ZCodeAnthropic.toOpenAI(full, MODEL).getJSONObject("usage");
                     check(converted.getInt("prompt_tokens") == 18 && !converted.has("completion_tokens") && !converted.has("total_tokens"), "input-only conversion with cache");
+                });
+                runCase("observed local and upstream 429 evidence", failures, () -> {
+                    for (String source : new String[]{"local_admission", "local_cooldown", "upstream"}) {
+                        final int[] sends={0};
+                        GatewayServer.GiftTransport fake=new GatewayServer.GiftTransport() {
+                            public JSONObject summary(String jwt,String device) { return t.summary(jwt,device); }
+                            public ZCodeGift.Stream open(String jwt,String device,String site,String model,JSONObject body,boolean dressed) { throw new AssertionError("observer required"); }
+                            public ZCodeGift.Stream open(String jwt,String device,String site,String model,JSONObject body,boolean dressed,ZCodeGift.Observer observer) {
+                                ZCodeGift.Stream result=new ZCodeGift.Stream(); result.observed=true; result.source=source; result.status=429;
+                                observer.admission(System.nanoTime());
+                                if(source.equals("upstream")) { sends[0]++; result.sent=true; observer.handoff(System.currentTimeMillis()); result.businessCode="42901"; result.retryAfter="47"; result.errorBody="{\"error\":{\"message\":\"secret-token prompt\"}}"; }
+                                else result.retryAfterMillis=47000;
+                                return result;
+                            }
+                        };
+                        g.gateway.setGiftTransportForTest(fake); int before=rows.size();
+                        try {
+                            HttpURLConnection conn=post(g.getListeningPort(),false,false);
+                            check(conn.getResponseCode()==429 && "47".equals(conn.getHeaderField("Retry-After")),"429 status and retry-after");
+                            String response; InputStream error=conn.getErrorStream(); if ("gzip".equalsIgnoreCase(conn.getHeaderField("Content-Encoding"))) error=new java.util.zip.GZIPInputStream(error);
+                            try(InputStream in=error) { response=read(in); } finally { conn.disconnect(); }
+                            idle(g); UsageLedger.Row row=verify(rows,before,1,429);
+                            JSONObject detail=new JSONObject(response).getJSONObject("error");
+                            check(detail.getString("source").equals(source) && !response.contains("secret-token") && !response.contains("prompt"),"safe source and no body leak");
+                            JSONObject diag=RequestDiagnostics.json(row);
+                            check(diag.getString("executionState").equals(source.equals("upstream")?"rejected":"not_sent"),"execution evidence");
+                            check((row.outboundAt>0)==source.equals("upstream") && sends[0]==(source.equals("upstream")?1:0),"exactly one upstream send");
+                            if(source.equals("upstream")) check("42901".equals(detail.getString("business_code")),"numeric business code");
+                            if(source.equals("local_admission")) check("admission".equals(diag.getString("failureKind")),"local admission kind");
+                        } finally { g.gateway.setGiftTransportForTest(t); }
+                    }
                 });
                 runCase("HTTP failure with usage", failures, () -> { mock.mode = "fail-usage"; int before = rows.size(); request(g, false, false, 503); idle(g); usage(verify(rows, before, 1, 503), "full"); });
                 runCase("HTTP failure", failures, () -> { mock.mode = "fail"; int before = rows.size(); request(g, false, false, 503); idle(g); verify(rows, before, 1, 503); });
@@ -332,7 +363,7 @@ public final class ZCodeGiftUsageHttpTest {
                         try {
                             HttpURLConnection c = (HttpURLConnection)new URL("http://127.0.0.1:" + disabled.getListeningPort() + "/api/test-model").openConnection();
                             c.setConnectTimeout(3000); c.setReadTimeout(5000); c.setRequestMethod("POST"); c.setDoOutput(true);
-                            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("Authorization", "Bearer fixture-gateway");
+                            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("x-all-in-management", GatewayManagementCredential.get());
                             try {
                                 try (OutputStream out = c.getOutputStream()) { out.write(new JSONObject().put("model", MODEL).toString().getBytes(StandardCharsets.UTF_8)); }
                                 check(c.getResponseCode() == 200, "test-model response status");

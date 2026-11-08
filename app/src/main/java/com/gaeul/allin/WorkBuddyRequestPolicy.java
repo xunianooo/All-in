@@ -14,9 +14,39 @@ public final class WorkBuddyRequestPolicy {
         if (!Double.isFinite(d) || d<1 || d>Integer.MAX_VALUE || d!=Math.rint(d)) throw bad("invalid output limit");
         return (long)d;
     }
-    public static JSONObject transform(JSONObject input) throws Exception {
+    // Exact known harness sentences only; never rewrite user input, tool results,
+    // tool identifiers, arguments, or the harness name itself.
+    private static String harnessText(String text) {
+        return text.replaceAll("(?im)^You are an AI agent powered by DeepSeek Harness(?=\\.?[ \\t]*(?:$|\\r?$))",
+                "You are an AI agent, powered by DeepSeek Harness")
+                .replace("Web GUI whose URL the runtime context names. When the user refers",
+                        "Web GUI whose URL the runtime context names. The interface, when the user refers");
+    }
+    private static void harnessMessage(JSONObject message) {
+        String role=message.optString("role","");
+        if(!"system".equals(role) && !"assistant".equals(role))return;
+        Object content=message.opt("content");
+        if(content instanceof String)message.put("content",harnessText((String)content));
+        else if(content instanceof JSONArray) {
+            JSONArray parts=(JSONArray)content;
+            for(int i=0;i<parts.length();i++) {
+                JSONObject part=parts.optJSONObject(i);
+                if(part!=null && "text".equals(part.optString("type")) && part.opt("text") instanceof String)
+                    part.put("text",harnessText(part.getString("text")));
+            }
+        }
+    }
+    public static JSONObject transform(JSONObject input) throws Exception { return transform(input,false); }
+    public static JSONObject transform(JSONObject input, boolean hideDsh) throws Exception {
+        return transform(input,hideDsh,null);
+    }
+    public static JSONObject transform(JSONObject input, boolean hideDsh, WorkBuddyHarnessPolicy.Report report) throws Exception {
         if (input==null) throw bad("missing request");
         JSONObject out=new JSONObject(input.toString());
+        if(hideDsh) {
+            WorkBuddyHarnessPolicy.Report changed=WorkBuddyHarnessPolicy.apply(out);
+            if(report!=null) {report.messages=changed.messages;report.descriptions=changed.descriptions;}
+        }
         if(out.has("n") && !out.isNull("n") && (!(out.opt("n") instanceof Number) || ((Number)out.opt("n")).doubleValue()!=1)) throw bad("only n=1 supported");
         boolean a=out.has("max_tokens")&&!out.isNull("max_tokens"), b=out.has("max_completion_tokens")&&!out.isNull("max_completion_tokens");
         if(a||b) { long v=a?limit(out.opt("max_tokens")):limit(out.opt("max_completion_tokens")); if(b)v=Math.min(v,limit(out.opt("max_completion_tokens")));out.put("max_tokens",v); }
@@ -26,6 +56,7 @@ public final class WorkBuddyRequestPolicy {
         for(int i=0;i<messages.length();i++) {
             JSONObject m=messages.optJSONObject(i); if(m==null)throw bad("invalid message");
             if("developer".equals(m.optString("role"))) m.put("role","system");
+            if(!hideDsh)harnessMessage(m);
             if(!"assistant".equals(m.optString("role")))continue;
             Object existing=m.opt("reasoning");
             if(existing!=null && existing!=JSONObject.NULL && !(existing instanceof String))throw bad("invalid reasoning");

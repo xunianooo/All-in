@@ -22,14 +22,15 @@ assert(!js.includes('keys.join(\',\')'));
 console.log('provider schemas, deduplication, disabled presence, default view and script syntax OK');
 class Element {
  constructor(tag, doc) { this.tagName=tag; this.doc=doc; this.children=[]; this.dataset={}; this.attrs={}; this.style={}; this.hidden=false; this.value=''; this._text=''; this.open=false; }
- appendChild(e){this.children.push(e);e.parent=this;return e}
+ appendChild(e){if(e.parent)e.remove();this.children.push(e);e.parent=this;return e}
+ remove(){if(this.parent){this.parent.children=this.parent.children.filter(x=>x!==this);this.parent=null}}
  replaceChildren(){this.children=[];this._text=''}
  set textContent(s){this._text=String(s);this.children=[]} get textContent(){return this._text+this.children.map(x=>x.textContent).join('')}
  setAttribute(k,v){this.attrs[k]=v} getAttribute(k){return this.attrs[k]}
  set innerHTML(v){this._html=v;this._text=''} get innerHTML(){return this._html||''}
  closest(q){let x=this;while(x){if(q==='details' && x.tagName==='details')return x;x=x.parent}return null}
  querySelector(q){return this.querySelectorAll(q)[0]||null}
- querySelectorAll(q){const out=[];function visit(x){for(const c of x.children){if((q==='details[open]'&&c.tagName==='details'&&c.open)||(q==='[data-provider-focus]'&&c.dataset.providerFocus))out.push(c);visit(c)}}visit(this);return out}
+ querySelectorAll(q){const out=[];function visit(x){for(const c of x.children){if((q==='input'&&c.tagName==='input')||(q==='[data-harness-control]'&&c.dataset.harnessControl)||(q==='details[open]'&&c.tagName==='details'&&c.open)||(q==='[data-provider-focus]'&&c.dataset.providerFocus))out.push(c);visit(c)}}visit(this);return out}
  focus(){this.doc.activeElement=this}
 }
 (async()=>{

@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 26
-        versionName '1.2.20'
+        versionCode 27
+        versionName '1.2.21'
     }
 
     signingConfigs {
@@ -68,6 +68,15 @@ dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
 
 // 保留原有 9 个套件，并运行网关、Responses 和首次设置回归测试。
 def offlineTestMains = [
+        'com.gaeul.allin.GatewayManagementCredentialOfflineTest',
+        'com.gaeul.allin.ConfigurationViewOfflineTest',
+        'com.gaeul.allin.GatewayAccessBoundaryOfflineTest',
+        'com.gaeul.allin.NativeResponsesAliasHttpTest',
+        'com.gaeul.allin.WorkBuddyStreamBlocksOfflineTest',
+        'com.gaeul.allin.DeepSeekHarnessGatewayHttpTest',
+        'com.gaeul.allin.WorkBuddyCompatibilityGatewayHttpTest',
+        'com.gaeul.allin.WorkBuddyHarnessSettingsOfflineTest',
+        'com.gaeul.allin.UsageLedgerPartialPersistenceOfflineTest',
         'com.gaeul.allin.AnthropicBridgeRequestTest',
         'com.gaeul.allin.WorkBuddyRequestPolicyOfflineTest',
         'com.gaeul.allin.ProviderEndpointProbeHttpTest',
@@ -75,6 +84,9 @@ def offlineTestMains = [
         'com.gaeul.allin.ProviderEndpointProbeGatewayHttpTest',
         'com.gaeul.allin.ZCodeGiftSummaryHttpTest',
         'com.gaeul.allin.ZCodeGiftControlOfflineTest',
+        'com.gaeul.allin.ZCodeGiftBusyPolicyOfflineTest',
+        'com.gaeul.allin.ZCodeGiftConcurrencyHttpTest',
+        'com.gaeul.allin.ZCodeGiftBusyGatewayHttpTest',
         'com.gaeul.allin.ZCodeGiftControlGatewayHttpTest',
         'com.gaeul.allin.ClineAuthPolicyOfflineTest',
         'com.gaeul.allin.ClineFailurePolicyOfflineTest',
@@ -124,6 +136,7 @@ def offlineTestMains = [
         'com.gaeul.allin.TraeControlOfflineTest',
         'com.gaeul.allin.TraeControlLoginHttpTest',
         'com.gaeul.allin.WorkBuddyPolicyOfflineTest',
+        'com.gaeul.allin.WorkBuddyRefusalPolicyOfflineTest',
         'com.gaeul.allin.VendorPolicyGatewayHttpTest',
         'com.gaeul.allin.ClineRoutingPolicyOfflineTest',
         'com.gaeul.allin.ClientFingerprintOfflineTest',
@@ -135,6 +148,7 @@ def offlineTestMains = [
         'com.gaeul.allin.TraeGatewayHttpTest',
 
         'com.gaeul.allin.ProviderEnabledOfflineTest',
+        'com.gaeul.allin.WorkBuddyHarnessPolicyOfflineTest',
         'com.gaeul.allin.NetworkPolicyOfflineTest',
         'com.gaeul.allin.RecentUsageSchedulerOfflineTest',
         'com.gaeul.allin.OutboundLimiterOfflineTest',

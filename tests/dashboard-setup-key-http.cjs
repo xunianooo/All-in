@@ -7,18 +7,23 @@ if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !==
 const existing = fs.readFileSync(path.join(__dirname, 'dashboard-setup-key.cjs'), 'utf8');
 const prefix = existing.slice(0, existing.indexOf('(async()=>{'));
 const {page} = new Function('require', '__dirname', prefix + '\nreturn {page};')(require, __dirname);
+// Simulate the trusted app bridge at this isolated HTTP fixture boundary.
+const management = fs.readFileSync(path.join(dir, 'fixture-management'), 'utf8');
+const trustedFetch = (endpoint, options = {}) => fetch(new URL(endpoint, url), {
+  ...options, headers: {...options.headers, 'x-all-in-management': management}
+});
 const requests = [];
 const server = {fetch: async (endpoint, options = {}) => {
   requests.push({endpoint, body: options.body ? JSON.parse(options.body) : null});
-  return fetch(new URL(endpoint, url), options);
+  return trustedFetch(endpoint, options);
 }};
 const disk = () => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
 const remote = (key) => fetch(new URL('/api/routing', url), {headers:{'x-fixture-remote':'1', authorization:'Bearer ' + key}});
-const post = (endpoint, body) => fetch(new URL(endpoint, url), {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
+const post = (endpoint, body) => trustedFetch(endpoint, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
 (async () => {
   assert((await remote('magpie')).status === 403, 'fresh setup blocks remote access');
   const snapshot = await (await server.fetch('/api/config')).json();
-  assert(snapshot.server.authKey === 'magpie' && !snapshot.setup, 'fresh config');
+  assert(snapshot.server.authKey.startsWith('allin-secret-ref:') && !snapshot.setup, 'fresh config');
   const p = page(server);
   await p.c.loadConfig();
   await p.c.checkSetup();
@@ -46,18 +51,18 @@ const post = (endpoint, body) => fetch(new URL(endpoint, url), {method:'POST', h
   assert(providerWrite && providerWrite.body.providerId === 'fixture-commercial' && !('server' in providerWrite.body) && !('providers' in providerWrite.body), 'provider save changes only the selected keys');
   assert(disk().providers.find(x=>x.id==='fixture-commercial').keys[0] === 'synthetic-key', 'selected keys persist');
   assert(disk().server.authKey === key, 'scoped provider save preserves key');
-  assert((await post('/api/config', snapshot)).ok, 'stale snapshot accepted');
+  assert((await post('/api/config', snapshot)).status === 409, 'stale secret reference rejected');
   assert(disk().server.authKey === key && !disk().setup, 'stale snapshot preserves key and setup');
   await p.c.setupNext();
   await p.c.setupNext();
   assert(disk().setup && disk().setup.done && disk().server.authKey === key, 'setup completion persisted');
   const completion = requests.find(r => r.endpoint === '/api/setup/complete');
   assert(completion && completion.body.keepCurrent === true && !('authKey' in completion.body), 'completion keeps applied key');
-  assert((await remote('magpie')).status === 401 && (await remote(key)).status === 200, 'completed remote authentication');
+  assert((await remote('magpie')).status === 401 && (await remote(key)).status === 401 && (await remote(management)).status === 200, 'completed remote authentication');
   assert((await post('/__test/reload', {})).ok, 'backend reload');
-  const oldStatus = (await remote('magpie')).status, newStatus = (await remote(key)).status;
+  const oldStatus = (await remote('magpie')).status, newStatus = (await remote(management)).status;
   assert(oldStatus === 401 && newStatus === 200, 'reloaded remote authentication: ' + oldStatus + '/' + newStatus);
-  assert((await post('/api/config', snapshot)).ok, 'post-completion stale snapshot accepted');
+  assert((await post('/api/config', snapshot)).status === 409, 'post-completion stale secret reference rejected');
   assert(disk().setup.done && disk().server.authKey === key, 'post-completion stale snapshot preserves security state');
   const boot = page(server);
   await boot.c.loadAuthKey();

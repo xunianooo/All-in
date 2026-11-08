@@ -14,6 +14,8 @@ final class TestPrivacyScope {
                 if (!directory.isDirectory()) throw new IllegalStateException("Missing isolated privacy scope");
             }
             PrivacyMasker.initialize(directory);
+            GatewayManagementCredential.init(directory);
+            if(GatewayManagementCredential.get().isEmpty()) throw new IllegalStateException("Missing isolated management credential");
         } catch (Exception e) { throw new IllegalStateException("Test privacy initialization failed", e); }
     }
 }

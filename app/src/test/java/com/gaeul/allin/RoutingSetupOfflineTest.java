@@ -33,7 +33,11 @@ public final class RoutingSetupOfflineTest {
                 case "getRemoteIpAddress": return ip;
                 case "getUri": return path;
                 case "getMethod": return NanoHTTPD.Method.valueOf(method);
-                case "getHeaders": { Map<String,String> h = new HashMap<>(); h.put("content-length", ""+bytes.length); if (key != null) h.put("authorization", "Bearer " + key); return h; }
+                case "getHeaders": { Map<String,String> h = new HashMap<>(); h.put("host","127.0.0.1:3425"); h.put("content-length", ""+bytes.length); if (key != null) h.put("authorization", "Bearer " + key);
+                    // This helper models the trusted in-app bridge only for explicit loopback, keyless fixtures.
+                    // Remote or explicit-key requests remain untouched to preserve negative auth coverage.
+                    else if (Arrays.asList("127.0.0.1", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1").contains(ip)) h.put("x-all-in-management", GatewayManagementCredential.get());
+                    return h; }
                 case "getParameters": return Collections.emptyMap();
                 case "getInputStream": return new ByteArrayInputStream(bytes);
                 default: return null;
@@ -63,7 +67,8 @@ public final class RoutingSetupOfflineTest {
         for (String ip : new String[]{"127.0.0.1","::1","0:0:0:0:0:0:0:1","::ffff:127.0.0.1"})
             check(status(s,ip,"/api/routing","GET","",null)==200, "local setup available " + ip);
         cfg.put("setup",new JSONObject("{\"done\":true}"));
-        check(status(s,"192.168.1.2","/api/routing","GET","","magpie")==200, "completed user retains LAN access");
+        check(status(s,"192.168.1.2","/api/routing","GET","",GatewayManagementCredential.get())==200, "completed user retains LAN management access");
+        check(status(s,"192.168.1.2","/api/routing","GET","","magpie")==401, "inference key cannot manage");
         check(status(s,"192.168.1.2","/api/routing","GET","",null)==401, "completed user still requires key");
         int unknownStatus = status(s, "127.0.0.1", "/v1/chat/completions", "POST", "{\"model\":\"unknown\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", null);
         check(unknownStatus >= 400 && unknownStatus < 500, "unknown bare model without key must be 4xx, got " + unknownStatus);

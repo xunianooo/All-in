@@ -43,6 +43,7 @@ public final class ZCodeGiftControlGatewayHttpTest {
     static Reply request(int port, String path, String post) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+port+path).openConnection();
         c.setConnectTimeout(3000); c.setReadTimeout(5000); c.setRequestProperty("Authorization", "Bearer fixture-gateway");
+        c.setRequestProperty("x-all-in-management",GatewayManagementCredential.get());
         if (post != null) { c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json");
             try(OutputStream out=c.getOutputStream()) { out.write(post.getBytes(StandardCharsets.UTF_8)); } }
         try {

@@ -26,7 +26,7 @@ public final class ResponsesGatewayOfflineTest {
     static NanoHTTPD.IHTTPSession session(String body,String key) throws Exception { return session(body,key,"/v1/responses"); }
     static NanoHTTPD.IHTTPSession session(String body,String key,final String uri) throws Exception {
         final byte[] bytes=body.getBytes(StandardCharsets.UTF_8); final InputStream in=new ByteArrayInputStream(bytes); final Map<String,String> headers=new HashMap<String,String>();
-        headers.put("content-length",String.valueOf(bytes.length));headers.put("content-type","application/json");if(key!=null)headers.put("authorization","Bearer "+key);
+        headers.put("host","127.0.0.1:3425");headers.put("content-length",String.valueOf(bytes.length));headers.put("content-type","application/json");if(key!=null)headers.put("authorization","Bearer "+key);
         return (NanoHTTPD.IHTTPSession)java.lang.reflect.Proxy.newProxyInstance(ResponsesGatewayOfflineTest.class.getClassLoader(),new Class[]{NanoHTTPD.IHTTPSession.class},(p,m,a)->{
             switch(m.getName()) {case "getUri":return uri;case "getMethod":return NanoHTTPD.Method.POST;case "getHeaders":return headers;case "getInputStream":return in;case "getRemoteIpAddress":return "192.0.2.1";case "getParameters":return Collections.emptyMap();case "getParms":return Collections.emptyMap();default:return null;}
         });

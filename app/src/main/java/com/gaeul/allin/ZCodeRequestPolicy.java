@@ -2,10 +2,32 @@ package com.gaeul.allin;
 
 import java.net.URI;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 /** Conservative fingerprint for official ZCode coding-plan Messages requests. */
 final class ZCodeRequestPolicy {
     private ZCodeRequestPolicy() {}
+
+    /** Normalize Chat roles on a deep copy; native Messages payloads must not use this. */
+    static JSONObject chat(JSONObject input) throws Exception {
+        JSONObject copy = new JSONObject(input.toString());
+        Object value = copy.opt("messages");
+        if (!(value instanceof JSONArray)) throw new IllegalArgumentException("messages must be an array");
+        JSONArray messages = (JSONArray) value;
+        for (int i = 0; i < messages.length(); i++) {
+            Object item = messages.get(i);
+            if (!(item instanceof JSONObject)) throw new IllegalArgumentException("messages[" + i + "] must be an object");
+            JSONObject message = (JSONObject) item;
+            Object role = message.opt("role");
+            if (!(role instanceof String)) throw new IllegalArgumentException("messages[" + i + "].role must be a supported string");
+            switch ((String) role) {
+                case "developer": message.put("role", "system"); break;
+                case "system": case "user": case "assistant": case "tool": break;
+                default: throw new IllegalArgumentException("messages[" + i + "].role is unsupported");
+            }
+        }
+        return copy;
+    }
 
     static boolean isOfficialMessages(String url) {
         try {

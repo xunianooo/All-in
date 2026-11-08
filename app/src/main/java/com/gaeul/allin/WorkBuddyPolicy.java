@@ -63,6 +63,16 @@ public final class WorkBuddyPolicy {
         h.put("X-Agent-Purpose", "conversation");
         h.put("X-Agent-Type", "main");
         h.put("X-Agent-Runtime", "local-agent");
+        h.put("Accept", "application/json");
+        h.put("Accept-Encoding", "identity");
+        h.put("X-Stainless-Retry-Count", "0");
+        h.put("X-Stainless-Timeout", "1200");
+        h.put("X-Stainless-Lang", "js");
+        h.put("X-Stainless-Package-Version", "6.25.0");
+        h.put("X-Stainless-OS", "Linux");
+        h.put("X-Stainless-Arch", "arm64");
+        h.put("X-Stainless-Runtime", "node");
+        h.put("X-Stainless-Runtime-Version", "v22.21.1");
         String session = explicitSession == null ? "" : explicitSession.trim();
         // Account identity must survive credential refresh and be scoped for every session,
         // including UUIDs. Without a trusted account/session, do not correlate requests.

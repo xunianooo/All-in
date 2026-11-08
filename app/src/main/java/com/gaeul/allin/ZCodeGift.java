@@ -290,6 +290,8 @@ final class ZCodeGift {
         limiter.configure(policies);
     }
     static void resetCooldownForTests() { cooldown = new ZCodeRefusalPolicy(); }
+    static void resetBusyForTests() { giftBusyHold.reset(); }
+    static long busyHoldMillis() { return giftBusyHold.remainingMillis(); }
     static void setCooldownClockForTests(ZCodeRefusalPolicy.Clock clock) { cooldown = new ZCodeRefusalPolicy(clock); }
     static void setFixtureBase(String base) {
         if (base == null) { fixtureBase = null; return; }
@@ -320,6 +322,7 @@ final class ZCodeGift {
         int status; String body = ""; boolean refused, edge, held, sent;
         long retryAfterMillis; ZCodeRefusalPolicy.Kind classification = ZCodeRefusalPolicy.Kind.NONE;
         String error = ""; String transportKind;
+        boolean observed; String source; String businessCode; String retryAfter;
     }
     static Answer send(String jwt, String device, String site, String model,
                        JSONObject body, String session, int timeoutMs) {
@@ -332,11 +335,12 @@ final class ZCodeGift {
         out.status=stream.status; out.body=stream.errorBody; out.refused=stream.refused; out.edge=stream.edge;
         out.held=stream.held; out.sent=stream.sent; out.retryAfterMillis=stream.retryAfterMillis;
         out.classification=stream.classification; out.error=stream.error; out.transportKind=stream.transportKind;
+        out.observed=stream.observed; out.source=stream.source; out.businessCode=stream.businessCode; out.retryAfter=stream.retryAfter;
         if (stream.is != null) try {
             byte[] bytes = readBounded(stream.is, 8 * 1024 * 1024);
             if (bytes == null) { out.status=-1; out.body=""; out.error="Response exceeds local limit"; }
             else out.body = new String(bytes, "UTF-8");
-        } catch (Exception e) { out.status=-1; out.error="ZCode transport failed"; out.transportKind=FailureLayers.transportName(e); }
+        } catch (Exception e) { if (out.status==0) out.status=-1; out.error="ZCode transport failed"; out.transportKind=FailureLayers.transportName(e); }
         finally { try { stream.is.close(); } catch (Exception ignored) {} }
         return out;
     }
@@ -396,11 +400,35 @@ final class ZCodeGift {
         return total;
     }
 
+    interface Observer {
+        void admission(long startedNanos);
+        void handoff(long outboundAt);
+        default void send(int ordinal, long at) { handoff(at); }
+        default void busy(String code, int sends, long waitedMillis, String source) {}
+    }
     static class Stream {
         HttpURLConnection conn; int status; InputStream is; String errorBody = "";
         boolean refused, edge, held, sent; long retryAfterMillis;
         ZCodeRefusalPolicy.Kind classification = ZCodeRefusalPolicy.Kind.NONE;
         String error = ""; String transportKind;
+        boolean observed; String source; String businessCode; String retryAfter;
+        int sends; long retryWaitMillis; String busyCode;
+    }
+    private static final ZCodeGiftBusyPolicy.Gate giftGate = new ZCodeGiftBusyPolicy.Gate();
+    private static final ZCodeGiftBusyPolicy.BusyHold giftBusyHold = new ZCodeGiftBusyPolicy.BusyHold();
+    static String safeBusinessCode(String body) {
+        try {
+            org.json.JSONTokener parser=new org.json.JSONTokener(body);
+            Object parsed=parser.nextValue();if(!(parsed instanceof JSONObject)||parser.nextClean()!=0)return null;
+            JSONObject json=(JSONObject)parsed, error=json.optJSONObject("error");
+            Object root=json.opt("code"), nested=error==null?null:error.opt("code");
+            String first=root==null||root==JSONObject.NULL?null:String.valueOf(root);
+            String second=nested==null||nested==JSONObject.NULL?null:String.valueOf(nested);
+            if(first!=null&&!first.matches("[0-9]{1,12}"))return null;
+            if(second!=null&&!second.matches("[0-9]{1,12}"))return null;
+            if(first!=null&&second!=null&&!first.equals(second))return null;
+            return first==null?second:first;
+        } catch(Exception invalid){return null;}
     }
     private static byte[] readBounded(InputStream in, int limit) throws java.io.IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] buf = new byte[4096]; int n;
@@ -419,6 +447,53 @@ final class ZCodeGift {
         };
         return "gzip".equalsIgnoreCase(c.getContentEncoding()) ? new java.util.zip.GZIPInputStream(guarded) : guarded;
     }
+    private static void localBusy(Stream out, long remaining) {
+        out.businessCode=null;
+        out.status=429; out.source="local_busy_hold"; out.held=true; out.retryAfterMillis=remaining;
+        out.retryAfter=Long.toString((remaining+999)/1000); out.error="Local gift busy hold";
+        out.errorBody=localError(out.error,remaining);
+    }
+    private static boolean hasUsage(Object value) { return hasUsage(value,0); }
+    private static boolean hasUsage(Object value,int depth) {
+        if(depth>32)return true;
+        if (value instanceof JSONObject) {
+            JSONObject o=(JSONObject)value; java.util.Iterator<String> keys=o.keys();
+            while(keys.hasNext()) { String k=keys.next(); if ("usage".equalsIgnoreCase(k) && !o.isNull(k)) return true;
+                if (hasUsage(o.opt(k),depth+1)) return true; }
+        } else if (value instanceof JSONArray) {
+            JSONArray a=(JSONArray)value; for(int i=0;i<a.length();i++) if(hasUsage(a.opt(i),depth+1)) return true;
+        }
+        return false;
+    }
+    private static String completeJson(byte[] data) {
+        if (data == null) return null;
+        try {
+            String text=java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(data)).toString();
+            org.json.JSONTokener tokener=new org.json.JSONTokener(text);
+            Object obj=tokener.nextValue();
+            if (!(obj instanceof JSONObject) || tokener.nextClean()!=0) return null;
+            return text;
+        } catch(Exception e) { return null; }
+    }
+    private static byte[] readCompleteError(HttpURLConnection conn, RequestContext ctx, int timeoutMs) throws java.io.IOException {
+        String contentType=conn.getContentType(), encoding=conn.getContentEncoding();
+        if(contentType!=null && contentType.toLowerCase(Locale.ROOT).contains("text/event-stream"))return null;
+        if(encoding!=null && !encoding.isEmpty() && !"identity".equalsIgnoreCase(encoding) && !"gzip".equalsIgnoreCase(encoding))return null;
+        InputStream raw=conn.getErrorStream();
+        if(raw==null && conn.getResponseCode()>=300 && conn.getResponseCode()<400)raw=conn.getInputStream();
+        if (raw==null) return null;
+        final long[] count={0};
+        InputStream counted=new java.io.FilterInputStream(raw) {
+            @Override public int read() throws java.io.IOException { int n=in.read(); if(n>=0) count[0]++; return n; }
+            @Override public int read(byte[] b,int off,int len) throws java.io.IOException { int n=in.read(b,off,len); if(n>0) count[0]+=n; return n; }
+        };
+        byte[] result; try(InputStream input=decoded(conn,counted,ctx,timeoutMs)) { result=readBounded(input,65536); }
+        long length=conn.getContentLengthLong();
+        return length>=0 && count[0]!=length ? null : result;
+    }
     private static String localError(String message, long retry) {
         JSONObject error = new JSONObject(); JSONObject root = new JSONObject();
         try { error.put("type", "local_cooldown"); error.put("message", message); error.put("retry_after_ms", retry); root.put("error", error); }
@@ -430,30 +505,58 @@ final class ZCodeGift {
     }
     static Stream openStream(String jwt, String device, String site, String model,
                              JSONObject request, String session, int timeoutMs, boolean dressBody, RequestContext ctx) {
-        Stream out = new Stream(); HttpURLConnection conn = null; OutboundLimiter.Ticket ticket = null;
-        Runnable cleanup = null; boolean owned = false;
+        return openStream(jwt, device, site, model, request, session, timeoutMs, dressBody, ctx, null);
+    }
+    static Stream openStream(String jwt, String device, String site, String model,
+                             JSONObject request, String session, int timeoutMs, boolean dressBody, RequestContext ctx, Observer observer) {
+        return openStream(jwt, device, site, model, request, session, timeoutMs, dressBody, ctx, observer, "");
+    }
+    static Stream openStream(String jwt, String device, String site, String model,
+                             JSONObject request, String session, int timeoutMs, boolean dressBody, RequestContext ctx, Observer observer, String stableAccount) {
+        Stream out = new Stream(); out.observed=true; HttpURLConnection conn = null; OutboundLimiter.Ticket ticket = null;
+        ZCodeGiftBusyPolicy.Slot slot = null;
+        Runnable cleanup = null; Runnable slotCleanup = null; boolean owned = false;
+        if (ctx == null) ctx = new RequestContext("zcode-gift", null, 300000);
         try {
             NetworkPolicy.Snapshot network = ctx != null && ctx.network != null ? ctx.network : NetworkPolicy.capture();
             String account = accountScope(jwt, device);
             String scope = network.toJson().toString();
             ZCodeRefusalPolicy.Hold hold = cooldown.before(POLICY_URL, account, scope);
             if (hold != null) {
-                out.status=429; out.held=true; out.retryAfterMillis=hold.retryAfterMillis; out.classification=hold.kind;
+                out.status=429; out.source="local_cooldown"; out.held=true; out.retryAfterMillis=hold.retryAfterMillis; out.classification=hold.kind;
                 out.errorBody=localError(hold.message, hold.retryAfterMillis); out.error="Local cooldown"; return out;
             }
+            long busyRemaining=giftBusyHold.remainingMillis();
+            if (busyRemaining > 0) { localBusy(out,busyRemaining); return out; }
             if (ctx != null) ctx.check();
-            OutboundLimiter.Result admission = limiter.await(java.util.Collections.singleton("zcode-gift"),
-                    ctx == null ? System.nanoTime()+30000000000L : ctx.deadlineNanos, ctx);
-            if (admission.ticket == null) { out.status=429; out.error="Local outbound limit"; return out; }
+            long gateStarted=System.nanoTime();
+            try { slot=giftGate.acquire(ZCodeGiftBusyPolicy.accountKey(jwt,device,stableAccount),ctx); }
+            finally {if(observer!=null)observer.admission(gateStarted);}
+            if (slot == null) { out.status=429; out.source="local_admission"; out.retryAfterMillis=5000; out.retryAfter="5"; out.error="Local gift concurrency limit"; return out; }
+            final ZCodeGiftBusyPolicy.Slot ownedSlot=slot;
+            slotCleanup=ownedSlot::close; if (ctx != null) ctx.onClose(slotCleanup);
+            busyRemaining=giftBusyHold.remainingMillis();
+            if (busyRemaining > 0) { localBusy(out,busyRemaining); return out; }
+            long admissionStart=System.nanoTime(); OutboundLimiter.Result admission;
+            try { admission = limiter.await(java.util.Collections.singleton("zcode-gift"),
+                    ctx == null ? System.nanoTime()+30000000000L : ctx.deadlineNanos, ctx); }
+            finally { if (observer != null) observer.admission(admissionStart); }
+            if (admission.ticket == null) { out.status=429; out.source="local_admission"; out.retryAfterMillis=admission.retryAfterMillis; out.error="Local outbound limit"; return out; }
             ticket=admission.ticket; final OutboundLimiter.Ticket ownedTicket=ticket;
-            cleanup = () -> ownedTicket.close(); if (ctx != null) ctx.onClose(cleanup);
+            cleanup = () -> { ownedTicket.close(); ownedSlot.close(); }; if (ctx != null) ctx.onClose(cleanup);
             // Recheck after queueing, before touching request or opening a connection.
             hold=cooldown.before(POLICY_URL,account,scope);
-            if (hold != null) { out.status=429; out.held=true; out.retryAfterMillis=hold.retryAfterMillis;
+            if (hold != null) { out.status=429; out.source="local_cooldown"; out.held=true; out.retryAfterMillis=hold.retryAfterMillis;
                 out.classification=hold.kind; out.errorBody=localError(hold.message,hold.retryAfterMillis); out.error="Local cooldown"; return out; }
             String sid=sessionOf(session,device);
-            JSONObject body=dressBody ? dress(new JSONObject(request.toString()),site,model,device,sid) : ZCodeRequestPolicy.marked(request,device,sid);
+            JSONObject body=dressBody ? dress(new JSONObject(request.toString()),site,model,device,sid) : ZCodeRequestPolicy.marked(new JSONObject(request.toString()),device,sid);
             byte[] bytes=body.toString().getBytes("UTF-8");
+            String requestId=UUID.randomUUID().toString(), traceId=UUID.randomUUID().toString();
+            boolean countedSustained=false;
+            while (true) {
+            busyRemaining=giftBusyHold.remainingMillis();
+            if (busyRemaining > 0) { localBusy(out,busyRemaining); return out; }
+            out.status=0;out.errorBody="";out.businessCode=null;out.retryAfter=null;out.retryAfterMillis=0;
             String base=fixtureBase; conn=network.openHttp(base == null ? POLICY_URL : base + "/v1/messages");
             if (ctx != null) { ctx.attach(conn); ctx.check(); }
             conn.setInstanceFollowRedirects(false); conn.setRequestMethod("POST"); conn.setDoOutput(true);
@@ -467,23 +570,40 @@ final class ZCodeGift {
             conn.setRequestProperty("X-Release-Channel","production"); conn.setRequestProperty("X-Client-Language",locale());
             conn.setRequestProperty("X-Client-Timezone",timezone()); conn.setRequestProperty("X-ZCode-Agent","glm");
             conn.setRequestProperty("X-Platform",platform()); conn.setRequestProperty("X-Os-Category",osCategory());
-            conn.setRequestProperty("X-Os-Version",osRelease()); conn.setRequestProperty("x-request-id",UUID.randomUUID().toString());
-            conn.setRequestProperty("x-zcode-session-type","main"); conn.setRequestProperty("x-zcode-trace-id",UUID.randomUUID().toString());
+            conn.setRequestProperty("X-Os-Version",osRelease()); conn.setRequestProperty("x-request-id",requestId);
+            conn.setRequestProperty("x-zcode-session-type","main"); conn.setRequestProperty("x-zcode-trace-id",traceId);
             conn.setRequestProperty("x-zcode-query-source","main_turn"); conn.setRequestProperty("x-session-id",sid);
             if (body.optBoolean("stream",false)) conn.setRequestProperty("Accept","text/event-stream");
-            if (ctx != null) ctx.check(); ticket.markSent(); out.sent=true;
+            if (ctx != null) ctx.check(); ticket.markSent(); out.sent=true; out.sends++; out.source="upstream"; if (observer != null) observer.send(out.sends,System.currentTimeMillis());
             try (OutputStream os=conn.getOutputStream()) { if (ctx != null) ctx.check(); os.write(bytes); if (ctx != null) ctx.check(); }
             if (ctx != null) ctx.check();
             if (ctx != null) { ctx.check(); conn.setReadTimeout((int)Math.max(1,Math.min(timeoutMs,ctx.remainingMillis()))); }
             out.status=conn.getResponseCode();
-            if (out.status == 429) {
-                String retry = ProviderRetryPolicy.safeRetryAfter(conn.getHeaderField("Retry-After"));
-                if (retry != null) out.retryAfterMillis = Long.parseLong(retry) * 1000L;
-            }
+            out.retryAfterMillis=0; out.retryAfter = ProviderRetryPolicy.safeRetryAfter(conn.getHeaderField("Retry-After"));
+            if (out.retryAfter != null) out.retryAfterMillis = Long.parseLong(out.retryAfter) * 1000L;
             if (out.status < 200 || out.status >= 300) {
-                InputStream es=decoded(conn,conn.getErrorStream(),ctx,timeoutMs); byte[] data=null;
-                if (es != null) try (InputStream input=es) { data=readBounded(input,65536); }
+                byte[] data=readCompleteError(conn,ctx,timeoutMs);
+                if(data==null) {out.status=-1;out.error="ZCode error response incomplete";out.transportKind="network";return out;}
+                String complete=completeJson(data);
                 out.errorBody=data == null ? "" : new String(data,"UTF-8");
+                out.businessCode=complete == null ? null : safeBusinessCode(complete);
+                if (complete != null && ZCodeGiftBusyPolicy.busy(out.status,complete) && safeBusinessCode(complete) != null && !hasUsage(new JSONObject(complete))) {
+                    out.busyCode=ZCodeGiftBusyPolicy.busyCode(out.status,complete);
+                    if (observer != null) observer.busy(out.busyCode,out.sends,out.retryWaitMillis,"upstream");
+                    if (out.sends >= 2 && !countedSustained) { countedSustained=true; giftBusyHold.sustainedCap(); }
+                    busyRemaining=giftBusyHold.remainingMillis();
+                    if (busyRemaining > 0) { localBusy(out,busyRemaining); return out; }
+                    long delay=Math.max(out.sends * 1000L,out.retryAfterMillis);
+                    if (out.sends < 3 && (ctx == null || (ctx.mayContinueAfterRejection() && ctx.remainingMillis() > delay))) {
+                        if (ctx != null) ctx.detach(conn); conn.disconnect(); conn=null;
+                        long start=System.nanoTime();
+                        if (ctx != null) ctx.awaitMillis(delay); else Thread.sleep(delay);
+                        out.retryWaitMillis += (System.nanoTime()-start)/1000000L;
+                        if(observer!=null)observer.busy(out.busyCode,out.sends,out.retryWaitMillis,"upstream");
+                        if (ctx != null && !ctx.mayContinueAfterRejection()) return out;
+                        continue;
+                    }
+                }
                 out.classification=cooldown.observe(POLICY_URL,account,scope,out.status,data == null ? null : out.errorBody);
                 out.refused=out.classification==ZCodeRefusalPolicy.Kind.ACCOUNT || out.classification==ZCodeRefusalPolicy.Kind.EDGE;
                 out.edge=out.classification==ZCodeRefusalPolicy.Kind.EDGE; out.error="HTTP " + out.status; return out;
@@ -495,16 +615,16 @@ final class ZCodeGift {
                 if (data == null) { out.status=-1; out.error="Response exceeds local limit"; return out; }
                 String text=new String(data,"UTF-8");
                 if (data.length <= 65536 && ZCodeRefusalPolicy.classify(405,text)==ZCodeRefusalPolicy.Kind.ACCOUNT) {
-                    out.status=405; out.errorBody=text; out.classification=cooldown.observe(POLICY_URL,account,scope,405,text);
+                    out.status=405; out.errorBody=text; out.businessCode=safeBusinessCode(text); out.classification=cooldown.observe(POLICY_URL,account,scope,405,text);
                     out.refused=true; out.error="HTTP 405"; return out;
                 }
                 input=new java.io.ByteArrayInputStream(data);
             }
-            final HttpURLConnection c=conn; final Runnable release=cleanup; final RequestContext context=ctx;
+            final HttpURLConnection c=conn; final Runnable release=cleanup; final Runnable releaseSlot=slotCleanup; final RequestContext context=ctx;
             out.conn=conn; out.is=new java.io.FilterInputStream(input) {
                 boolean closed;
                 private void release() { if (closed) return; closed=true; try { super.close(); } catch (Exception ignored) {}
-                    if (context != null) { context.detach(c); context.removeCleanup(release); } c.disconnect(); release.run(); }
+                    if (context != null) { context.detach(c); context.removeCleanup(release); context.removeCleanup(releaseSlot); } c.disconnect(); release.run(); }
                 @Override public int read() throws java.io.IOException {
                     try { checkRead(c,context,timeoutMs); int n=in.read(); if (context != null) context.check(); if (n<0) release(); return n; }
                     catch (java.io.IOException | RuntimeException e) { release(); throw e; }
@@ -515,9 +635,10 @@ final class ZCodeGift {
                 }
                 @Override public void close() { release(); }
             }; owned=true; return out;
-        } catch (Exception e) { out.status=-1; out.error="ZCode transport failed"; out.transportKind=FailureLayers.transportName(e); return out; }
+            }
+        } catch (Exception e) { out.status=-1;out.businessCode=null;out.errorBody="";out.error="ZCode transport failed";out.transportKind=FailureLayers.transportName(e);return out; }
         finally { if (!owned) { if (ctx != null && conn != null) ctx.detach(conn); if (conn != null) conn.disconnect();
-            if (ctx != null && cleanup != null) ctx.removeCleanup(cleanup); if (ticket != null) ticket.close(); out.conn=null; } }
+            if (ctx != null && cleanup != null) ctx.removeCleanup(cleanup); if (ctx != null && slotCleanup != null) ctx.removeCleanup(slotCleanup); if (ticket != null) ticket.close(); if (slot != null) slot.close(); out.conn=null; } }
     }
 
     /** 把 Anthropic 的 message 响应压成纯文本（给网关转 OpenAI 用） */

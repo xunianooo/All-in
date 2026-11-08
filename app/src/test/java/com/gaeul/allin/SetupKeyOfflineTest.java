@@ -67,6 +67,8 @@ public final class SetupKeyOfflineTest {
         try {
             fixture.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
             fixture.reload();
+            // Only the isolated HTTP test process reads this private fixture bridge credential.
+            Files.write(new File(dir, "fixture-management").toPath(), GatewayManagementCredential.get().getBytes(StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.CREATE_NEW);
             return fixture;
         } catch (Exception e) {
             fixture.stop();
@@ -136,10 +138,10 @@ public final class SetupKeyOfflineTest {
         check(!disk(dir).getJSONObject("setup").optBoolean("done"),"setup remains pending");
         check(GatewayAuthKeyHolder.get().equals("fixture-new-key"),"holder invalidated");
         check(post(s,"/api/setup/complete","{\"keepCurrent\":true}")==200,"setup complete");
-        check(remote(s,"magpie")==401 && remote(s,"fixture-new-key")==200,"LAN authorization");
+        check(remote(s,"magpie")==401 && remote(s,GatewayManagementCredential.get())==200 && remote(s,"fixture-new-key")==401,"LAN authorization");
         GatewayServer restarted = RoutingSetupOfflineTest.server(disk(dir));
         RoutingAuditOfflineTest.file(restarted,config);
-        check(remote(restarted,"magpie")==401 && remote(restarted,"fixture-new-key")==200,"restart authorization");
+        check(remote(restarted,"magpie")==401 && remote(restarted,GatewayManagementCredential.get())==200 && remote(restarted,"fixture-new-key")==401,"restart authorization");
         check(post(restarted,"/api/config",stale)==200,"stale config accepted");
         check(disk(dir).getJSONObject("setup").optBoolean("done"),"setup protected");
         check(disk(dir).getJSONObject("server").getString("authKey").equals("fixture-new-key"),"key protected");

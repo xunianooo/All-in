@@ -12,7 +12,7 @@ public final class ZCodeGiftPolicyHttpTest {
     static void check(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
     public static void main(String[] args) throws Exception {
         final ServerSocket server = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
-        final AtomicInteger calls=new AtomicInteger(); final String[] mode={"3012"}, received={""}, sid={""}; final long[] now={0};
+        final AtomicInteger calls=new AtomicInteger(); final String[] mode={"3012"}, received={""}, sid={""}; final long[] now={0}; final java.util.List<String> bodies=java.util.Collections.synchronizedList(new java.util.ArrayList<String>()); final java.util.List<Long> times=java.util.Collections.synchronizedList(new java.util.ArrayList<Long>());
         Thread worker=new Thread(new Runnable() { public void run() {
             while (!server.isClosed()) try {
                 Socket socket=server.accept(); socket.setSoTimeout(5000);
@@ -30,10 +30,11 @@ public final class ZCodeGiftPolicyHttpTest {
                     }
                     ByteArrayOutputStream request=new ByteArrayOutputStream();
                     while (length-->0) { v=input.read(); if(v<0) throw new EOFException(); request.write(v); }
-                    received[0]=request.toString("UTF-8"); calls.incrementAndGet(); String m=mode[0];
-                    int status=m.equals("redirect")?302:m.equals("rate")?429:m.equals("ok") || m.equals("slow")?200:405;
-                    String text=m.equals("3012")?"{\"code\":3012}":m.equals("edge")?"<html>errors.aliyun.com</html>":m.equals("huge")?new String(new char[70000]).replace('\0','x'):m.equals("ok")?"{\"content\":[]}":"plain";
+                    received[0]=request.toString("UTF-8"); calls.incrementAndGet(); String m=mode[0]; if (m.startsWith("busy")) { bodies.add(received[0]); times.add(System.nanoTime()); }
+                    int status=m.equals("redirect")?302:(m.equals("rate") || m.startsWith("busy"))?429:m.equals("ok") || m.equals("slow")?200:405;
+                    String text=m.equals("busyusage")?"{\"code\":3008,\"usage\":{\"input_tokens\":1}}":m.startsWith("busy")?"{\"code\":3008}":m.equals("3012")?"{\"code\":3012}":m.equals("edge")?"<html>errors.aliyun.com</html>":m.equals("huge")?new String(new char[70000]).replace('\0','x'):m.equals("ok")?"{\"content\":[]}":m.equals("rate")?"{\"error\":{\"code\":42901,\"message\":\"secret-token prompt\"}}":"plain";
                     byte[] data=text.getBytes("UTF-8"); String extra="";
+                    if (m.equals("busygzip") || m.equals("busytruncated")) { ByteArrayOutputStream b=new ByteArrayOutputStream(); GZIPOutputStream z=new GZIPOutputStream(b); z.write("{\"code\":3008}".getBytes("UTF-8")); z.close(); data=b.toByteArray(); if(m.equals("busytruncated")) data=java.util.Arrays.copyOf(data,data.length-4); extra="Content-Encoding: gzip\r\n"; }
                     if (m.equals("gzip")) { ByteArrayOutputStream b=new ByteArrayOutputStream(); GZIPOutputStream z=new GZIPOutputStream(b); z.write("{\"code\":3012}".getBytes("UTF-8")); z.close(); data=b.toByteArray(); extra="Content-Encoding: gzip\r\n"; }
                     if (m.equals("redirect")) extra+="Location: /follow\r\n";
                     if (m.equals("rate")) extra+="Retry-After: 47\r\n";
@@ -55,6 +56,7 @@ public final class ZCodeGiftPolicyHttpTest {
             check(new JSONObject(received[0]).getJSONObject("metadata").getString("user_id").equals("existing"),"preserve metadata");
             check(sid[0].equals(ZCodeGift.sessionOf("sess","device")),"session header");
             ZCodeGift.Stream held=ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false);
+            check(held.observed && "local_cooldown".equals(held.source),"cooldown source observed");
             check(held.held && held.status==429 && calls.get()==1 && !held.sent,"hold before network");
             check(ZCodeGift.hold("token","device",null)!=null,"hold helper reflects cooldown");
             now[0]+=ZCodeRefusalPolicy.HOLD_MILLIS; mode[0]="plain";
@@ -66,9 +68,27 @@ public final class ZCodeGiftPolicyHttpTest {
             mode[0]="redirect"; int before=calls.get(); check(ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false).status==302 && calls.get()==before+1,"redirect");
             mode[0]="rate"; int beforeRate=calls.get();
             ZCodeGift.Stream rate=ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false);
+            check("42901".equals(rate.businessCode) && "upstream".equals(rate.source) && rate.observed,"safe numeric code and upstream source");
             check(rate.status==429 && rate.sent && rate.retryAfterMillis==47000 && !rate.refused && !rate.edge
                     && !rate.held && rate.classification==ZCodeRefusalPolicy.Kind.NONE && calls.get()==beforeRate+1,"plain 429 retry-after, no retries or refusal");
             check(ZCodeGift.hold("token","device",null)==null,"plain 429 creates no refusal hold");
+            mode[0]="busy"; bodies.clear(); times.clear();
+            ZCodeGift.Stream busy=ZCodeGift.openStream("token","device","zai","m",request,"sess",5000,true);
+            check(busy.status==429 && busy.sends==3 && "3008".equals(busy.busyCode),"busy three sends");
+            check(bodies.size()==3 && bodies.get(0).equals(bodies.get(1)) && bodies.get(1).equals(bodies.get(2)),"retry bytes identical");
+            check((times.get(1)-times.get(0))/1000000>=900 && (times.get(2)-times.get(1))/1000000>=1900,"real backoff");
+            mode[0]="busygzip"; RequestContext gzipBudget=new RequestContext("gift",NetworkPolicy.capture(),1500);
+            int gzipBefore=calls.get(); ZCodeGift.Stream gzipBusy=ZCodeGift.openStream("token","device","zai","m",request,"sess",5000,true,gzipBudget);
+            check(gzipBusy.sends==2 && calls.get()==gzipBefore+2 && "3008".equals(gzipBusy.busyCode),"complete gzip retried"); gzipBudget.close();
+            mode[0]="busytruncated"; int truncatedBefore=calls.get();
+            ZCodeGift.Stream truncatedBusy=ZCodeGift.openStream("token","device","zai","m",request,"sess",5000,true);
+            check(truncatedBusy.sends==1 && calls.get()==truncatedBefore+1 && truncatedBusy.status<0 && truncatedBusy.transportKind!=null,"truncated gzip is unknown, never retried");
+            mode[0]="busyusage"; int usageBefore=calls.get();
+            ZCodeGift.Stream usage=ZCodeGift.openStream("token","device","zai","m",request,"sess",5000,true);
+            check(usage.sends==1 && calls.get()==usageBefore+1 && usage.errorBody.contains("usage"),"busy usage is never replayed");
+            mode[0]="busy"; RequestContext shortBudget=new RequestContext("gift",NetworkPolicy.capture(),500);
+            int budgetBefore=calls.get(); ZCodeGift.Stream budget=ZCodeGift.openStream("token","device","zai","m",request,"sess",5000,true,shortBudget);
+            check(budget.status==429 && calls.get()==budgetBefore+1,"insufficient budget preserves 429"); shortBudget.close();
             mode[0]="edge"; check(ZCodeGift.openStream("token","device","zai","m",request,"sess",3000,false).edge,"edge");
             check(ZCodeGift.openStream("other","device","zai","m",request,"sess",3000,false).held,"edge network scope");
             ZCodeGift.resetCooldownForTests(); mode[0]="ok"; JSONObject empty=new JSONObject("{\"messages\":[]}");

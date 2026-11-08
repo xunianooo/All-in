@@ -39,6 +39,11 @@ public final class RequestContext implements OutboundLimiter.Cancellation, AutoC
     public synchronized void headersWritten() { diagnosticHeadersSeen=true; if(phase==Phase.UNCOMMITTED) phase=Phase.HEADERS; }
     public synchronized void businessWritten() { if(phase!=Phase.TERMINAL) phase=Phase.BUSINESS; }
     public boolean mayReplay() { return phase==Phase.UNCOMMITTED && !isCancelled(); }
+    /** Only for a fully read, explicit upstream rejection. Waiting SSE comments
+     * may commit headers; they are not model output or evidence of execution. */
+    public synchronized boolean mayContinueAfterRejection() {
+        return (phase==Phase.UNCOMMITTED || phase==Phase.HEADERS) && !isCancelled();
+    }
     public String cancelReason() { return reason; }
     public synchronized void awaitMillis(long millis) throws IOException,InterruptedException {
         long end=System.nanoTime()+Math.max(0,millis)*1000000L;

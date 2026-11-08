@@ -62,6 +62,7 @@ public final class ZCodeModelProbeLayersHttpTest {
     static JSONObject probe(int port) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+port+"/api/test-model").openConnection();
         c.setRequestMethod("POST"); c.setDoOutput(true); c.setConnectTimeout(5000); c.setReadTimeout(10000);
+        c.setRequestProperty("x-all-in-management",GatewayManagementCredential.get());
         try(OutputStream o=c.getOutputStream()){o.write(new JSONObject().put("model",MODEL).toString().getBytes(StandardCharsets.UTF_8));}
         ByteArrayOutputStream b=new ByteArrayOutputStream(); try(InputStream in=c.getInputStream()){byte[] buf=new byte[1024]; int n; while((n=in.read(buf))!=-1)b.write(buf,0,n);} finally {c.disconnect();}
         JSONObject r=new JSONObject(b.toString("UTF-8")); String text=r.toString();

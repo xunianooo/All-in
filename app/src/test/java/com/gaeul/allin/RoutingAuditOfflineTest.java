@@ -22,13 +22,13 @@ public final class RoutingAuditOfflineTest {
         check(RoutingSetupOfflineTest.status(s,"192.0.2.1","/api/routing","GET","","test-key")==403,"legacy config requires local setup");
         NanoHTTPD.IHTTPSession base = RoutingSetupOfflineTest.request("192.0.2.1", "/api/routing", "GET", "", null);
         NanoHTTPD.IHTTPSession spoof = (NanoHTTPD.IHTTPSession) Proxy.newProxyInstance(RoutingAuditOfflineTest.class.getClassLoader(), new Class[]{NanoHTTPD.IHTTPSession.class}, (p,m,a) -> {
-            if (m.getName().equals("getHeaders")) { Map<String,String> h = new HashMap<>(); h.put("origin", "http://127.0.0.1:3425"); h.put("remote-addr", "127.0.0.1"); h.put("x-forwarded-for", "127.0.0.1"); return h; }
+            if (m.getName().equals("getHeaders")) { Map<String,String> h = new HashMap<>(); h.put("host", "127.0.0.1:3425"); h.put("origin", "http://127.0.0.1:3425"); h.put("remote-addr", "127.0.0.1"); h.put("x-forwarded-for", "127.0.0.1"); return h; }
             return m.invoke(base,a);
         });
         check(s.serve(spoof).getStatus().getRequestStatus()==403,"spoofed headers cannot bypass setup");
         cfg.put("setup", new JSONObject("{\"done\":\"true\"}"));
         check(s.serve(spoof).getStatus().getRequestStatus()==401,"spoofed headers cannot bypass authentication");
-        check(RoutingSetupOfflineTest.status(s,"192.0.2.1","/api/routing","GET","","test-key")==200,"string true accepted");
+        check(RoutingSetupOfflineTest.status(s,"192.0.2.1","/api/routing","GET","",GatewayManagementCredential.get())==200,"string true accepted");
         cfg.put("setup", new JSONObject("{\"done\":null}"));
         check(RoutingSetupOfflineTest.status(s,"192.0.2.1","/api/routing","GET","","test-key")==403,"null blocked");
         cfg.put("setup", new JSONObject("{\"done\":true}"));

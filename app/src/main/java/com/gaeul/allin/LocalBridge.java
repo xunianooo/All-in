@@ -72,6 +72,8 @@ final class LocalBridge {
             head.append("X-All-In-Bridge: 1\r\n");
 
             // 带上网关口令，等价于原来 openAuthed 里的 Authorization
+            String management = GatewayManagementCredential.get();
+            if (!management.isEmpty()) head.append("X-All-In-Management: ").append(management).append("\r\n");
             String key = GatewayAuthKeyHolder.get();
             if (key != null && !key.isEmpty()) {
                 head.append("Authorization: Bearer ").append(key).append("\r\n");
@@ -147,6 +149,8 @@ final class LocalBridge {
             head.append("Connection: close\r\n");
             head.append("X-All-In-Bridge: 1\r\n");
             head.append("Accept: text/event-stream\r\n");
+            String management = GatewayManagementCredential.get();
+            if (!management.isEmpty()) head.append("X-All-In-Management: ").append(management).append("\r\n");
             String key = GatewayAuthKeyHolder.get();
             if (key != null && !key.isEmpty()) {
                 head.append("Authorization: Bearer ").append(key).append("\r\n");

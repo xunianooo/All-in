@@ -106,6 +106,26 @@ public class UsageLedger {
         public String model = "";   // 实际应答的模型
         public String req = "";     // 客户端请求的模型（可能是 group/ 或别名）
         public int in, out, cacheRead, cacheWrite, reasoning;
+        transient int compatBaseIn, compatBaseOut, compatBaseCacheRead, compatBaseCacheWrite, compatBaseReasoning;
+        // A bit is set when the current physical send reported that dimension.
+        transient int compatUsageSends, compatCurrentMask, compatCompleteMask = 31;
+        transient boolean compatCacheUnknown, compatCacheEstimated, compatReasoningEstimated;
+        void beginCompatUsageSend() {
+            if (compatUsageSends > 0) compatCompleteMask &= compatCurrentMask;
+            compatUsageSends++;
+            compatCurrentMask = 0;
+            compatBaseIn=in; compatBaseOut=out; compatBaseCacheRead=cacheRead;
+            compatBaseCacheWrite=cacheWrite; compatBaseReasoning=reasoning;
+            if (inputKnown || outputKnown) usageSource = "estimated".equals(usageSource) ? "estimated" : "partial";
+            if (compatUsageSends > 1) {
+                if (!cacheSource.isEmpty() && !"unknown".equals(cacheSource)) cacheSource = "partial";
+                if (!reasoningSource.isEmpty() && !"unknown".equals(reasoningSource)) reasoningSource = "partial";
+                cacheInputTokens = -1;
+            }
+        }
+        boolean compatComplete(int mask) {
+            return compatUsageSends == 0 || ((compatCompleteMask & compatCurrentMask & mask) == mask);
+        }
         public boolean cacheUnknown;
         public long ttft = -1;      // 首字延迟 ms，-1 未知
         public long decMs = -1;     // 解码窗口 ms
@@ -494,7 +514,7 @@ public class UsageLedger {
                 o.put("outboundAt",r.outboundAt); o.put("queuedMs",r.queuedMs);
                 o.put("failureKind",r.failureKind); o.put("upstreamErrorCode",r.upstreamErrorCode); o.put("upstreamRetryAfter",r.upstreamRetryAfter);
                 o.put("inputKnown", r.inputKnown); o.put("outputKnown", r.outputKnown);
-                if (r.cacheInputTokens >= 0) o.put("cacheInputTokens", r.cacheInputTokens);
+                if (r.cacheInputTokens >= 0 && !"partial".equals(r.cacheSource)) o.put("cacheInputTokens", r.cacheInputTokens);
                 o.put("cacheSource", r.cacheSource == null || r.cacheSource.isEmpty() ? "unknown" : r.cacheSource);
                 o.put("reasoningSource", r.reasoningSource == null || r.reasoningSource.isEmpty() ? "unknown" : r.reasoningSource);
             }
@@ -504,10 +524,10 @@ public class UsageLedger {
             if (r.req != null && !r.req.isEmpty()) o.put("req", r.req);
             if (r.effectiveInputKnown()) o.put("in", r.in);
             if (r.effectiveOutputKnown()) o.put("out", r.out);
-            if (r.isLegacy() || "known".equals(r.cacheSource) || "estimated".equals(r.cacheSource)) {
+            if (r.isLegacy() || "known".equals(r.cacheSource) || "estimated".equals(r.cacheSource) || "partial".equals(r.cacheSource)) {
                 o.put("cr", r.cacheRead); o.put("cw", r.cacheWrite);
             }
-            if ((r.isLegacy() && r.reasoning > 0) || (!r.isLegacy() && ("known".equals(r.reasoningSource) || "estimated".equals(r.reasoningSource)))) o.put("reas", r.reasoning);
+            if ((r.isLegacy() && r.reasoning > 0) || (!r.isLegacy() && ("known".equals(r.reasoningSource) || "estimated".equals(r.reasoningSource) || "partial".equals(r.reasoningSource)))) o.put("reas", r.reasoning);
             if (r.cacheUnknown) o.put("cu", true);
             if (r.ttft >= 0) o.put("ttft", r.ttft);
             if (r.decMs >= 0) {
@@ -539,6 +559,7 @@ public class UsageLedger {
             r.inputKnown = o.optBoolean("inputKnown", false); r.outputKnown = o.optBoolean("outputKnown", false);
             r.cacheInputTokens = o.optLong("cacheInputTokens", -1);
             r.usageSource = o.optString("usageSource", ""); r.cacheSource = o.optString("cacheSource", ""); r.reasoningSource = o.optString("reasoningSource", "");
+            if ("partial".equals(r.cacheSource)) r.cacheInputTokens = -1;
             r.t = o.optLong("t", 0);
             r.prov = o.optString("prov", "");
             r.model = o.optString("model", "");
@@ -732,12 +753,12 @@ public class UsageLedger {
                 o.put("credentialId", r.credentialId); o.put("usageSource", r.effectiveUsageSource());
                 o.put("outboundAt",r.outboundAt); o.put("queuedMs",r.queuedMs); o.put("failureKind",r.failureKind); o.put("upstreamErrorCode",r.upstreamErrorCode); o.put("upstreamRetryAfter",r.upstreamRetryAfter);
                 o.put("cacheSource", r.cacheSource); o.put("reasoningSource", r.reasoningSource);
-                o.put("cacheInputTokens", r.cacheInputTokens >= 0 ? r.cacheInputTokens : JSONObject.NULL);
+                o.put("cacheInputTokens", r.cacheInputTokens >= 0 && !"partial".equals(r.cacheSource) ? r.cacheInputTokens : JSONObject.NULL);
                 o.put("model", r.model);
                 o.put("in", r.effectiveInputKnown() ? r.in : JSONObject.NULL);
                 o.put("out", r.effectiveOutputKnown() ? r.out : JSONObject.NULL);
                 o.put("inputKnown", r.effectiveInputKnown()); o.put("outputKnown", r.effectiveOutputKnown());
-                o.put("cacheRead", !r.isLegacy() && !"known".equals(r.cacheSource) && !"estimated".equals(r.cacheSource) ? JSONObject.NULL : r.cacheRead);
+                o.put("cacheRead", !r.isLegacy() && !"known".equals(r.cacheSource) && !"estimated".equals(r.cacheSource) && !"partial".equals(r.cacheSource) ? JSONObject.NULL : r.cacheRead);
                 o.put("ms", r.ms);
                 o.put("status", r.status);
                 if (!r.err.isEmpty()) o.put("err", r.err);
@@ -986,9 +1007,9 @@ public class UsageLedger {
                     .append(csvEsc(r.req)).append(',')
                     .append(!r.effectiveInputKnown() ? "" : String.valueOf(r.in)).append(',')
                     .append(!r.effectiveOutputKnown() ? "" : String.valueOf(r.out)).append(',')
-                    .append(!r.isLegacy() && !"known".equals(r.cacheSource) && !"estimated".equals(r.cacheSource) ? "" : String.valueOf(r.cacheRead)).append(',')
-                    .append(!r.isLegacy() && !"known".equals(r.cacheSource) && !"estimated".equals(r.cacheSource) ? "" : String.valueOf(r.cacheWrite)).append(',')
-                    .append(!r.isLegacy() && !"known".equals(r.reasoningSource) && !"estimated".equals(r.reasoningSource) ? "" : String.valueOf(r.reasoning)).append(',')
+                    .append(!r.isLegacy() && !"known".equals(r.cacheSource) && !"estimated".equals(r.cacheSource) && !"partial".equals(r.cacheSource) ? "" : String.valueOf(r.cacheRead)).append(',')
+                    .append(!r.isLegacy() && !"known".equals(r.cacheSource) && !"estimated".equals(r.cacheSource) && !"partial".equals(r.cacheSource) ? "" : String.valueOf(r.cacheWrite)).append(',')
+                    .append(!r.isLegacy() && !"known".equals(r.reasoningSource) && !"estimated".equals(r.reasoningSource) && !"partial".equals(r.reasoningSource) ? "" : String.valueOf(r.reasoning)).append(',')
                     .append(r.ttft < 0 ? "" : r.ttft).append(',')
                     .append(r.decMs < 0 ? "" : r.decMs).append(',')
                     .append(r.ms).append(',')

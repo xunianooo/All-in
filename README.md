@@ -8,7 +8,7 @@
 
 - 名称：All In
 - 包名：`com.gaeul.allin`
-- 当前版本：1.2.20（versionCode 26）
+- 当前版本：1.2.21（versionCode 27）
 
 此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
 旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
@@ -53,6 +53,15 @@ MAGPIE_KEY_ALIAS=gaeul \
 网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
 
 Responses 兼容完整 Agent 请求中的 `user`、`stream_options`、`text.verbosity`、常见可空默认值及普通 reasoning／工具历史。未知顶层扩展字段在副本上忽略，类型错误仍返回 400；非空服务器端会话、模板和异步执行不会静默丢弃。跨协议展示选项降级通过兼容性响应头提示，详见 [字段兼容表](docs/responses-agent-compatibility.md)。
+
+## 1.2.21 自动客户端兼容与管理边界
+
+- WorkBuddy 自动处理 DSH 通道拒绝及流式空字段，用户无需配置兼容开关。
+- ZCode 赠送通道按账号排队，针对明确并发拒绝做有界短重试，并记录实际发送次数和等待。
+- 隔离手机管理身份与推理 Key，完善配置脱敏保真回写、WebView 来源、CORS/Host 和 Responses 原生入口保护。
+- 电脑 DeepSeek Harness 的 WorkBuddy 与 ZCode 路径均已通过用户真实验收。
+
+本版为快速存底，复用此前定向回归与实测结果；完整范围及验证边界见 [1.2.21 更新说明](docs/release-1.2.21.md)。
 
 ## 1.2.18 供应商可靠性、端点探测与新图标
 

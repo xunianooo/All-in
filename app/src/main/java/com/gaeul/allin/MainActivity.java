@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
             try {
                 java.net.HttpURLConnection hc = (java.net.HttpURLConnection)
                         new java.net.URL("http://127.0.0.1:3425/api/status").openConnection(java.net.Proxy.NO_PROXY);
+                hc.setRequestProperty("X-All-In-Management", GatewayManagementCredential.get());
                 hc.setConnectTimeout(1500);
                 hc.setReadTimeout(1500);
                 sb.append("http loopback code=").append(hc.getResponseCode()).append('\n');
@@ -222,6 +223,12 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                if (isTrustedPanelResource(url)) return null;
+                return new android.webkit.WebResourceResponse("text/plain", "UTF-8", new java.io.ByteArrayInputStream(new byte[0]));
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 currentPageUrl = url == null ? "" : url;
@@ -312,17 +319,13 @@ public class MainActivity extends Activity {
                     startActivity(intent);
                     return true;
                 }
-                // 如果是外部 http 链接（如官方登录页），调用系统浏览器打开
-                if (url.startsWith("http://") || url.startsWith("https://")) {
-                    if (!url.contains("127.0.0.1") && !url.contains("localhost")) {
-                        try {
-                            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
-                            startActivity(i);
-                            return true;
-                        } catch (Exception ignored) {}
-                    }
+                if(isTrustedPanelResource(url))return false;
+                // Login pages never share the management bridge's WebView.
+                if(url!=null && (url.startsWith("http://") || url.startsWith("https://"))) {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(url))); }
+                    catch(Exception ignored) { Toast.makeText(MainActivity.this,"无法打开外部页面",Toast.LENGTH_SHORT).show(); }
                 }
-                return false;
+                return true;
             }
         });
 
@@ -333,9 +336,7 @@ public class MainActivity extends Activity {
         // 恒为 false，manifest 的 usesCleartextTraffic 也被忽略），所以 WebView/fetch
         // 访问 http://127.0.0.1:3425 必然 ERR_CLEARTEXT_NOT_PERMITTED。
         // 因此面板的 /api/* 请求改为走下面的原生 Socket 桥（raw socket 不受明文策略约束）。
-        final String authKey = readGatewayAuthKey();
-        String fileUrl = "file:///android_asset/dashboard.html"
-                + (authKey.isEmpty() ? "" : "#key=" + Uri.encode(authKey));
+        String fileUrl = "file:///android_asset/dashboard.html";
         webView.loadUrl(fileUrl);
 
         setContentView(webView);
@@ -449,15 +450,28 @@ public class MainActivity extends Activity {
      * 原来 addJavascriptInterface 之后没有任何判断，面板里任何一处 innerHTML 拼接（账号昵称、
      * 模型名、用户自己填的 baseUrl）被注入就能调 requestAsync 改配置、导凭据。
      */
+    private static boolean isTrustedPanelResource(String url) {
+        if(url==null)return false;
+        try {
+            Uri u=Uri.parse(url);
+            if(u.getUserInfo()!=null || u.getQuery()!=null)return false;
+            if("file".equals(u.getScheme())) {
+                String path=u.getPath();
+                return (u.getAuthority()==null || u.getAuthority().isEmpty()) && path!=null
+                        && ("/android_asset/dashboard.html".equals(path) || "/android_asset/icon.png".equals(path)
+                            || path.matches("/android_asset/provider-icons/[a-z0-9_-]+\\.(svg|png)"));
+            }
+            return false;
+        }catch(Exception invalid){return false;}
+    }
+
     private boolean bridgeAllowed() {
         try {
             Uri uri = Uri.parse(currentPageUrl);
             if (uri.getUserInfo() != null || uri.getQuery() != null) return false;
             if ("file".equals(uri.getScheme()))
                 return (uri.getAuthority() == null || uri.getAuthority().isEmpty()) && "/android_asset/dashboard.html".equals(uri.getPath());
-            return "http".equals(uri.getScheme()) && uri.getPort() == 3425
-                    && ("127.0.0.1".equals(uri.getHost()) || "localhost".equals(uri.getHost()))
-                    && ("/".equals(uri.getPath()) || "/dashboard.html".equals(uri.getPath()));
+            return false;
         } catch (Exception ignored) { return false; }
     }
 
@@ -525,6 +539,16 @@ public class MainActivity extends Activity {
         @android.webkit.JavascriptInterface
         public boolean hasEta() {
             return etaInstalled();
+        }
+
+        /** Optional existing browser management, explicit copy only; never part of inference import. */
+        @android.webkit.JavascriptInterface
+        public boolean copyManagementPanelLink() {
+            if (!bridgeAllowed()) return false;
+            String key=GatewayManagementCredential.get();
+            String ip=GatewayServer.getLocalIpAddress();
+            if (key.isEmpty() || ip==null || ip.isEmpty() || "127.0.0.1".equals(ip)) return false;
+            return copyText("http://"+ip+":3425/#manage="+key);
         }
 
         /** 把文本放进剪贴板（面板「一键导入 ETA」用；WebView 里 navigator.clipboard 不稳） */
@@ -647,7 +671,7 @@ public class MainActivity extends Activity {
                         java.lang.reflect.Method m = WebView.class
                                 .getMethod("evaluateJavascript", String.class,
                                         Class.forName("android.webkit.ValueCallback"));
-                        m.invoke(view, script, null);
+                        if(bridgeAllowed()) m.invoke(view, script, null);
                     } catch (Throwable ignored) {
                     }
                 }
@@ -679,7 +703,7 @@ public class MainActivity extends Activity {
                                     // 走反射调用，运行时在真机上正常链接。
                                     java.lang.reflect.Method m = WebView.class
                                             .getMethod("evaluateJavascript", String.class, Class.forName("android.webkit.ValueCallback"));
-                                    m.invoke(view, script, null);
+                                    if(bridgeAllowed()) m.invoke(view, script, null);
                                 } catch (Throwable ignored) {
                                 }
                             }
@@ -709,6 +733,8 @@ public class MainActivity extends Activity {
                 head.append("X-All-In-Bridge: 1\r\n");
                 // 关键：网关对 /api/* 的本机回路放行，但 /v1/* 必须带口令。
                 // 这里原来没带，面板里任何打 /v1/* 的请求都会 401。
+                String management = GatewayManagementCredential.get();
+                if (!management.isEmpty()) head.append("X-All-In-Management: ").append(management).append("\r\n");
                 String gwKey = GatewayAuthKeyHolder.get();
                 if (gwKey != null && !gwKey.isEmpty()) {
                     head.append("Authorization: Bearer ").append(gwKey).append("\r\n");

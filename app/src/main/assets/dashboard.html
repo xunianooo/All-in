@@ -1089,6 +1089,7 @@
         <div style="display:flex;gap:8px;margin-bottom:14px;">
           <input id="cred-lan-url" type="text" readonly value="" placeholder="未检测到可用的局域网 IPv4 地址" style="flex:1;min-width:0;padding:11px 13px;border-radius:9px;">
           <button class="btn" onclick="copyCredential('lan')">📋 复制</button>
+          <button class="btn btn-outline" onclick="copyManagementPanelLink()">复制网页管理链接</button>
         </div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
@@ -2077,6 +2078,21 @@
       return k || 'magpie';
     })();
 
+    // 管理凭证只接受链接片段或本会话中保存的值。
+    let MANAGEMENT_KEY = (function () {
+      let k = '';
+      if (window.AllInNative) return '';
+      try {
+        k = new URLSearchParams(location.hash.slice(1)).get('manage') || '';
+        if (k) {
+          sessionStorage.setItem('allinManagementKey', k);
+          if (window.history && typeof window.history.replaceState === 'function') window.history.replaceState(null, '', location.pathname + location.search);
+        }
+        else k = sessionStorage.getItem('allinManagementKey') || '';
+      } catch (e) {}
+      return k;
+    })();
+
     // ===== 原生异步桥的回调总线 =====
     // Java 侧完成后调用 __allInBridgeDone(id, resultJsonString)，这里按 id 兑现 Promise。
     const __bridgePending = {};
@@ -2124,21 +2140,22 @@
       const bridge = (typeof window.AllInNative !== 'undefined' && window.AllInNative) ? window.AllInNative : null;
       const canAsync = !!(bridge && typeof bridge.requestAsync === 'function');
       const canSync = !!(bridge && typeof bridge.request === 'function');
-      const isGatewayUrl = (u) => {
-        if (typeof u !== 'string') return false;
-        if (u.charAt(0) === '/') return true;              // 相对路径一定是我们自己的面板接口
-        if (API_BASE && u.indexOf(API_BASE) === 0) return true;
-        return false;
+      const gatewayOrigin = API_BASE || location.origin;
+      const gatewayUrl = (u) => {
+        if (typeof u !== 'string' || !u || u.startsWith('//') || u.startsWith('\\')) return null;
+        try {
+          const parsed = new URL(u, gatewayOrigin + '/');
+          return parsed.origin === gatewayOrigin ? parsed : null;
+        } catch (e) { return null; }
       };
 
       window.fetch = function (input, init) {
         const url = (typeof input === 'string') ? input : (input && input.url) || '';
-        const gw = isGatewayUrl(url);
+        const parsed = gatewayUrl(url);
+        const gw = !!parsed;
 
         if (gw && bridge) {
-          let path = url;
-          if (API_BASE && path.indexOf(API_BASE) === 0) path = path.slice(API_BASE.length);
-          if (!path) path = '/';
+          const path = parsed.pathname + parsed.search;
           const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
           const body = (init && init.body != null) ? String(init.body) : '';
 
@@ -2166,15 +2183,18 @@
           }
         }
 
-        if (AUTH_KEY && gw) {
+        if (gw) {
           init = init || {};
           try {
-            const h = new Headers(init.headers || {});
-            if (!h.has('Authorization') && !h.has('x-api-key')) {
+            const h = new Headers(init.headers || (input && input.headers) || {});
+            if (parsed.pathname === '/api' || parsed.pathname.startsWith('/api/')) {
+              if (MANAGEMENT_KEY) h.set('Authorization', 'Bearer ' + MANAGEMENT_KEY);
+            } else if (AUTH_KEY && !h.has('Authorization') && !h.has('x-api-key')) {
               h.set('Authorization', 'Bearer ' + AUTH_KEY);
             }
+            if (MANAGEMENT_KEY && !parsed.pathname.startsWith('/api/')) h.set('X-All-In-Management', MANAGEMENT_KEY);
             init.headers = h;
-          } catch (e) { /* Headers 不可用时退回原样 */ }
+          } catch (e) {}
         }
         return raw ? raw(input, init) : Promise.reject(new Error('fetch unavailable'));
       };
@@ -2182,16 +2202,13 @@
 
     // 从电脑浏览器直接打开时没有口令，所有 /api/* 都会 401，界面看着像坏了。
     // 这里先给一条能照着做的提示，而不是让人对着空白页猜。
-    if (!AUTH_KEY && location.protocol !== 'file:') {
+    if (!MANAGEMENT_KEY && !window.AllInNative && location.protocol !== 'file:') {
       (function banner() {
         const bar = document.createElement('div');
         bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 16px;'
           + 'background:#7c2d12;color:#fed7aa;font-size:13px;line-height:1.6;'
           + 'font-family:-apple-system,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.4)';
-        bar.innerHTML = '⚠️ 没有网关口令，下面的数据都取不到。'
-          + '请在地址后加 <code style="background:rgba(0,0,0,.35);padding:1px 5px;border-radius:4px;">?key=你的口令</code>'
-          + '，例如 <code style="background:rgba(0,0,0,.35);padding:1px 5px;border-radius:4px;">'
-          + location.origin + '/?key=你的口令</code>；口令见 App「概览」页的「服务地址与 API 密钥」。';
+        bar.textContent = '⚠️ 未提供管理授权，请在手机 App 中操作。';
         const close = document.createElement('span');
         close.innerText = '  ✕';
         close.style.cssText = 'cursor:pointer;float:right;font-weight:700';
@@ -4309,6 +4326,13 @@
     }
 
     /** 一键复制：地址或密钥 */
+    function copyManagementPanelLink() {
+      if (!window.AllInNative || typeof window.AllInNative.copyManagementPanelLink !== 'function') {
+        showToast('请在手机 App 中复制网页管理链接'); return;
+      }
+      showToast(window.AllInNative.copyManagementPanelLink() ? '管理链接已复制，仅交给可信设备；与调用模型的 Key 分开' : '未能复制，请检查网关和局域网连接');
+    }
+
     function copyCredential(which) {
       let text = '';
       if (which === 'base') {
@@ -4627,19 +4651,33 @@
       }
       return Array.isArray(left) && Array.isArray(right) && equal(left, right);
     }
-    function reconcileProviderReadback(incoming) {
-      for (const id of Array.from(providerUnknown)) {
+    async function reconcileProviderReadback(incoming, isCurrent = () => true) {
+      const checks = await Promise.all(Array.from(providerUnknown, async id => {
         const pending = providerPendingKeys.get(id), p = incoming.providers.find(x => x && x.id === id);
-        if (pending && p) {
+        if (!pending || !p) return {id, pending, p};
+        try {
+          const keys = JSON.parse(pending.snapshot);
+          if (!Array.isArray(keys)) return {id, pending, p};
+          const res = await fetch(API_BASE + '/api/providers/keys/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({providerId:id, keys})});
+          if (!res.ok) return {id, pending, p};
+          const data = await res.json();
           const token = incoming.providerStateTokens && incoming.providerStateTokens[id];
-          if (providerKeysEqual(p.keys || [], JSON.parse(pending.snapshot))) {
+          if (!data || data.ok !== true || data.providerId !== id || typeof data.matched !== 'boolean' || typeof data.stateToken !== 'string' || !data.stateToken || typeof token !== 'string' || !token || data.stateToken !== token) return {id, pending, p};
+          return {id, pending, p, matched:data.matched, token};
+        } catch (_) { return {id, pending, p}; }
+      }));
+      if (!isCurrent()) return;
+      for (const {id, pending, p, matched, token} of checks) {
+        if (!providerUnknown.has(id) || providerPendingKeys.get(id) !== pending) continue;
+        if (pending && p && typeof matched === 'boolean') {
+          if (matched) {
             if (JSON.stringify(dirtyKeysMap.get(id)) === pending.snapshot) { dirtyKeysMap.delete(id); commercialEditedIds.delete(id); providerDraftTokens.delete(id); }
-            else providerDraftTokens.set(id, typeof token === 'string' ? token : undefined);
+            else providerDraftTokens.set(id, token);
             showToast('Key 保存结果已确认');
           } else { providerDraftConflicts.add(id); showToast('Key 状态与提交内容不一致，请核对并重新编辑后保存'); }
           providerPendingKeys.delete(id);
-        }
-        if (!pending || p) providerUnknown.delete(id);
+          providerUnknown.delete(id);
+        } else if (!pending) providerUnknown.delete(id);
       }
       commercialKeysDirty = commercialEditedIds.size > 0;
     }
@@ -4692,7 +4730,8 @@
       });
       if (commercial) Array.from(commercial.children).forEach(row => { const p = providers.find(x => x.id === row.dataset.providerId); row.hidden = providerView === 'detail' ? row.dataset.providerId !== providerDetail : !!(p && providerConfigured(p)); });
       if (details) { details.hidden = !Array.from(commercial.children).some(x => !x.hidden); if (providerView === 'detail' && !details.hidden) details.open = true; }
-      const info = document.getElementById('provider-detail-info'); if (!info) return; info.replaceChildren();
+      const info = document.getElementById('provider-detail-info'); if (!info) return;
+      info.replaceChildren();
       if (providerView === 'add') { info.textContent = '添加供应商'; const available = (cards && Array.from(cards.children).some(x => !x.hidden)) || (commercial && Array.from(commercial.children).some(x => !x.hidden)); if (!available) { const note = document.createElement('p'); note.textContent = '暂无可添加的供应商'; info.appendChild(note); } return; }
       const p = providers.find(x => x.id === providerDetail); if (!p) return;
       const heading = document.createElement('h3'); heading.textContent = p.name || p.id; info.appendChild(heading);
@@ -4819,16 +4858,19 @@
     async function loadConfig() {
       const configRequestId = ++providerConfigRequest, requestWriteRevision = providerWriteRevision;
       try {
+        if (configRequestId !== providerConfigRequest || providerWriteRevision !== requestWriteRevision || providerWrites.size) return;
         const res = await fetch(API_BASE + '/api/config');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const incoming = await res.json();
         if (!incoming || !Array.isArray(incoming.providers)) throw new Error('配置格式无效');
         if (configRequestId !== providerConfigRequest || providerWriteRevision !== requestWriteRevision || providerWrites.size) return;
-        providerConfigError = false; reconcileProviderReadback(incoming); renderProviderStatus();
+        await reconcileProviderReadback(incoming, () => configRequestId === providerConfigRequest && providerWriteRevision === requestWriteRevision && !providerWrites.size);
+        if (configRequestId !== providerConfigRequest || providerWriteRevision !== requestWriteRevision || providerWrites.size) return;
+        providerConfigError = false; renderProviderStatus();
         appConfig = incoming;
         const cfgSig = JSON.stringify(appConfig);
         if (cfgSig === lastConfigSig && !renderDirty) {
-          renderProviderList(); flushCommercialRender();
+          renderProviderList(); flushCommercialRender(); applyProviderView();
           // 配置真的没动：跳过全部重绘（下面的赠送额度/自动同步仍然会跑）
           try { autoSyncAfterLogin(); } catch (e) {}
           return;
@@ -6433,7 +6475,7 @@
 
     async function startInAppPhoneLogin(region) {
       // 若在安卓原生 App 中，直接调起原生全屏登录界面 (对标网关管家)
-      if (location.protocol === 'file:' || navigator.userAgent.includes('Mobile')) {
+      if (window.AllInNative || location.protocol === 'file:' || navigator.userAgent.includes('Mobile')) {
         window.location.href = 'magpie://login?provider=workbuddy&region=' + region;
         return;
       }
@@ -7145,7 +7187,7 @@
           '</div>',
           (p.baseUrl ? '<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:6px;">' + esc(p.baseUrl) + '</div>' : ''),
           (ENDPOINT_PROBE_PROVIDERS.has(p.id) ? endpointProbeControls(p.id) : '<div style="font-size:0.74rem;color:var(--text-muted);">自定义地址暂未提供此探测</div>'),
-          '<input type="password" placeholder="配置字符串 API Key (多个用逗号隔开)" value="' + esc(keys.filter(k => typeof k === 'string').join(',')) + '">' + (keys.some(k => k && typeof k === 'object') ? '<small>结构化 Key 保持原样，当前无法修改</small>' : '')
+          '<input type="password" autocomplete="new-password" placeholder="' + (keys.filter(k => typeof k === 'string').length ? '已保存 ' + keys.filter(k => typeof k === 'string').length + ' 把 Key，未编辑保持原样' : '输入 API Key（多个用逗号隔开）') + '" value="' + esc(commercialEditedIds.has(p.id) ? keys.filter(k => typeof k === 'string' && !/^allin-secret-ref:[0-9a-f]{64}$/i.test(k)).join(',') : '') + '"><small>输入新 Key 将替换普通 Key；输入后清空将删除普通 Key。</small>' + (keys.some(k => k && typeof k === 'object') ? '<small>结构化 Key 保持原样，当前无法修改</small>' : '')
         ].join('');
         const input = row.querySelector('input');
         input.oninput = () => updateProviderKeys(p.id, input.value);
@@ -7291,7 +7333,7 @@
 
     function triggerPlatformLogin(providerId) {
       // 在安卓 App 中直接调起原生全屏 LoginActivity 打开该平台官网登录页
-      if (location.protocol === 'file:' || navigator.userAgent.includes('Mobile')) {
+      if (window.AllInNative || location.protocol === 'file:' || navigator.userAgent.includes('Mobile')) {
         window.location.href = 'magpie://login?provider=' + providerId;
       } else {
         startInAppPhoneLogin(providerId);
@@ -7482,21 +7524,24 @@
       addProviderAccount(providerId, getProviderName(providerId) + '账号_' + Math.random().toString(36).slice(2, 6), clean);
     }
 
-    function exportAccount(providerId) {
-      const prov = (appConfig.providers || []).find(p => p.id === providerId);
-      const accs = prov ? (prov.accounts || []) : [];
-      if (accs.length === 0) {
-        alert('当前【' + getProviderName(providerId) + '】平台暂无已入池账号可导出');
-        return;
-      }
-      const dataStr = JSON.stringify(accs, null, 2);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(dataStr).then(() => {
-          showToast('已复制 ' + accs.length + ' 个账号凭据到剪贴板！');
+    async function exportAccount(providerId) {
+      try {
+        const res = await fetch(API_BASE + '/api/providers/accounts/export', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ providerId: providerId })
         });
-      } else {
-        alert('账号凭据：\n' + dataStr);
-      }
+        const d = await res.json();
+        if (!res.ok || !d.ok || !Array.isArray(d.accounts)) throw new Error(d.error || '导出失败');
+        if (!d.accounts.length) { alert('当前【' + getProviderName(providerId) + '】平台暂无已入池账号可导出'); return; }
+        const dataStr = JSON.stringify(d.accounts, null, 2);
+        if (/allin-secret-ref:[0-9a-f]{64}/i.test(dataStr)) throw new Error('导出结果包含密钥引用，请重试');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(dataStr);
+          showToast('已复制 ' + d.accounts.length + ' 个账号凭据到剪贴板！');
+        } else {
+          alert('账号凭据：\n' + dataStr);
+        }
+      } catch (e) { showToast('导出失败：' + (e.message || '请重试')); }
     }
 
     let currentModalProviderId = null;

@@ -31,18 +31,89 @@ public final class RequestDiagnostics {
         return value >= 0 && value == integer ? integer : null;
     }
 
+    private static final int HARNESS_COUNT_MAX = 1000000;
+    private static final String HARNESS_POLICY_VERSION = "1";
+    static final class HarnessFacts {
+        final int messages, descriptions;
+        HarnessFacts(int messages, int descriptions) { this.messages=messages; this.descriptions=descriptions; }
+        JSONObject json() { return new JSONObject().put("enabled",true).put("messages",messages)
+                .put("descriptions",descriptions).put("policyVersion",HARNESS_POLICY_VERSION); }
+        static HarnessFacts parse(JSONObject json) {
+            if(json==null || !Boolean.TRUE.equals(json.opt("enabled")) || !HARNESS_POLICY_VERSION.equals(json.opt("policyVersion"))) return null;
+            Long messages=number(json,"messages"), descriptions=number(json,"descriptions");
+            if(messages==null || descriptions==null || messages>HARNESS_COUNT_MAX || descriptions>HARNESS_COUNT_MAX) return null;
+            return new HarnessFacts(messages.intValue(),descriptions.intValue());
+        }
+    }
+
+    private static final Set<String> WORKBUDDY_STAGES = new HashSet<>(Arrays.asList(
+            "original", "comma", "system_as_user", "learned_comma", "learned_system_as_user"));
+    static final class CompatibilityFacts {
+        final int sends; final String stage;
+        CompatibilityFacts(int sends, String stage) { this.sends=sends; this.stage=stage; }
+        JSONObject json() { return new JSONObject().put("sends",sends).put("stage",stage); }
+        static CompatibilityFacts parse(JSONObject json) {
+            if(json==null) return null;
+            Long sends=number(json,"sends"); Object stage=json.opt("stage");
+            if(sends==null || sends<1 || sends>3 || !(stage instanceof String) || !WORKBUDDY_STAGES.contains(stage)) return null;
+            return new CompatibilityFacts(sends.intValue(),(String)stage);
+        }
+    }
+
+    private static final Set<String> GIFT_SOURCES = new HashSet<>(Arrays.asList(
+            "upstream", "local_admission", "local_cooldown", "local_busy_hold", "unknown"));
+    private static boolean giftCode(String code) {
+        return code == null || "3008".equals(code) || "3009".equals(code) || "3010".equals(code);
+    }
+    static final class GiftFacts {
+        final int sends; final String busyCode, source; final long retryWaitMs;
+        GiftFacts(int sends, String busyCode, long retryWaitMs, String source) {
+            this.sends=sends; this.busyCode=busyCode; this.retryWaitMs=retryWaitMs; this.source=source;
+        }
+        JSONObject json() { return new JSONObject().put("sends",sends).put("busyCode",nullable(busyCode))
+                .put("retryWaitMs",retryWaitMs).put("source",source); }
+        static GiftFacts parse(JSONObject json) {
+            if(json==null || !json.has("busyCode")) return null;
+            Long sends=number(json,"sends"), wait=number(json,"retryWaitMs");
+            Object code=json.opt("busyCode"), source=json.opt("source");
+            if(sends==null || sends>3 || wait==null || wait>300000 ||
+                    !(code==JSONObject.NULL || code instanceof String) ||
+                    !giftCode(code==JSONObject.NULL ? null : (String)code) ||
+                    !(source instanceof String) || !GIFT_SOURCES.contains(source)) return null;
+            return new GiftFacts(sends.intValue(),code==JSONObject.NULL ? null : (String)code,wait,(String)source);
+        }
+    }
+
     /** Immutable after settlement; JSON projections always return a new whitelist object. */
     public static final class Snapshot {
         final String requestedModel, provider, model, failureKind, responsePhase, executionState;
         final String rulesVersion;
         final Long logicalDurationMs, queuedMs, patienceWaitMs;
         final Boolean deliveryConfirmed;
+        final HarnessFacts workbuddyHarness;
+        final CompatibilityFacts workbuddyCompatibility;
+        final GiftFacts zcodeGift;
         Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
                  String failure, String phase, String execution, Boolean delivery) {
             this(requested, provider, model, duration, queue, patience, failure, phase, execution, delivery, null);
         }
         Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
                  String failure, String phase, String execution, Boolean delivery, String version) {
+            this(requested, provider, model, duration, queue, patience, failure, phase, execution, delivery, version, null);
+        }
+        Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
+                 String failure, String phase, String execution, Boolean delivery, String version, HarnessFacts harness) {
+            this(requested,provider,model,duration,queue,patience,failure,phase,execution,delivery,version,harness,null);
+        }
+        Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
+                 String failure, String phase, String execution, Boolean delivery, String version, HarnessFacts harness, CompatibilityFacts compatibility) {
+            this(requested,provider,model,duration,queue,patience,failure,phase,execution,delivery,version,harness,compatibility,null);
+        }
+        Snapshot(String requested, String provider, String model, Long duration, Long queue, Long patience,
+                 String failure, String phase, String execution, Boolean delivery, String version, HarnessFacts harness, CompatibilityFacts compatibility, GiftFacts gift) {
+            zcodeGift = gift == null ? null : new GiftFacts(gift.sends,gift.busyCode,gift.retryWaitMs,gift.source);
+            workbuddyHarness = harness == null ? null : new HarnessFacts(harness.messages, harness.descriptions);
+            workbuddyCompatibility = compatibility == null ? null : new CompatibilityFacts(compatibility.sends,compatibility.stage);
             rulesVersion = ruleVersion(version);
             requestedModel = identifier(requested); this.provider = identifier(provider); this.model = identifier(model);
             logicalDurationMs = duration; queuedMs = queue; patienceWaitMs = patience;
@@ -51,12 +122,16 @@ public final class RequestDiagnostics {
             executionState = enumValue(execution, EXECUTIONS); deliveryConfirmed = delivery;
         }
         public JSONObject json() {
-            return new JSONObject().put("schemaVersion", 1).put("requestedModel", nullable(requestedModel))
+            JSONObject result = new JSONObject().put("schemaVersion", 1).put("requestedModel", nullable(requestedModel))
                     .put("target", new JSONObject().put("provider", nullable(provider)).put("model", nullable(model)))
                     .put("logicalDurationMs", nullable(logicalDurationMs)).put("queuedMs", nullable(queuedMs))
                     .put("patienceWaitMs", nullable(patienceWaitMs)).put("failureKind", nullable(failureKind))
                     .put("responsePhase", nullable(responsePhase)).put("executionState", nullable(executionState))
                     .put("deliveryConfirmed", nullable(deliveryConfirmed)).put("rulesVersion", nullable(rulesVersion));
+            if(workbuddyHarness!=null) result.put("workbuddyHarness",workbuddyHarness.json());
+            if(workbuddyCompatibility!=null) result.put("workbuddyCompatibility",workbuddyCompatibility.json());
+            if(zcodeGift!=null) result.put("zcodeGift",zcodeGift.json());
+            return result;
         }
         static Snapshot parse(JSONObject json) {
             if (json == null || json.optInt("schemaVersion", 0) != 1) return null;
@@ -64,7 +139,8 @@ public final class RequestDiagnostics {
             Snapshot parsed = new Snapshot(json.optString("requestedModel", null), target == null ? null : target.optString("provider", null),
                     target == null ? null : target.optString("model", null), number(json,"logicalDurationMs"), number(json,"queuedMs"),
                     number(json,"patienceWaitMs"), json.optString("failureKind",null), json.optString("responsePhase",null),
-                    json.optString("executionState",null), delivered instanceof Boolean ? (Boolean)delivered : null, json.optString("rulesVersion",null));
+                    json.optString("executionState",null), delivered instanceof Boolean ? (Boolean)delivered : null, json.optString("rulesVersion",null),
+                    HarnessFacts.parse(json.optJSONObject("workbuddyHarness")), CompatibilityFacts.parse(json.optJSONObject("workbuddyCompatibility")), GiftFacts.parse(json.optJSONObject("zcodeGift")));
             return parsed;
         }
     }
@@ -105,6 +181,7 @@ public final class RequestDiagnostics {
         final Logical logical; final RequestContext context; final boolean marker; final int attempts;
         boolean transportCovered, handedOff, frozen;
         Long queuedMs; String failureKind, executionState; Boolean deliveryConfirmed;
+        HarnessFacts workbuddyHarness; CompatibilityFacts workbuddyCompatibility; GiftFacts zcodeGift;
         Observation(Logical logical, RequestContext context, boolean marker, int attempts, String provider, String model) {
             this.logical=logical; this.context=context; this.marker=marker; this.attempts=attempts;
             if (!marker && logical != null) logical.startAttempt(provider,model);
@@ -115,6 +192,32 @@ public final class RequestDiagnostics {
     }
     static void marker(UsageLedger.Row row, Logical logical, RequestContext context, int attempts) {
         row.diagnosticObservation = new Observation(logical,context,true,attempts,null,null);
+    }
+    static void workbuddyHarness(UsageLedger.Row row, int messages, int descriptions) {
+        Observation o=row==null?null:row.diagnosticObservation;
+        if(o!=null) synchronized(o) { if(!o.frozen && messages>=0 && messages<=HARNESS_COUNT_MAX
+                && descriptions>=0 && descriptions<=HARNESS_COUNT_MAX)
+            o.workbuddyHarness=new HarnessFacts(messages,descriptions); }
+    }
+    /** Call immediately before each actual getOutputStream attempt, never for a candidate alone. */
+    static void workbuddyCompatibility(UsageLedger.Row row, int sends, String stage) {
+        Observation o=row==null?null:row.diagnosticObservation;
+        if(o!=null) synchronized(o) {
+            if(!o.frozen && sends>=1 && sends<=3 && WORKBUDDY_STAGES.contains(stage)
+                    && (o.workbuddyCompatibility==null || sends>=o.workbuddyCompatibility.sends))
+                o.workbuddyCompatibility=new CompatibilityFacts(sends,stage);
+        }
+    }
+    /** Record physical sends and accumulated actual wait; retain a previously observed busy code. */
+    static void zcodeGift(UsageLedger.Row row, int sends, String busyCode, long retryWaitMs, String source) {
+        Observation o=row==null?null:row.diagnosticObservation;
+        if(o!=null) synchronized(o) {
+            GiftFacts old=o.zcodeGift;
+            if(!o.frozen && sends>=0 && sends<=3 && giftCode(busyCode) && retryWaitMs>=0 && retryWaitMs<=300000
+                    && source!=null && GIFT_SOURCES.contains(source)
+                    && (old==null || (sends>=old.sends && retryWaitMs>=old.retryWaitMs)))
+                o.zcodeGift=new GiftFacts(sends,busyCode==null && old!=null ? old.busyCode : busyCode,retryWaitMs,source);
+        }
     }
     static void coverTransport(UsageLedger.Row row) {
         Observation o=row==null?null:row.diagnosticObservation;
@@ -186,7 +289,7 @@ public final class RequestDiagnostics {
             Long patience=row.isTerminal() && o.logical!=null?o.logical.patienceMillis():null;
             row.diagnostics=new Snapshot(row.req,provider,model,duration,o.queuedMs,patience,failure,
                     o.context==null?null:o.context.diagnosticResponsePhase(),execution,o.deliveryConfirmed,
-                    o.context==null || o.context.quirks==null?null:o.context.quirks.ruleVersion);
+                    o.context==null || o.context.quirks==null?null:o.context.quirks.ruleVersion, o.workbuddyHarness, o.workbuddyCompatibility, o.zcodeGift);
         }
     }
     public static JSONObject json(UsageLedger.Row row) { return (row.diagnostics==null?unobserved(row):row.diagnostics).json(); }
