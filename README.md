@@ -128,6 +128,12 @@ Release 构建需要自行准备签名文件，并通过 `MAGPIE_KEYSTORE`、`MA
 
 手机端也可在具备 JDK、Android SDK 和 Gradle 所需环境的 Linux 容器中构建。测试与 CI 的实际结果请查看对应提交的运行记录；1.2.23-test 的 Windows CI 曾在测试管理凭据初始化阶段失败，不能据本机测试结果宣称 Windows 已通过。
 
+## 问题反馈与贡献
+
+使用中遇到问题或有功能建议，欢迎在 [GitHub Issues](https://github.com/xunianooo/All-in/issues) 提交。请先搜索已有问题，填写应用版本、设备环境、复现步骤、预期行为和脱敏后的错误信息。用户也可以授权自己的 Agent 整理并提交 Issue；提交前请检查内容，Issue 对所有人公开，不要包含密钥、Token、验证码、私钥、个人账号或敏感对话。
+
+欢迎通过 Fork 和 Pull Request 提交代码建议。Pull Request 会进入仓库供维护者审阅；外部提交者不会因此获得直接修改主仓库的权限。
+
 ## 项目结构
 
 ```text
