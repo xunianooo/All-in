@@ -1,131 +1,155 @@
 # All In
 
-把一台安卓手机变成多供应商 LLM 网关：内置 NanoHTTPD 服务（默认 `0.0.0.0:3425`），
-对外提供 OpenAI（`/v1/chat/completions`）与 Anthropic（`/v1/messages`）兼容接口，
-聚合各家供应商账号池，配套 WebView 管理面板。
+**把 Android 手机变成随身 AI 网关。**
 
-## 应用信息
+All In 将不同供应商的账号、API 密钥和模型集中到一个本地服务中，让手机、电脑和其他兼容客户端通过统一接口访问。你可以在手机上管理供应商、配置路由和查看用量，也可以让客户端继续使用熟悉的 OpenAI 或 Anthropic 接口。
 
-- 名称：All In
-- 包名：`com.gaeul.allin`
-- 当前版本：1.2.21（versionCode 27）
+项目由 [Gaeul](https://github.com/xunianooo) 开发，前身为 Magpie Pocket。All In 参考并移植了 Magpie 和社区插件的部分设计与实现；感谢原项目及各位贡献者，详见下方[致谢](#致谢)。
 
-此包名与旧版 `com.magpie.pocket` 不同，按新应用安装，可与旧版并存。
-旧版账号、配置及系统授权不会自动迁移；两者的网关不要同时监听相同端口。
+> 当前仓库版本为 **1.2.23-test**（versionCode 29），是供真机验证的测试版本。供应商服务、客户端协议和系统后台策略都可能变化，现有测试不能代表所有账号、模型和设备均已验证。正式发布版本请以仓库的 Releases 页面为准。
 
-首页顶部提供作者 Gaeul（@xunianooo）主页与项目直达链接，图标使用本地内嵌 GitHub 矢量标识。项目仍为私密时，需要使用有访问权限的 GitHub 账号查看。
+## All In 能做什么
+
+- **统一接入**：提供 OpenAI Chat Completions、Responses 和 Anthropic Messages 兼容入口，按供应商和接口能力处理请求与响应。
+- **供应商与账号管理**：通过手机面板登录支持的账号、配置 API Key、查看模型目录和调整供应商状态。
+- **路由与模型管理**：配置路由组、候选目标和模型白名单；可按需要启用近期用量优先等策略。
+- **用量与诊断**：查看请求记录、用量与连接状态，并区分已知、部分已知、估算和未知的用量信息。
+- **请求保护**：提供上下文预算、隐私脱敏、出站网络配置、限流和取消等能力。对于执行结果未知的请求，部分路径会保守停止，避免盲目重放。
+- **维护工具**：提供配置备份与恢复、供应商端点探测和签名兼容规则更新。
+- **手机后台运行**：通过前台服务和保活机制维持网关；实际运行效果仍取决于 Android 版本及设备厂商的后台限制。
+
+不同供应商和模型对图片、工具调用、流式输出及特定协议字段的支持不同；统一入口不代表所有功能都可以无损互转。
+
+## 支持的供应商
+
+仓库默认配置中已接入或提供适配的供应商包括：
+
+- **账号与订阅类**：ZCode、WorkBuddy、Trae CN、CatPaw、小浣熊 Raccoon、Qoder CN、Cline、Codex、Antigravity、GitHub Copilot、MiniMax Code、DeepSeek 网页版。
+- **API Key 或其他配置方式**：WorkBuddy AI、Loomy、DeepSeek、SiliconFlow、OpenAI、Anthropic、OpenRouter、腾讯混元。
+
+登录方式、模型、可用功能和额度由对应供应商决定。部分适配依赖网页或社区协议，可能随上游更新而失效；Loomy 等供应商可能需要手动配置已有会话或凭据。请以应用内提示和供应商实际状态为准。
+
+默认配置还包含 AgentMore、文心网页、Meoo、Runable、当贝和 Tabbit 的占位入口。这些入口不代表已经完成推理协议接入。
+
+## 开始使用
+
+### 1. 安装并完成设置
+
+1. 从项目 Releases 获取合适的 APK，或按下方说明自行构建并签名。
+2. 安装并打开 All In，按照向导检查权限、网关口令和服务状态。
+3. 在「供应商」中添加 API Key 或使用对应的登录方式，再同步或选择需要的模型。
+4. 按需要在「路由」和「治理」中配置路由组、模型暴露范围及其他策略。
+
+当前应用包名为 `com.gaeul.allin`，与旧版 `com.magpie.pocket` 是不同应用。旧版账号、配置和系统授权不会自动迁移；两者同时运行时应避免监听同一个端口。
+
+### 2. 连接客户端
+
+默认网关端口为 `3425`。实际地址、口令和监听状态可在应用面板查看：
+
+| 客户端位置 | 地址示例 |
+| --- | --- |
+| 与 All In 位于同一手机 | `http://127.0.0.1:3425/v1` |
+| 同一局域网内的电脑或其他设备 | `http://<手机局域网 IP>:3425/v1` |
+
+OpenAI 兼容客户端通常填写以上 `/v1` 地址；Anthropic 客户端请按客户端要求填写服务根地址并访问 `/v1/messages`。在客户端填写面板中的**网关口令**，而不是直接填写供应商账号的密钥。
+
+可用模型可通过面板或 `GET /v1/models` 查看。通常使用 `provider/model` 格式；路由组使用 `group/<组 ID>`。裸模型名兜底默认关闭，可在路由设置中按需启用。
+
+例如，在本机环境变量中设置网关口令后查询模型：
+
+```bash
+curl http://127.0.0.1:3425/v1/models \
+  -H "Authorization: Bearer $ALLIN_API_KEY"
+```
+
+请求示例：
+
+```bash
+curl http://127.0.0.1:3425/v1/chat/completions \
+  -H "Authorization: Bearer $ALLIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"provider/model","messages":[{"role":"user","content":"你好"}]}'
+```
+
+将示例模型名替换为应用中实际可用的模型。客户端也可使用 `x-api-key` 请求头；请避免把真实口令写进脚本、截图或公开日志。
+
+### 3. 保持网关运行
+
+网关运行时需要 Android 前台服务。若锁屏或切换应用后连接中断，请检查通知权限、电池优化和厂商后台限制。不同设备对后台运行的管理方式不同，应用不能保证永不被系统终止。
+
+## 接口与兼容性
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /v1/models` | 获取可用模型目录 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions 兼容入口 |
+| `POST /v1/responses` | OpenAI Responses 兼容入口 |
+| `POST /v1/messages` | Anthropic Messages 兼容入口 |
+| `POST /v1/images/generations` | 图片生成入口，具体支持取决于供应商 |
+
+网关根据供应商协议处理 JSON 和 SSE 流，也支持部分工具调用与图片场景。原生协议、跨协议转换、模型能力及客户端实现之间存在差异；不支持或无法安全转换的字段可能返回错误，而不是静默丢弃。更多信息见 [Responses 协议说明](docs/responses-bridge.md)和 [Agent 字段兼容说明](docs/responses-agent-compatibility.md)。
+
+## 安全与隐私
+
+- **设置自己的网关口令。** 新安装会生成随机口令；历史安装若仍使用公开默认口令，非本机推理请求会被拒绝。请在手机面板生成、复制并应用新口令，再更新电脑端配置。
+- **管理凭据与推理口令分离。** 应用管理接口使用独立管理凭据，客户端连接通常只需网关推理口令。
+- **局域网连接使用 HTTP。** 请求内容和口令在网络中不是端到端加密的；只在可信网络使用，不要直接将网关暴露到公网。
+- **保护账号和备份。** 供应商密钥、登录状态、备份文件、账本和签名私钥都应妥善保管，不要上传到公开仓库或分享给不可信的人。
+- **脱敏不是万能的。** 隐私处理依赖规则和请求形态，使用前请自行检查发送内容；兼容规则更新会验证签名，但不能代替对上游服务的判断。
+- **失败恢复有边界。** 部分供应商的一次性凭据在网络异常后可能处于结果未知状态，为避免重复使用会被保护性阻断，可能需要重新授权。
+
+使用第三方供应商时，请遵守其服务条款并留意额度及费用。All In 不提供供应商账号或免费额度，也不能保证上游服务持续可用。
+
+## 构建与测试
+
+### 环境
+
+- JDK 17
+- Android SDK Platform 37.0
+- Gradle Wrapper 9.3.1、Android Gradle Plugin 9.1.1
+- Android 最低版本：API 24；target SDK：34
+
+具体环境与前台服务说明见 [SDK 文档](docs/sdk.md)。配置好 Android SDK 后，在仓库根目录执行：
+
+```bash
+# Debug APK
+./gradlew assembleDebug
+
+# JVM 离线测试
+./gradlew offlineTests
+
+# 本地 HTTP 集成测试
+./gradlew setupKeyHttpTests streamingHttpTests outboundRoutingHttpTests
+```
+
+Windows 使用 `gradlew.bat`。APK 产物位于 `app/build/outputs/apk/`。面板脚本使用 Node.js，具体命令可参考 [CI 工作流](.github/workflows/ci.yml)。
+
+Release 构建需要自行准备签名文件，并通过 `MAGPIE_KEYSTORE`、`MAGPIE_KEYSTORE_PASS`、`MAGPIE_KEY_ALIAS` 配置；如密钥口令与仓库口令不同，可设置 `MAGPIE_KEY_PASS`。这些 `MAGPIE_` 前缀是历史兼容命名，签名密钥和口令不应提交到仓库。使用其他签名证书构建的 APK 无法直接覆盖安装原证书签名的版本。
+
+手机端也可在具备 JDK、Android SDK 和 Gradle 所需环境的 Linux 容器中构建。测试与 CI 的实际结果请查看对应提交的运行记录；1.2.23-test 的 Windows CI 曾在测试管理凭据初始化阶段失败，不能据本机测试结果宣称 Windows 已通过。
+
+## 项目结构
+
+```text
+app/src/main/java/       Android 应用、网关、协议与供应商适配
+app/src/main/assets/     管理面板、默认配置、资源与内置规则
+app/src/test/            JVM 离线测试与 HTTP 集成测试
+app/src/main/assets/licenses/  随应用提供的第三方许可
+tests/                   面板 JavaScript 测试
+docs/                    设计、兼容性与历史验收说明
+```
 
 ## 致谢
 
-本项目的多数供应商适配（zcode、workbuddy、raccoon、catpaw、qoder、cline、
-codex、antigravity、copilot、minimax 等）源自
-[yetone/magpie](https://github.com/yetone/magpie) 及其插件生态的设计与实现，
-部分协议细节直接移植自 Magpie 本体与社区插件。
-没有 Magpie 就没有这个项目，在此向 [@yetone](https://github.com/yetone)
-和插件社区表示感谢。
+All In 建立在开源项目和社区分享的工作之上，感谢每一位作者和维护者：
 
-## 构建
+- **[Magpie](https://github.com/yetone/magpie)**：感谢 [@yetone](https://github.com/yetone) 和 Magpie 贡献者提供的开源网关、协议处理及供应商适配思路。All In 的部分实现参考或移植自 Magpie。
+- **[magpie-community/plugins](https://github.com/magpie-community/plugins)**：感谢维护 OpenCode / Magpie 供应商插件的社区与各插件作者。项目在适配不同供应商的登录、请求和响应时，参考了社区发布的 npm 包及其源码；各插件有各自的作者和许可，请以对应项目的声明为准。
+- **DeepSeek 网页适配贡献者**：感谢相关社区作者与贡献者分享实现；随应用附带的许可文件见 [`magpie-deepseek-web-auth-MIT.txt`](app/src/main/assets/licenses/magpie-deepseek-web-auth-MIT.txt)。
+- **[NanoHTTPD](https://github.com/NanoHttpd/nanohttpd)**、**[JSON-java](https://github.com/stleary/JSON-java)**、**[Primer Octicons](https://github.com/primer/octicons)**，以及 Android、Gradle 和所有相关开源依赖的维护者。
 
-Gradle 构建需要 JDK 17 和稳定版 Android SDK Platform 37.0；目标 API 为 34，最低 API 为 24。详见 [SDK 与前台服务说明](docs/sdk.md)。
+感谢所有提供反馈、测试问题和改进建议的朋友。
 
-```bash
-# Debug 包（无需签名配置）
-./gradlew assembleDebug
+## 许可证
 
-# 离线单元测试（纯 JVM，不需要模拟器）
-./gradlew offlineTests
-
-# 正式签名包：密钥不进仓库，走环境变量
-MAGPIE_KEYSTORE=/path/to/magpie.keystore \
-MAGPIE_KEYSTORE_PASS=口令 \
-MAGPIE_KEY_ALIAS=gaeul \
-./gradlew assembleRelease
-```
-
-产物在 `app/build/outputs/apk/`。
-
-## 手机端自编译（Termux / Alpine chroot）
-
-手机端可在配置好 JDK 17、Android SDK 和签名凭据的 Linux 环境中使用同一套 Gradle 工程构建；签名密钥与口令仅保存在本机，不进入仓库。
-
-## 协议自动转换
-
-网关同时接受 Chat Completions（`/v1/chat/completions`）、Responses（`/v1/responses`）和 Anthropic Messages（`/v1/messages`）。按供应商协议自动转换请求与 JSON/SSE 响应，客户端不需要跟随供应商切换接口；支持文本、图片、函数工具调用和结果。Responses 同协议请求在隐私处理、中间件与上下文保护允许时保留原生结构。状态式 `previous_response_id` 等未实现能力返回可读错误。实现参考 Magpie，详见 [协议说明](docs/responses-bridge.md)。
-
-Responses 兼容完整 Agent 请求中的 `user`、`stream_options`、`text.verbosity`、常见可空默认值及普通 reasoning／工具历史。未知顶层扩展字段在副本上忽略，类型错误仍返回 400；非空服务器端会话、模板和异步执行不会静默丢弃。跨协议展示选项降级通过兼容性响应头提示，详见 [字段兼容表](docs/responses-agent-compatibility.md)。
-
-## 1.2.21 自动客户端兼容与管理边界
-
-- WorkBuddy 自动处理 DSH 通道拒绝及流式空字段，用户无需配置兼容开关。
-- ZCode 赠送通道按账号排队，针对明确并发拒绝做有界短重试，并记录实际发送次数和等待。
-- 隔离手机管理身份与推理 Key，完善配置脱敏保真回写、WebView 来源、CORS/Host 和 Responses 原生入口保护。
-- 电脑 DeepSeek Harness 的 WorkBuddy 与 ZCode 路径均已通过用户真实验收。
-
-本版为快速存底，复用此前定向回归与实测结果；完整范围及验证边界见 [1.2.21 更新说明](docs/release-1.2.21.md)。
-
-## 1.2.18 供应商可靠性、端点探测与新图标
-
-- 补齐 Qoder 工具与实时流式链路，完善多家供应商账号连续性、模型目录提交和故障诊断。
-- 20 家供应商新增登录前匿名端点探测，检查固定官方地址，不使用凭据、不提交推理或改写路由。
-- 修复 ZCode gift 空预览误拦已有额度，以及 WorkBuddy 同步失败覆盖模型目录的问题。
-- 修复供应商二级页系统返回直接退出，更新桌面普通、圆形、自适应及面板图标。
-
-完整更新及验收边界见 [1.2.18 更新说明](docs/release-1.2.18.md)。
-
-## 1.2.17 Trae CN 与供应商兼容性
-
-- 新增 Trae CN 个人账号授权、账号池、动态模型同步和签到，支持工具往返与流式响应；完善登录恢复、辅助事件、历史字段和思考档位兼容。
-- WorkBuddy 工具轮次复用请求 ID，并保持客户端的流式/非流式意图；无可靠会话信息时保守使用独立 ID。
-- Qoder 排队业务码与鉴权错误分开处理，排队及执行结果未知时不自动重放；输出上限不足 64 时发送前明确拒绝。
-- ZCode 增加 ToolSearch 请求别名与响应还原，完善 gift 用量、拒绝冷却及账号缓存隔离；Cline 图片路由保留用户选项。
-- 内置兼容规则更新至 1.0.2，较旧有效签名缓存保留，但不覆盖较新内置规则。线上规则源独立维护。
-
-本批电脑功能验收通过；本地集中回归覆盖 86 个离线套件、17 个独立 HTTP 任务、17 个前端脚本及 Android 原生隔离验证。真实厂商计费策略、所有模型和旧版 Android 实机不据此宣称全面验证。Trae 企业/Global/Max 等未实现能力保持明确边界。
-
-## 1.2.14 供应商管理、网络配置与连接可靠性
-
-- 已接入供应商紧凑管理、搜索、启停、详情及局部 Key 保存，支持草稿保留与冲突保护。
-- 显式出站默认网络 / 直连 / HTTP 代理，失败不绕行，独立保存并保留请求网络快照。
-- 路由组可选“近期用量优先”：按供应商/模型共享近期负载，保留流式终态与最终交付双条件。
-- 请求取消、单调截止时间、稳定凭据身份和错误分类；出站间隔、滚动 RPM、并发与有界队列可独立配置。
-- 小浣熊 `user_model_rate_limited` 单独处理，避免同账号短间隔重放；限额默认不预设厂商阈值。
-- R1 覆盖普通商业 Chat/Anthropic/Responses 和小浣熊推理；其它特殊通道及登录/刷新不宣称全面覆盖。
-- 本版不包含后续耐受重试、SSE 心跳或会话亲和。
-
-验收说明：[`docs/connection-resilience-r0-r1-acceptance.md`](docs/connection-resilience-r0-r1-acceptance.md)、[`docs/recent-usage-routing-acceptance.md`](docs/recent-usage-routing-acceptance.md)、[`docs/network-configuration-acceptance.md`](docs/network-configuration-acceptance.md)、[`docs/provider-management-acceptance.md`](docs/provider-management-acceptance.md)。
-
-## 1.2.13 ZCode 用量与地址修复
-
-修复 ZCode gift 通道实际调用未入账，以及治理页汇总和最近请求停留时不自动刷新的问题。统计页可见时约每 3 秒刷新，保留时间范围、分组和编辑内容；缺失或部分用量不会补成已知零值。
-
-首页明确区分本机应用推荐地址与局域网其他设备地址，ETA 与本机地址使用同一实际端口；网络地址失效时清除旧值。ETA 的显示与复制同步当前密钥。复测范围和历史漏记限制见 [修复验收说明](docs/zcode-usage-address-fix.md)。
-
-## 1.2.12 可靠性更新
-
-原生 Anthropic Messages 流直接保留 thinking、signature 和 redacted 块；已签名历史遇到不兼容的脱敏、裁剪或协议转换时明确拒绝。脱敏占位符使用安装范围的私有 HMAC 密钥，映射按请求隔离，并检查碰撞与异常。
-
-普通商业 API Key 支持目标内接力、分范围冷却和 Retry-After；流已经转发或执行状态未知时不扩大重放。用量区分逻辑请求、实际上游尝试和已知／部分已知／估算／未知来源，保留旧账本口径。智谱错误信封仅在限定来源和接口形态下适配。
-
-复验命令和兼容边界见 [本批验收说明](docs/reliability-batch-acceptance.md)；订阅多账号调度与后续可选路线图不在本版范围。
-
-## 接入客户端
-
-- 接口地址：`http://<手机IP>:3425`（本机/模拟器内为 `http://127.0.0.1:3425`）
-- 鉴权：`x-api-key` 或 `Authorization: Bearer`（127.0.0.1 来源免口令，供面板与同机 agent 使用）
-- 模型名格式：`provider/model`（完整列表见 `GET /v1/models`）
-
-路由页的「允许裸模型兜底」默认关闭，旧配置缺少该项也视为关闭。裸模型名如果未匹配已列出的模型，开启后才尝试第一家配置了密钥的供应商；`provider/model` 和 `group/组id` 不受此开关影响。
-
-首次设置第一步点击「应用密钥，下一步」后，密钥立即保存并生效；返回权限页或重建面板也会恢复已保存密钥。只有第三步完成后才标记向导完成。通用配置保存不会覆盖密钥或向导状态，改密钥请使用专用入口。
-
-首次设置向导完成前，网关只接受本机回环地址请求；局域网访问需在手机本机完成向导后再按网关口令鉴权。已有 `setup.done` 完成标志的用户保持原来的局域网鉴权行为。
-
-模型白名单按供应商和路由组默认收起，标题显示已选数量。已有账号或 API Key 的供应商点击标题展开；未配置凭据时显示导入提示和「去配置」，不铺开模型。当前页面刷新保留展开状态，收起或暂时移除凭据不清除已选模型。
-
-## CI
-
-`.github/workflows/ci.yml`：push 时自动跑离线测试并产出 Debug APK artifact。
-正式签名 job 需要配置 Secrets（`MAGPIE_KEYSTORE_BASE64` / `MAGPIE_KEYSTORE_PASS`）
-后取消注释启用。
-
-GitHub 标识来自 Primer Octicons，许可见 `app/src/main/assets/licenses/primer-octicons-MIT.txt`。
+本项目采用 [MIT License](LICENSE)。项目中引用、移植或分发的第三方代码和资源仍遵循其各自的版权及许可声明；随应用附带的许可文件位于 [`app/src/main/assets/licenses/`](app/src/main/assets/licenses/)。
