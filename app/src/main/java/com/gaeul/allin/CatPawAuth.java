@@ -530,44 +530,73 @@ public final class CatPawAuth {
         return parseTurn(turnResponse.body);
     }
 
+    /** The npm reader recognizes [DONE], but permits EOF for legacy text replies.
+     * Keep that fallback explicitly unconfirmed so a cumulative JSON prefix cannot execute tools.
+     * Upstream fixtures contain finished:true; upstream's reader does not use it as a terminal.
+     */
     static JSONObject parseTurn(byte[] dataBytes) throws Exception {
-        String answer = new String(dataBytes, "UTF-8");
+        final String answer;
+        try {
+            answer = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(dataBytes)).toString();
+        } catch (Exception invalid) { throw new Failure(502, null, true); }
         StringBuilder text = new StringBuilder();
         StringBuilder reasoning = new StringBuilder();
-        int frames = 0;
-        String[] lines = answer.split("\n");
-        for (int i = 0; i < lines.length; i++) {
-            String line = lines[i];
+        boolean contentSeen = false;
+        boolean done = false;
+        boolean malformed = false;
+        int offset = 0;
+        while (offset < answer.length()) {
+            int newline = answer.indexOf('\n', offset);
+            // Like the npm reader, never dispatch a partial data line at EOF.
+            if (newline < 0) break;
+            String line = answer.substring(offset, newline);
+            offset = newline + 1;
             if (!line.startsWith("data:")) continue;
             String data = line.substring(5).trim();
             if (data.isEmpty()) continue;
-            if ("[DONE]".equals(data)) break;
+            if ("[DONE]".equals(data)) { done = true; break; }
             JSONObject frame;
-            try { frame = new JSONObject(data); } catch (Exception e) { continue; }
-            frames++;
+            try {
+                new BoundedStrictJson(data).run();
+                frame = new JSONObject(data);
+            } catch (Exception invalid) { malformed = true; continue; }
             JSONObject err = frame.optJSONObject("error");
-            if (err != null) {
-                Integer code = err.opt("code") instanceof Number ? err.optInt("code") : null;
+            if (frame.has("error") && frame.opt("error") != JSONObject.NULL) {
+                Integer code = err != null && err.opt("code") instanceof Number ? err.optInt("code") : null;
                 throw new Failure(businessStatus(code), code, true);
             }
             JSONObject msg = frame.optJSONObject("message");
-            if (msg == null) continue;
+            if (msg == null) {
+                if (frame.has("message") && frame.opt("message") != JSONObject.NULL) malformed = true;
+                continue;
+            }
             JSONArray content = msg.optJSONArray("content");
-            if (content == null) continue;
+            if (content == null) {
+                if (msg.has("content")) malformed = true;
+                continue;
+            }
             for (int k = 0; k < content.length(); k++) {
                 JSONObject c = content.optJSONObject(k);
-                if (c == null || !"text".equals(c.optString("type"))) continue;
-                String cur = c.optString("text", "");
-                if (c.has("text")) { text.setLength(0); text.append(cur); }
-                String curR = c.optString("reasoningContent", "");
-                if (c.has("reasoningContent")) { reasoning.setLength(0); reasoning.append(curR); }
+                if (c == null) { malformed = true; continue; }
+                if (!"text".equals(c.optString("type"))) continue;
+                if (c.has("text")) {
+                    if (!(c.opt("text") instanceof String)) { malformed = true; continue; }
+                    text.setLength(0); text.append(c.getString("text")); contentSeen = true;
+                }
+                if (c.has("reasoningContent")) {
+                    if (!(c.opt("reasoningContent") instanceof String)) { malformed = true; continue; }
+                    reasoning.setLength(0); reasoning.append(c.getString("reasoningContent")); contentSeen = true;
+                }
             }
         }
-        if (frames == 0 && text.length() == 0) throw new Failure(502, null, true);
-
+        if (!contentSeen) throw new Failure(502, null, true);
         JSONObject out = new JSONObject();
         out.put("text", text.toString());
         out.put("reasoning", reasoning.toString());
+        out.put("turnComplete", done && !malformed);
         return out;
     }
 

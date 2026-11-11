@@ -25,7 +25,7 @@ public final class ProviderEndpointProbeGatewayHttpTest {
     static JSONObject call(Gateway g,String method,String body,int expected) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+g.getListeningPort()+"/api/providers/endpoint-probe").openConnection();
         c.setConnectTimeout(2000);c.setReadTimeout(3000);c.setRequestMethod(method);
-        if(body!=null){c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");try(OutputStream out=c.getOutputStream()){out.write(body.getBytes(StandardCharsets.UTF_8));}}
+        c.setRequestProperty("X-All-In-Management", GatewayManagementCredential.get());if(body!=null){c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");try(OutputStream out=c.getOutputStream()){out.write(body.getBytes(StandardCharsets.UTF_8));}}
         try {
             check(c.getResponseCode()==expected,"HTTP "+c.getResponseCode());
             if(expected==200)check("no-store".equals(c.getHeaderField("Cache-Control")),"no cache");

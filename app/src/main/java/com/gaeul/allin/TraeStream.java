@@ -68,7 +68,7 @@ public final class TraeStream extends InputStream {
                 if(decoder.usage!=null && decoder.usage!=lastUsage) { lastUsage=decoder.usage; if(sink!=null)sink.accept(lastUsage); }
                 ByteArrayOutputStream out=new ByteArrayOutputStream();
                 for(JSONObject chunk:chunks) { byte[] b=("data: "+chunk.toString()+"\n\n").getBytes(StandardCharsets.UTF_8); if(out.size()+b.length>TOTAL_LIMIT)throw new IOException("Trae 输出超过大小限制"); out.write(b); }
-                if(decoder.terminal) { out.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8)); done=true; }
+                if(decoder.terminal) { if(decoder.usage!=null) { JSONObject usageChunk=new JSONObject().put("id",decoder.chunkId()).put("object","chat.completion.chunk").put("created",decoder.createdAt()).put("model",decoder.modelName()).put("choices",new JSONArray()).put("usage",decoder.usage); out.write(("data: "+usageChunk.toString()+"\n\n").getBytes(StandardCharsets.UTF_8)); } out.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8)); done=true; }
                 pending=out.toByteArray(); offset=0;
                 if(pending.length==0) { skipped+=frameSize; if(skipped>TOTAL_LIMIT)throw new IOException("Trae 流缺少有效数据"); } else skipped=0;
             } catch (TraeProtocol.UpstreamError ex) { throw ex; } catch (Exception ex) { throw new IOException("Trae 流数据无效或上游报错"); }
@@ -90,7 +90,7 @@ public final class TraeStream extends InputStream {
             total+=line.getBytes(StandardCharsets.UTF_8).length+1; if(total>TOTAL_LIMIT)throw new IOException("Trae 聚合响应超过大小限制");
             if(!line.startsWith("data: ") || line.equals("data: [DONE]"))continue;
             JSONObject chunk=new JSONObject(line.substring(6)); if(first==null)first=chunk;
-            JSONObject choice=chunk.getJSONArray("choices").getJSONObject(0), delta=choice.getJSONObject("delta");
+            JSONArray choices=chunk.optJSONArray("choices"); if(choices==null||choices.length()==0) { if(chunk.optJSONObject("usage")!=null) continue; throw new IOException("Trae chunk has no choice"); } JSONObject choice=choices.getJSONObject(0), delta=choice.getJSONObject("delta");
             content.append(delta.optString("content","")); reasoning.append(delta.optString("reasoning_content",""));
             JSONArray a=delta.optJSONArray("tool_calls"); if(a!=null)for(int i=0;i<a.length();i++){JSONObject c=a.getJSONObject(i); c.remove("index"); calls.put(c);}
             if(!choice.isNull("finish_reason"))finish=choice.optString("finish_reason");

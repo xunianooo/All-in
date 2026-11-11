@@ -68,10 +68,10 @@ const click=el=>{assert(el);return el.click()};
  elems['commercial-keys-container'].replaceChildren(); await click(byText(sections()[2],'exp-mini','去配置')); assert.equal(toast,'未找到该供应商的配置入口');
  const target=new Element(); elems['badge-count-empty']={closest:()=>target}; await click(byText(sections()[2],'exp-mini','去配置')); assert(target.scrolled);
  // Exercise the actual tab function: targeted navigation waits for the load and skips scroll-to-top.
- const tabCode=html.slice(html.indexOf('    function switchTab('),html.indexOf('    let toastTimer',html.indexOf('    function switchTab(')));
+ const tabCode=html.slice(html.indexOf('    function switchTab('),html.indexOf('    // Gateway access inventory:',html.indexOf('    function switchTab(')));
  let scrolledTop=false, resolveLoad;
  const pane={classList:{add(){}},style:{},offsetWidth:1};
- const tabContext={document:{querySelectorAll:()=>[],getElementById:()=>pane,querySelector:()=>null},window:{scrollTo:()=>scrolledTop=true},moveNavPill(){},loadConfig:()=>new Promise(r=>resolveLoad=r),console};
+ const tabContext={document:{querySelectorAll:()=>[],getElementById:id=>id.startsWith('tab-')?pane:null,querySelector:()=>null},window:{scrollTo:()=>scrolledTop=true},moveNavPill(){},loadConfig:()=>new Promise(r=>resolveLoad=r),console};
  vm.createContext(tabContext); vm.runInContext(tabCode,tabContext);
  let finished=false; const switched=tabContext.switchTab('providers',null,true).then(()=>finished=true);
  await Promise.resolve(); assert(!finished); assert(!scrolledTop); resolveLoad(); await switched; assert(finished);

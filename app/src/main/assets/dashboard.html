@@ -223,8 +223,8 @@
     .nav-pill {
       position: absolute;
       top: 6px;
-      left: calc(8px + (100% - 16px) / 5 * var(--nav-idx, 0) + 6px);
-      width: calc((100% - 16px) / 5 - 12px);
+      left: calc(8px + (100% - 16px) / 6 * var(--nav-idx, 0) + 6px);
+      width: calc((100% - 16px) / 6 - 12px);
       height: calc(var(--nav-h) - 12px);
       border-radius: 999px;
       background: var(--primary-weak);
@@ -852,7 +852,9 @@
       *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
     }
 
-    #tab-providers [hidden] { display:none !important; }
+    #tab-providers [hidden], #tab-overview [hidden] { display:none !important; }
+    #gateway-advanced-view p { font-size:.82rem; line-height:1.8; color:var(--text-muted); margin:12px 0; }
+    #gateway-advanced-view summary { cursor:pointer; }
     .provider-toolbar {display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
     .provider-toolbar input {min-width:0;flex:1 1 150px}
     .provider-compact {display:flex;align-items:center;gap:8px;border:1px solid var(--card-border);border-radius:12px;margin:8px 0;padding:8px;background:var(--card-bg, transparent);min-width:0}
@@ -871,6 +873,319 @@
     #provider-detail-info p {color:var(--text-muted);font-size:.78rem;line-height:1.6}
     #provider-catalog .provider-row {min-width:0;overflow-wrap:anywhere}
     .provider-compact :focus-visible,.provider-toolbar :focus-visible {outline:2px solid var(--primary);outline-offset:2px}
+
+    /* Connection values and long IDs must remain readable on narrow phones. */
+    .sr-only {position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .card {min-width:0;overflow-wrap:anywhere}
+    .card-title {flex-wrap:wrap;gap:8px}
+    .card input,.card select,.card textarea {max-width:100%;box-sizing:border-box}
+    .connection-field {display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;align-items:center}
+    .connection-field .address-value {flex:1 1 100%;width:100%;min-width:0;resize:none;line-height:1.6;padding:12px 14px;font-family:ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere;word-break:break-all;white-space:pre-wrap;text-overflow:clip;overflow-x:hidden;color:var(--primary)!important;letter-spacing:0}
+    .connection-field .btn {white-space:normal;text-align:center;max-width:100%}
+    /* 监听计划提示：只说清真实端点与重启/恢复，不放任何开关或写操作。 */
+    #listen-plan-notice {margin:0 0 16px;padding:12px 14px;border-radius:12px;border:1px solid var(--warn);background:var(--warn-weak);font-size:12.5px;line-height:1.7;color:var(--text-muted)}
+    #listen-plan-notice[data-tone="info"] {border-color:var(--primary);background:var(--primary-weak)}
+    #listen-plan-headline {font-weight:650;color:var(--warn);margin-bottom:4px;line-height:1.55}
+    #listen-plan-notice[data-tone="info"] #listen-plan-headline {color:var(--primary)}
+    #listen-plan-detail {margin:0}
+    #listen-plan-address {margin:6px 0 0;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;line-height:1.7;color:var(--text-muted);overflow-wrap:anywhere;word-break:break-all}
+    .credential-key-row,.credential-edit-row,.ping-model-actions {display:flex;flex-wrap:wrap;gap:8px;align-items:stretch}
+    .credential-key-row input {flex:1 1 180px!important}
+    .credential-edit-row input,.ping-model-actions select {flex:1 1 100%!important;width:100%}
+    .gateway-entry {display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
+    .gateway-entry h2 {font-size:1.15rem;margin:8px 0}.gateway-entry p {font-size:.82rem;color:var(--text-muted);line-height:1.7}
+    .gateway-eyebrow {font-size:.65rem;font-weight:750;letter-spacing:.13em;color:var(--primary)}
+    .gateway-hero {padding:24px;border-radius:24px;border:1px solid var(--line);background:linear-gradient(135deg,var(--primary-weak),var(--card-bg) 75%);margin-bottom:20px;box-shadow:var(--shadow-card)}
+    .gateway-hero-top,.gateway-hero-heading,.access-section-heading {display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    .gateway-hero-heading {margin:18px 0 24px}.gateway-hero h1 {font-size:clamp(1.25rem,4.8vw,1.8rem);line-height:1.35;margin:0 0 8px;letter-spacing:-.03em}.gateway-hero p {font-size:.82rem;line-height:1.7;color:var(--text-muted);margin:0}
+    .access-state {display:inline-flex;align-items:center;padding:6px 10px;border-radius:99px;background:var(--card-bg);color:var(--text-muted);font-size:.72rem;white-space:normal}
+    .access-metrics {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;border-top:1px solid var(--line);padding-top:18px}.access-metrics>div {display:flex;flex-direction:column;gap:4px;min-width:0}.access-metrics strong {text-align:left;font-size:1.65rem;font-weight:700;letter-spacing:-.04em}.access-metrics span {font-size:.72rem;color:var(--text-muted)}
+    .access-note {font-size:.73rem!important;line-height:1.75!important;color:var(--text-muted)!important;overflow-wrap:anywhere;margin:14px 0 0}
+    .access-section-heading h2 {font-size:1.08rem;margin:0 0 6px}.access-section-heading p {font-size:.78rem;color:var(--text-muted);line-height:1.7;margin:0}
+    .access-search-row {display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.access-search-row input {flex:1 1 200px;min-width:0}.access-search-row select {flex:1 1 150px;min-width:0}
+    .access-provider-heading {font-size:.8rem;color:var(--text-muted);margin:24px 0 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.access-provider-heading span {font-size:.7rem;padding:2px 8px;border-radius:99px;background:var(--primary-weak);color:var(--primary)}
+    .access-model-row {display:flex;align-items:center;gap:12px;padding:15px 0;border-bottom:1px solid var(--line);min-width:0}.access-model-info {flex:1;min-width:0}.access-model-id {font-family:ui-monospace,SFMono-Regular,monospace;font-size:.83rem;font-weight:600;line-height:1.65;word-break:break-all;user-select:text;display:block;color:var(--text)}.access-model-name {font-size:.73rem;color:var(--text-muted);line-height:1.6;margin-top:3px;overflow-wrap:anywhere}.access-model-copy {flex:0 0 auto!important;font-size:.73rem!important;padding:8px 13px!important;min-height:38px}.access-empty {text-align:center;padding:36px 12px;color:var(--text-muted);font-size:.85rem;line-height:1.8}
+    .tab-btn[data-icon="gateway"]::before {-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'%3E%3Crect x='3' y='4' width='18' height='6' rx='2'/%3E%3Crect x='3' y='14' width='18' height='6' rx='2'/%3E%3Cpath d='M7 7h.01M7 17h.01M11 7h6M11 17h6'/%3E%3C/svg%3E");mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'%3E%3Crect x='3' y='4' width='18' height='6' rx='2'/%3E%3Crect x='3' y='14' width='18' height='6' rx='2'/%3E%3Cpath d='M7 7h.01M7 17h.01M11 7h6M11 17h6'/%3E%3C/svg%3E")}
+    @media(max-width:380px) {.gateway-hero {padding:18px}.access-model-row {gap:8px}.access-model-copy {padding:8px 10px!important}.card .btn {max-width:100%}.credential-key-row input {flex-basis:100%!important}}
+    /* All In: quiet surfaces, one floating navigation layer, content first. */
+    :root {
+      color-scheme: light;
+      --bg:#f3f4f7;
+      --card-bg:#ffffff;
+      --card-border:rgba(30,41,59,.065);
+      --primary:#2365df;
+      --primary-hover:#1b54c3;
+      --primary-weak:#edf3ff;
+      --accent:#208957;
+      --accent-weak:#eaf6ef;
+      --danger:#c9343e;
+      --danger-weak:#fff0f1;
+      --warn:#94600b;
+      --warn-weak:#fff6e7;
+      --text:#191c23;
+      --text-main:var(--text);
+      --text-muted:#626772;
+      --text-faint:#7a808b;
+      --line:rgba(30,41,59,.075);
+      --radius:25px;
+      --radius-sm:15px;
+      --fill:#f0f1f5;
+      --fill-2:#f2f3f7;
+      --fill-3:#f7f8fb;
+      --input-border:rgba(30,41,59,.10);
+      --nav-h:66px;
+      --nav-bg:rgba(255,255,255,.96);
+      --shadow:0 2px 10px rgba(27,39,63,.025);
+      --shadow-card:var(--shadow);
+      --shadow-press:0 1px 3px rgba(27,39,63,.035);
+      --nav-shadow:0 8px 32px rgba(28,39,62,.12),inset 0 1px 0 rgba(255,255,255,.85);
+    }
+    html[data-theme="dark"] {
+      color-scheme:dark;
+      --bg:#0c0e12;
+      --card-bg:#191c22;
+      --card-border:rgba(255,255,255,.065);
+      --primary:#83b0ff;
+      --primary-hover:#a0c2ff;
+      --primary-weak:#22314a;
+      --accent:#71d7a1;
+      --accent-weak:#203a2c;
+      --danger:#ff949a;
+      --danger-weak:#42272d;
+      --warn:#f0ca7c;
+      --warn-weak:#372e21;
+      --text:#f1f3f7;
+      --text-muted:#b1b6c0;
+      --text-faint:#9098a5;
+      --line:rgba(255,255,255,.085);
+      --fill:#262a32;
+      --fill-2:#242830;
+      --fill-3:#22262d;
+      --input-border:rgba(255,255,255,.11);
+      --nav-bg:rgba(29,32,40,.97);
+      --shadow:none;
+      --shadow-card:none;
+      --shadow-press:none;
+      --nav-shadow:0 8px 30px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.055);
+    }
+    body {font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;line-height:1.6;padding-bottom:calc(var(--nav-h) + 52px + env(safe-area-inset-bottom,0px))}
+    header {max-width:880px;margin:0 auto;padding:calc(24px + env(safe-area-inset-top,0px)) 22px 10px;align-items:center}
+    .brand {gap:12px}
+    .brand img {width:38px!important;height:38px!important;border-radius:12px!important;box-shadow:0 2px 6px rgba(20,30,50,.07)!important}
+    .page-title {font-size:29px;font-weight:750;letter-spacing:-1.1px;line-height:1.12}
+    .page-sub {font-size:11.5px;line-height:1.5;margin-top:4px;gap:0 6px}
+    .gw-toggle {font-size:12px!important;padding:10px 13px!important;min-height:42px;box-shadow:none!important}
+    .gw-dot {width:7px;height:7px;box-shadow:0 0 0 3px var(--accent-weak)}
+    .container {max-width:880px;padding:12px 18px 14px}
+    .card {padding:20px!important;margin-bottom:16px!important;box-shadow:var(--shadow)!important;animation:none;transition:none}
+    .card-title {font-size:16px!important;font-weight:650!important;line-height:1.55;margin-bottom:12px!important;letter-spacing:-.25px;gap:8px;min-width:0}
+    .card-title > span,.card-title > div {min-width:0;max-width:100%}
+    .card p {line-height:1.75}
+    h1,h2,h3 {letter-spacing:-.025em}
+    .card h2 {font-size:18px;font-weight:650;line-height:1.5}
+    .card .btn {max-width:100%}
+    .btn {min-height:44px;padding:9px 15px!important;font-size:13px!important;font-weight:600!important;line-height:1.4!important;white-space:normal;overflow-wrap:anywhere;text-align:center;box-shadow:none!important;transition:transform .15s ease,background-color .15s ease,opacity .15s ease}
+    .btn:not(:disabled):active {transform:scale(.975)}
+    .btn:disabled {cursor:default}
+    .btn-primary {background:var(--primary)!important;color:#fff!important;box-shadow:none!important}
+    html[data-theme="dark"] .btn-primary {background:#3378e8!important;color:#fff!important}
+    .btn-outline {border-color:transparent!important;background:var(--primary-weak)!important}
+    .btn[style*="color:#ef4444"],.btn[style*="color: #ef4444"],
+    .btn[style*="rgba(239, 68, 68"],.btn[style*="rgba(239,68,68"],.btn[style*="rgba(248, 113, 113"] {background:var(--danger-weak)!important;color:var(--danger)!important;border-color:transparent!important}
+    button:focus-visible,a:focus-visible,summary:focus-visible {outline:2px solid var(--primary);outline-offset:3px}
+    input:not([type="checkbox"]),select,textarea {border-radius:var(--radius-sm)!important;border-color:var(--input-border)!important;font-size:14px!important;min-height:46px;line-height:1.5;padding:12px 14px!important;box-shadow:none}
+    input:not([type="checkbox"]):focus,select:focus,textarea:focus {border-color:var(--primary)!important;box-shadow:0 0 0 3px var(--primary-weak)}
+    input[type="checkbox"]:checked {background:#2b9860!important}
+    html[data-theme="dark"] input[type="checkbox"]:checked {background:#328c5e!important}
+    input:checked + .switch-state {color:var(--accent)}
+    input[type="checkbox"]:disabled {opacity:.45}
+    .seg {padding:4px;gap:3px;border:none;background:var(--fill);box-shadow:none}
+    .seg-btn {padding:8px 10px;font-size:12.5px;min-height:38px;border-radius:12px;font-weight:550}
+    .seg-btn.active {background:var(--card-bg);box-shadow:0 1px 5px rgba(15,25,45,.10);font-weight:650;color:var(--text)}
+    .badge {font-size:10.5px!important;font-weight:600!important;padding:4px 8px!important;letter-spacing:.01em}
+    .code-block {border-color:var(--line)!important;background:var(--fill-3)!important;font-size:12px!important;line-height:1.8}
+    .model-tag {font-size:11.5px!important;padding:5px 9px!important;line-height:1.55;border-color:transparent!important}
+    .grid-stats {grid-template-columns:repeat(2,minmax(0,1fr))!important;padding:4px 20px;animation:none;box-shadow:var(--shadow)}
+    .stat-card {min-width:0;padding:18px 2px!important}
+    .stat-label {font-size:12px!important}
+    .stat-val {font-size:29px!important;font-weight:650!important;letter-spacing:-1px;overflow-wrap:anywhere}
+    .stat-sub {font-size:10.5px!important;line-height:1.65;margin-top:3px}
+    .nav-tabs {left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-width:560px;margin:0 auto;height:var(--nav-h);padding:6px 8px;border:1px solid var(--line);border-radius:30px;background:var(--nav-bg);box-shadow:var(--nav-shadow);-webkit-backdrop-filter:none;backdrop-filter:none}
+    .nav-pill {background:var(--primary-weak);border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.15);height:calc(var(--nav-h) - 14px);transition:left .24s cubic-bezier(.22,1,.36,1);will-change:auto}
+    .tab-btn {font-size:10.5px!important;font-weight:550!important;gap:3px}
+    .tab-btn.active {font-weight:650!important}
+    .tab-btn::before {width:20px;height:20px;-webkit-mask-size:20px 20px;mask-size:20px 20px;transition:opacity .18s ease}
+    .tab-btn.active::before {transform:none}
+    @supports ((-webkit-backdrop-filter:blur(16px)) or (backdrop-filter:blur(16px))) {
+      .nav-tabs {background:rgba(255,255,255,.86);-webkit-backdrop-filter:blur(16px) saturate(125%);backdrop-filter:blur(16px) saturate(125%)}
+      html[data-theme="dark"] .nav-tabs {background:rgba(29,32,40,.90)}
+    }
+    .tab-pane.active {animation:paneIn .18s ease}
+    @keyframes paneIn {from {opacity:.65;transform:none} to {opacity:1;transform:none}}
+    .toast {border-radius:20px!important;max-width:calc(100% - 40px);white-space:normal;overflow-wrap:anywhere;text-overflow:clip;text-align:center;font-size:12.5px!important;line-height:1.55!important;box-shadow:0 4px 20px rgba(12,20,35,.14)!important}
+    .provider-list-heading {margin:8px 2px 18px}
+    .provider-list-heading h2 {font-size:24px;line-height:1.3;font-weight:700;margin-bottom:7px;letter-spacing:-.7px}
+    .provider-list-heading p {font-size:12px;line-height:1.75;margin:0}
+    .provider-toolbar {gap:9px;margin-bottom:18px}
+    .provider-toolbar > label {font-size:12px;color:var(--text-muted)}
+    .provider-compact {padding:11px 12px;margin:10px 0;border-radius:22px;box-shadow:var(--shadow);gap:10px}
+    .provider-compact-main {padding:4px 0;gap:12px;min-height:52px}
+    .provider-compact-main > span:nth-child(2) {font-size:13px;font-weight:600}
+    .provider-compact-main small {font-size:11px;font-weight:400;line-height:1.65;margin-top:4px}
+    .provider-compact-main::after {font-size:23px;font-weight:400;color:var(--text-faint)}
+    .provider-logo {border-radius:13px;box-shadow:0 0 0 1px rgba(15,25,45,.045)}
+    #provider-subview {padding-bottom:4px}
+    #provider-detail-info {padding:18px 2px 20px}
+    #provider-detail-info h3 {font-size:22px;line-height:1.4;margin:0 0 8px}
+    #provider-detail-info p {line-height:1.8;margin:8px 0}
+    #provider-detail-info .btn {margin:6px 6px 0 0}
+    #project-info-card {background:var(--fill-3)!important;padding:14px 17px!important;box-shadow:none!important}
+    .project-info-row {gap:12px}
+    .project-info-row + .project-info-row {margin-top:9px}
+    .project-info-label {font-size:11px}
+    .project-info-link {font-size:12px}
+    .project-github-icon {width:18px;height:18px;flex-basis:18px}
+    .warn-bar,#auth-warn,#key-warn {border-radius:20px!important;border-color:transparent!important}
+    .gateway-entry {background:var(--card-bg)!important;gap:15px}
+    .gateway-entry h2 {font-size:21px;font-weight:650;margin:7px 0}
+    .gateway-eyebrow {font-size:10px;letter-spacing:.12em;font-weight:650;color:var(--text-muted)}
+    .gateway-hero {background:linear-gradient(135deg,var(--card-bg) 60%,var(--primary-weak));border-radius:28px;border:1px solid var(--card-border);padding:24px;margin-bottom:16px;box-shadow:var(--shadow)}
+    .gateway-hero-top {gap:12px}
+    .gateway-hero-heading {gap:14px;margin:23px 0 22px;align-items:center}
+    .gateway-hero h1 {font-size:clamp(22px,5.2vw,30px);font-weight:700;letter-spacing:-.9px;line-height:1.35}
+    .gateway-hero p {font-size:12.5px;line-height:1.8;margin-top:7px}
+    .access-state {font-size:11px;background:var(--accent-weak);color:var(--accent);padding:6px 10px;border-radius:999px}
+    #access-refresh {min-width:96px;flex-shrink:0}
+    .access-metrics {padding-top:18px;gap:10px}
+    .access-metrics > div {gap:5px}
+    .access-metrics strong {font-size:28px;line-height:1.25;letter-spacing:-.8px;text-align:left;font-weight:650;font-variant-numeric:tabular-nums}
+    .access-metrics span {font-size:11px}
+    .access-note {font-size:11.5px!important;line-height:1.8!important}
+    .access-section-heading h2 {font-size:19px;font-weight:650;margin-bottom:5px}
+    .access-section-heading p {font-size:12px}
+    .access-search-row {margin-top:18px;gap:9px}
+    .access-provider-heading {margin:24px 0 4px;font-size:12px;line-height:1.65;font-weight:650}
+    .access-provider-heading span {font-size:10px;padding:2px 7px;background:var(--fill-2);color:var(--text-muted)}
+    .access-model-row {padding:16px 0;gap:12px}
+    code.access-model-id {background:transparent!important;border-radius:0;padding:0;font-size:12.5px;font-weight:600;line-height:1.8;color:var(--text)!important;overflow-wrap:anywhere;word-break:break-all}
+    .access-model-name {font-size:11px;line-height:1.8;margin-top:4px}
+    .access-model-copy {min-height:40px;font-size:11.5px!important;padding:8px 12px!important}
+    .connection-field {margin-bottom:20px;gap:9px}
+    .connection-field .address-value {font-size:13px!important;line-height:1.8;text-overflow:clip}
+    .access-empty {font-size:13px;padding:34px 12px;line-height:1.9}
+    .usage-kpi {gap:1px;border-radius:18px}
+    .usage-kpi-item {padding:17px 14px;min-width:0}
+    .uk-label {font-size:11px;white-space:normal;line-height:1.6}
+    .uk-val {font-size:21px;font-weight:650;letter-spacing:-.6px}
+    .uk-sub {line-height:1.7}
+    .usage-col.empty {background:var(--fill-2)}
+    .exp-head {flex-wrap:wrap}
+    .exp-actions {flex-wrap:wrap;max-width:100%}
+    .exp-prov {padding:14px 0}
+    .exp-chip {border-radius:12px;padding:7px 10px;line-height:1.55;font-size:11.5px}
+    .exp-chip.on {border-color:var(--primary);background:var(--primary-weak)}
+    .heat-panel {margin-top:22px;padding-top:22px}
+    .heat-title {font-size:15px}
+    .heat-mode {min-height:36px}
+    details.card > summary {cursor:pointer;list-style:none;justify-content:space-between;line-height:1.6}
+    details.card > summary::-webkit-details-marker {display:none}
+    details.card > summary::after {content:'›';font-size:22px;font-weight:400;color:var(--text-faint);line-height:1;flex:none;margin-left:auto;transition:transform .16s ease}
+    details.card[open] > summary::after {transform:rotate(90deg)}
+    details.card:not([open]) > summary {margin-bottom:0!important}
+    #account-manage-modal,#dup-account-modal {background:rgba(10,15,25,.38)!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+    #account-manage-modal > div,#dup-account-modal > div {background:var(--card-bg)!important;border:1px solid var(--card-border)!important;border-radius:28px!important;box-shadow:0 18px 64px rgba(0,0,0,.18)!important;max-height:calc(100dvh - 40px)}
+    #account-manage-modal > div > div:last-child {background:var(--fill-3)!important;flex-wrap:wrap;gap:10px}
+    #acc-modal-list {min-height:0;overscroll-behavior:contain}
+    #account-manage-modal button:not(.btn),#inapp-login-modal button:not(.btn) {min-width:40px;min-height:40px;background:var(--fill)!important;color:var(--text)!important;border-radius:999px!important}
+    #setup-wizard,#inapp-login-modal {background:var(--bg)!important}
+    #gateway-advanced-view > .btn {margin-bottom:16px}
+    #gateway-advanced-heading {font-size:24px!important;letter-spacing:-.6px;line-height:1.4;margin-bottom:12px}
+    @media(max-width:380px) {
+      header {padding-left:16px;padding-right:16px;gap:8px}
+      .container {padding-left:12px;padding-right:12px}
+      .page-title {font-size:26px}
+      .brand {gap:9px}
+      .brand img {width:33px!important;height:33px!important;border-radius:10px!important}
+      .gw-toggle {font-size:11px!important;padding:9px 11px!important}
+      .card {padding:17px!important;border-radius:22px!important}
+      .nav-tabs {left:8px;right:8px;bottom:calc(9px + env(safe-area-inset-bottom,0px))}
+      .tab-btn {font-size:10px!important}
+      .gateway-hero {padding:20px;border-radius:24px}
+      .gateway-hero-heading {margin-top:19px}
+      .gateway-hero h1 {font-size:22px}
+      .provider-compact {padding:10px;gap:8px}
+      .provider-compact-main {gap:9px}
+      .provider-logo {width:39px;height:39px;flex-basis:39px}
+      .provider-logo-small {width:28px;height:28px;flex-basis:28px}
+      .access-model-copy {padding:8px 10px!important}
+    }
+    @media(min-width:760px) {.container {padding-top:18px}.card {padding:24px!important}.gateway-hero {padding:30px}.gateway-hero h1 {font-size:32px}.gateway-hero-heading {margin:26px 0}.access-search-row input {flex-basis:300px}}
+    @media(prefers-reduced-motion:reduce) {
+      html {scroll-behavior:auto}
+      *,*::before,*::after {animation:none!important;transition:none!important}
+    }
+
+    /* Preserve the two-column guard form without intrinsic input-width overflow. */
+    #tab-insight .card > div[style*="grid-template-columns:1fr 1fr"] {grid-template-columns:repeat(2,minmax(0,1fr))!important}
+    #tab-insight .card > div[style*="grid-template-columns:1fr 1fr"] > div {min-width:0}
+    input[id^="guard-"] {width:100%;min-width:0}
+
+
+    /* 首页品牌头和项目信息：保留原有网关按钮与两个独立链接。 */
+    header {padding-top:calc(22px + env(safe-area-inset-top,0px));padding-bottom:6px}
+    .brand {gap:11px}
+    .brand img {width:36px!important;height:36px!important;border-radius:11px!important}
+    .page-title {font-size:25px;font-weight:720;letter-spacing:-.8px;line-height:1.14}
+    .page-sub {font-size:11px;margin-top:3px;gap:0 5px}
+    .gw-toggle {background:transparent!important;border-color:transparent!important;box-shadow:none!important;padding:8px 4px!important;min-height:44px;gap:8px;color:var(--text-muted)!important;font-size:12px!important}
+    .gw-toggle:active {box-shadow:none!important;opacity:.7}
+    .gw-dot {flex:0 0 7px}
+    #project-info-card {display:flex;align-items:center;gap:12px;background:var(--fill-3)!important;border:1px solid var(--card-border)!important;border-radius:19px!important;padding:12px 15px!important;margin-bottom:16px!important;box-shadow:none!important}
+    #project-info-card .project-info-link {flex:1 1 0;min-width:0;gap:9px;color:var(--text);text-decoration:none}
+    #project-info-card .project-github-icon {width:17px;height:17px;flex:0 0 17px;color:var(--text-muted)}
+    #project-info-card .project-info-text {display:flex;flex-direction:column;min-width:0;line-height:1.4}
+    .project-info-kicker {font-size:12px;font-weight:650;color:var(--text);white-space:nowrap}
+    .project-info-meta {font-size:10.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .project-info-divider {width:1px;height:29px;flex:0 0 1px;background:var(--line)}
+    .project-info-arrow {font-size:15px;color:var(--text-faint);margin-left:auto;flex-shrink:0}
+    @media(max-width:380px) {
+      .page-title {font-size:23px}
+      .brand img {width:33px!important;height:33px!important}
+      .gw-toggle {padding:8px 2px!important;font-size:11px!important}
+      #project-info-card {gap:9px;padding:11px 12px!important}
+      #project-info-card .project-info-link {gap:6px}
+      .project-info-meta {font-size:10px}
+    }
+
+    /* 品牌与网关状态：独立于下方项目卡的深色品牌面板。 */
+    header {
+      isolation:isolate;overflow:hidden;position:relative;
+      margin:calc(16px + env(safe-area-inset-top,0px)) auto 0;
+      width:calc(100% - 36px);max-width:844px;min-height:112px;
+      padding:20px!important;border-radius:24px;
+      background:linear-gradient(118deg,#15243a 0%,#1d344e 62%,#263e56 100%);
+      box-shadow:0 12px 26px rgba(21,37,58,.14),inset 0 1px 0 rgba(255,255,255,.10);
+      align-items:center;gap:10px;
+    }
+    header::before {content:"";position:absolute;z-index:-1;width:185px;height:185px;right:-70px;top:-110px;border-radius:50%;border:1px solid rgba(164,196,220,.16);box-shadow:0 0 0 28px rgba(164,196,220,.035),0 0 0 56px rgba(164,196,220,.025);pointer-events:none}
+    header .brand {gap:12px}
+    header .brand img {width:45px!important;height:45px!important;border-radius:14px!important;box-shadow:0 5px 16px rgba(2,9,20,.22)!important}
+    header .brand-text {display:flex;flex-direction:column;gap:3px}
+    header .page-title {font-size:26px;font-weight:700;letter-spacing:-.6px;line-height:1.1;color:#f6f8fc}
+    header .page-sub {font-size:10.5px;color:#afc1d1;line-height:1.35;margin:0;letter-spacing:.02em}
+    header .gw-toggle {position:relative;display:flex;flex-direction:row;align-items:center;gap:7px;min-height:44px;padding:9px 11px!important;border:1px solid rgba(207,230,241,.16)!important;border-radius:14px!important;background:rgba(230,245,252,.08)!important;color:#eaf4f6!important;font-size:11px!important;font-weight:650!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)!important}
+    header .gw-dot {width:7px;height:7px;background:#76e3af;box-shadow:0 0 0 3px rgba(118,227,175,.12);flex:0 0 7px}
+    header .gw-toggle.off .gw-dot {background:#a8b4c2;box-shadow:0 0 0 3px rgba(168,180,194,.12)}
+    header .gw-toggle:active {opacity:.8;transform:scale(.97);box-shadow:none!important}
+    html[data-theme="dark"] header {background:linear-gradient(118deg,#172437,#1d3043 65%,#26394a);box-shadow:inset 0 1px 0 rgba(255,255,255,.09)}
+    @media(max-width:380px) {
+      header {width:calc(100% - 24px);padding:16px!important;min-height:102px;border-radius:21px;gap:8px}
+      header .brand {gap:9px}
+      header .brand img {width:40px!important;height:40px!important;border-radius:12px!important}
+      header .page-title {font-size:23px}
+      header .page-sub {font-size:10px}
+      header .gw-toggle {padding:8px!important;font-size:10px!important}
+    }
 </style>
   <script>
     /* 主题要在首帧前就定下来，否则会先闪一下白天再切夜间 */
@@ -924,6 +1239,7 @@
   <nav class="nav-tabs" id="bottom-nav">
     <div class="nav-pill" id="nav-pill"></div>
     <button class="tab-btn active" data-icon="home" onclick="switchTab('overview', this)">首页</button>
+    <button class="tab-btn" data-icon="gateway" onclick="switchTab('gateway', this)">接入</button>
     <button class="tab-btn" data-icon="vendor" onclick="switchTab('providers', this)">供应商</button>
     <button class="tab-btn" data-icon="route" onclick="switchTab('routing', this)">路由</button>
     <button class="tab-btn" data-icon="govern" onclick="switchTab('insight', this)">治理</button>
@@ -932,21 +1248,17 @@
 
   <main class="container">
     <section id="tab-overview" class="tab-pane active">
+      <div id="overview-main-view">
       <div class="card" id="project-info-card" aria-label="作者与项目地址">
-        <div class="project-info-row">
-          <span class="project-info-label">作者</span>
           <a class="project-info-link" id="author-github-link" href="https://github.com/xunianooo" rel="noreferrer" referrerpolicy="no-referrer" aria-label="Gaeul 的 GitHub 主页 @xunianooo">
             <svg class="project-github-icon" viewBox="0 0 16 16" width="20" height="20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"></path></svg>
-            <span class="project-info-text"><strong>Gaeul</strong> · @xunianooo</span>
+            <span class="project-info-text"><span class="project-info-kicker">由 Gaeul 开发</span><span class="project-info-meta">@xunianooo</span></span>
           </a>
-        </div>
-        <div class="project-info-row">
-          <span class="project-info-label">项目地址</span>
+        <span class="project-info-divider" aria-hidden="true"></span>
           <a class="project-info-link" id="project-github-link" href="https://github.com/xunianooo/All-in" rel="noreferrer" referrerpolicy="no-referrer" aria-label="All In 的 GitHub 项目地址">
             <svg class="project-github-icon" viewBox="0 0 16 16" width="20" height="20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"></path></svg>
-            <span class="project-info-text">github.com/xunianooo/All-in</span>
+            <span class="project-info-text"><span class="project-info-kicker">开源项目</span><span class="project-info-meta">github.com/xunianooo/All-in</span></span><span class="project-info-arrow" aria-hidden="true">↗</span>
           </a>
-        </div>
       </div>
       <div id="setup-anchor"></div>
 
@@ -1018,7 +1330,7 @@
       <!-- 实时模型连通性测试卡片 -->
       <div class="card" style="border: 1px solid rgba(99, 102, 241, 0.4); background: linear-gradient(180deg, rgba(30, 27, 75, 0.35) 0%, var(--card-bg) 100%);">
         <div class="card-title">
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">
             <span>⚡</span>
             <span>模型实时连通性测试开关</span>
             <span class="badge badge-info">PING TEST</span>
@@ -1043,7 +1355,7 @@
                 style="font-size:0.68rem;padding:3px 10px;border-radius:10px;color:#38bdf8;border-color:rgba(56,189,248,0.3);white-space:nowrap;"
                 onclick="pingAllModels()">逐个测试</button>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div class="ping-model-actions">
               <select id="ping-model-select" onchange="onPingModelChange(this.value)"
                 style="flex:1;min-width:0;padding:11px 14px;background:#0d0f17;color:#fff;border:1px solid var(--card-border);border-radius:9px;font-size:0.82rem;">
               </select>
@@ -1063,21 +1375,123 @@
         <div id="ping-test-output" style="display: none; margin-top: 14px; border-radius: 8px; padding: 12px 16px; font-size: 0.85rem;"></div>
       </div>
 
+      <div class="card gateway-entry">
+        <div><span class="gateway-eyebrow">CONNECT YOUR AGENT</span><h2>连接你的 AI 工具</h2><p>服务地址、API 密钥与已入池模型 ID，集中查看，一键复制。</p></div>
+        <button class="btn" onclick="switchTab('gateway')">打开网关接入 →</button>
+      </div>
+
+
+      <details class="card" id="card-quirks"><summary class="card-title">🧩 供应商兼容规则</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">规则可更新指定供应商接口的兼容请求头，以及部分模型协议转换的输出默认值。规则按供应商、协议和模型精确匹配；账号凭据与未支持的协议逻辑仍由应用处理。点击检查更新后，应用会验证签名；更新失败时继续使用已有规则。</p>
+        <div id="quirks-status" role="status" style="font-size:0.78rem;overflow-wrap:anywhere;">尚未读取</div>
+        <button class="btn btn-outline" onclick="loadQuirks()">读取规则状态</button> <button id="quirks-check" class="btn" onclick="checkQuirks()" disabled>检查更新</button>
+      </details>
+      <details class="card" id="card-backup"><summary class="card-title">🔐 本地加密备份与恢复</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">导出密码加密的完整配置，包含账号令牌、API密钥、服务与路由设置；不含用量账本、隐私脱敏密钥或会话映射。密码在原生窗口输入，不发送给页面。仅 Android 8.0 以上应用内可用。</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn" onclick="openLocalBackup('export')">导出加密备份</button><button class="btn btn-outline" onclick="openLocalBackup('import')">导入并预览</button><button class="btn btn-outline" onclick="openLocalBackup('rollback')">恢复本机回退快照</button></div>
+        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">恢复前先预览数量与服务设置变化，明确确认后替换全部配置并停止当前请求。恢复前配置保存为本机密文快照，使用本次导入密码解密。请保存密码；密码遗失无法解密。浏览器页面不能调用原生备份。</p>
+        <div id="backup-status" role="status" style="font-size:0.75rem;color:var(--text-muted);"></div>
+      </details>
+
+
+
+
+
+      <details class="card" id="card-network"><summary class="card-title">🌐 出站网络设置</summary>
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">设置网关访问供应商的网络方式。显式直连仍可能受 VPN 影响；系统浏览器和登录 WebView 网页由各自网络决定。字面回环 localhost、127.0.0.1、::1 直连。代理失败不会绕行，不支持 SOCKS 或代理认证。</p>
+        <label for="network-mode">网络模式</label><select id="network-mode" onchange="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px"><option value="default">默认网络</option><option value="direct">显式直连</option><option value="http_proxy">HTTP 代理</option></select>
+        <div id="network-proxy-fields" style="display:none"><label for="network-host">代理主机</label><input id="network-host" type="text" autocomplete="off" oninput="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px;box-sizing:border-box"><label for="network-port">代理端口</label><input id="network-port" type="number" min="1" max="65535" oninput="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px;box-sizing:border-box"></div>
+        <button id="network-save" class="btn" onclick="saveNetwork()">保存</button> <button class="btn btn-outline" onclick="loadNetwork()">读取当前设置</button><div id="network-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+
+      <div class="card" id="card-gateway-advanced">
+        <div class="card-title">⚙️ 网关高级设置 <span class="badge badge-info">实验性功能</span></div>
+        <p>日常使用无需调整。请求限速、额外等待和会话账号偏好等可选策略，仅在有明确需求时设置。</p>
+        <button class="btn btn-outline" onclick="showGatewayAdvanced(true)">进入高级设置 →</button>
+      </div>
+      </div>
+      <div id="gateway-advanced-view" hidden>
+        <button class="btn btn-outline" onclick="showGatewayAdvanced(false)">← 返回首页</button>
+        <div class="card">
+          <h2 id="gateway-advanced-heading" tabindex="-1">网关高级设置</h2>
+          <span class="badge badge-info">实验性功能</span>
+          <p>以下三项用于特定场景，普通使用可保持默认。进入本页或展开说明不会启用功能；修改后需要点击对应的保存按钮。现有设置不会因页面移动而改变。</p>
+          <p>网关已有的路由、故障处理和供应商自动兼容照常工作。这里的参数是额外的人工策略，设置不当可能增加等待或降低吞吐；请先阅读各项说明，再按需调整。</p>
+        </div>
+      <details class="card" id="card-resilience"><summary class="card-title">⏳ 临时拒绝后的等待与流式保活</summary>
+        <p><b>有什么用：</b>供应商临时忙碌时，允许网关多等一会儿再尝试；流心跳则在流式等待期间发送很小的保活信号，帮助部分客户端保持连接。两项可分别设置。</p>
+        <p><b>什么时候需要：</b>经常遇到短暂限流、服务器忙，且愿意用更长等待换取成功机会时，可尝试额外等待，例如 10000 毫秒（10 秒）。只有客户端因连接空闲而断开时，才考虑开启心跳。日常使用建议保持默认关闭。</p>
+        <p><b>会有什么影响：</b>额外等待可能让报错变慢；心跳不会让模型更快生成，也不保证避免客户端超时。它们不替代供应商自身的自动兼容与重试处理；关闭这里不会关闭 WorkBuddy、ZCode 已有的自动处理。</p>
+
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。先尝试可用备选，只有明确的短暂限流或过载拒绝才可等待后重试；额度、鉴权、小浣熊账号吞吐墙、代理与执行结果未知不进入耐受重试。等待和重试仍受总尝试次数与请求截止时间约束。</p>
+        <label for="resilience-patience">无可用备选时，最多额外等待多久（毫秒；0 关闭，上限 60000）</label>
+        <input id="resilience-patience" type="number" min="0" max="60000" value="0" oninput="resilienceEdited()" style="display:block;width:100%;box-sizing:border-box;margin:8px 0;padding:10px">
+        <label style="display:flex;gap:10px;align-items:center"><input id="resilience-heartbeat" type="checkbox" onchange="resilienceEdited()">启用流式连接保活（SSE 心跳）</label>
+        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">心跳约3秒一次，仅适用于标准 Chat / Messages / Responses 流式接口，完整事件之间发送注释，不算业务进度或 Token。上游半个事件停顿时不能插入。首个心跳之后 HTTP 状态已提交，后续失败通过协议错误返回。并非所有客户端的业务超时都会被心跳重置。</p>
+        <button id="resilience-save" class="btn" onclick="saveResilience()">保存</button> <button class="btn btn-outline" onclick="loadResilience()">读取当前设置</button>
+        <div id="resilience-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+      <details class="card" id="card-outbound"><summary class="card-title">🚦 请求限速与排队</summary>
+        <p><b>有什么用：</b>给本机发往供应商的请求主动“限速”和“排队”，避免多个客户端同时调用时一下子发出太多请求。这是手动设置的本机上限，不会自动查询厂商套餐，也不会增加额度。</p>
+        <p><b>什么时候需要：</b>已知 API 有明确的每分钟请求数或并发上限，或多个客户端共用同一账号且频繁触发限流时。普通使用建议保持间隔、请求数、同时处理数均为 0（不限）。供应商专用通道已有的自动并发保护独立生效，无需在这里重复设置。</p>
+        <p><b>怎么填写：</b>供应商 ID 可在供应商页面查看，例如 raccoon。“每个凭据独立”表示每个账号或 API Key 分别计数，同一凭据调用不同模型会共用限额；“整个供应商共享”表示全部凭据合计，两种限制可同时生效。</p>
+        <p><b>参数示例：</b>间隔 1000 毫秒表示两次发送至少隔 1 秒；滚动 60 秒请求数 20 表示任意连续 60 秒最多发送 20 次；同时处理数 2 表示最多两条请求正在执行（流式请求直到结束才释放）。排队数和排队时间限制等待位置及等待时长，不是模型生成超时。</p>
+        <p><b>会有什么影响：</b>限制越紧，等待越久；队列满或等待到期可能被拒绝。设得过低会拖慢正常调用。这不是消费金额、Token 预算或厂商额度管理。</p>
+
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">按真实凭据跨模型共用限额，可叠加供应商共享限额。默认不限制发送频率或并发。当前覆盖普通商业 Chat / Anthropic / Responses 和小浣熊推理；登录、刷新、目录查询及其它特殊通道不在此范围。参数是本机策略，不代表厂商官方限额。</p>
+        <label for="outbound-provider">供应商 ID</label><input id="outbound-provider" type="text" maxlength="128" autocomplete="off" oninput="outboundEdit()" style="display:block;width:100%;box-sizing:border-box;padding:10px;margin:8px 0" placeholder="例如 raccoon">
+        <label for="outbound-domain">限额范围</label><select id="outbound-domain" onchange="outboundEdit()" style="display:block;width:100%;min-width:0;padding:10px;margin:8px 0"><option value="credential">每个凭据独立</option><option value="shared">整个供应商共享</option></select>
+        <button class="btn btn-outline" onclick="outboundSelect()">载入该范围</button>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px">
+          <label>最小发送间隔（毫秒）<input id="outbound-interval" type="number" min="0" max="300000" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>滚动 60 秒请求数<input id="outbound-rpm" type="number" min="0" max="10000" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>最多同时处理的请求数<input id="outbound-flight" type="number" min="0" max="64" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>最大排队数<input id="outbound-queue" type="number" min="0" max="128" value="32" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+          <label>最大排队时间（毫秒）<input id="outbound-wait" type="number" min="0" max="300000" value="10000" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
+        </div>
+        <p style="font-size:0.75rem;color:var(--text-muted)">间隔、RPM、在途数为 0 表示不限。排队参数为 0 时仍受网关总队列与请求截止时间约束。优先选择可立即发送的可用备选；取消、超时或服务停止会退出等待。</p>
+        <button id="outbound-save" class="btn" onclick="saveOutbound()">保存该范围</button> <button class="btn btn-outline" onclick="loadOutbound()">重新读取</button>
+        <div id="outbound-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+      <details class="card" id="card-affinity"><summary class="card-title">🔗 同一会话优先沿用账号</summary>
+        <p><b>有什么用：</b>同一段对话后续调用时，尽量沿用上一次成功使用的供应商和账号/API Key，减少在多个账号之间来回切换。它不会替你保存聊天记录，也不会把对话同步给其它客户端。</p>
+        <p><b>什么时候需要：</b>商业 API 配置了多个账号或 Key，客户端又会发送固定的会话标识，并且希望同一对话尽量走同一路径时。只有一个账号、使用订阅/gift 通道或客户端不传会话标识时，通常没有必要开启。默认关闭，正常路由仍会自动运行。</p>
+        <p><b>会有什么影响：</b>请求可能更集中到同一个账号；遇到冷却、禁用或限额时仍优先保障可用性，不会强行绑定。不能保证缓存命中或减少费用。支持的会话请求头包括 x-magpie-session、x-claude-code-session-id、x-session-id、session_id、x-conversation-id；网关不会从聊天内容猜测会话。</p>
+
+        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。客户端提供明确会话标识时，成功交付后尽量沿用商业供应商与凭据。冷却、禁用、移除或出站限制优先，手动路由优先；不同会话仍按原策略分流。进程重启和配置变化会清空绑定，不保证厂商缓存命中。</p>
+        <label style="display:flex;gap:10px;align-items:center"><input id="affinity-enabled" type="checkbox" onchange="affinityEdited()">尽量让同一对话沿用账号（会话软亲和）</label>
+        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">只使用显式会话请求头，不从提示词推断。绑定保存在有界进程内存中，默认30分钟有效，首次请求预约最长60秒；容量不足时保可用性。订阅、gift及未覆盖特殊通道不承诺绑定。</p>
+        <button id="affinity-save" class="btn" onclick="saveAffinity()">保存</button> <button class="btn btn-outline" onclick="loadAffinity()">读取当前设置</button>
+        <div id="affinity-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
+      </details>
+      </div>
+    </section>
+
+    <section id="tab-gateway" class="tab-pane" aria-label="网关接入">
+      <div class="gateway-hero">
+        <div class="gateway-hero-top"><span class="gateway-eyebrow">ALL IN · GATEWAY</span><span id="access-running" class="access-state">读取状态中</span></div>
+        <div class="gateway-hero-heading"><div><h1>一个网关，连接你的 AI</h1><p>把已入池的模型带到你常用的 Agent。</p></div><button class="btn" id="access-refresh" onclick="refreshGatewayAccess(true)">↻ 刷新</button></div>
+        <div class="access-metrics"><div><strong id="access-model-count">—</strong><span>入池模型</span></div><div><strong id="access-provider-count">—</strong><span>供应商</span></div><div><strong id="access-group-count">—</strong><span>路由组</span></div></div>
+        <div id="access-refresh-status" class="access-note" role="status" aria-live="polite">进入本页后读取当前账号池</div>
+      </div>
       <div class="card" id="card-credentials">
         <div class="card-title">
           <span>🔑 服务地址与 API 密钥</span>
           <span id="cred-key-state" style="font-size:0.75rem; color:var(--text-muted);"></span>
         </div>
         <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 14px;">
-          下面两项就是客户端（Claude Code / Cursor / Codex 等）要填的值，各自可以一键复制。
+          将 API 地址和密钥填入客户端，再从下方复制完整模型 ID。没有自动拉取模型功能的工具也能手动接入。
         </p>
+        <div id="listen-plan-notice" role="status" aria-live="polite" hidden>
+          <div id="listen-plan-headline"></div>
+          <p id="listen-plan-detail"></p>
+          <p id="listen-plan-address"></p>
+        </div>
 
         <div style="font-size: 0.78rem; font-weight: 600; color: #a5b4fc; margin-bottom: 6px;">本机应用（推荐）</div>
-        <div style="display:flex; gap:8px; align-items:stretch; margin-bottom:14px;">
-          <input id="cred-base-url" type="text" readonly value=""
-            style="flex:1; min-width:0; padding:11px 13px; background:#0d0f17; color:#38bdf8;
-                   border:1px solid var(--card-border); border-radius:9px;
-                   font-family:ui-monospace,SFMono-Regular,monospace; font-size:0.8rem;">
+        <div class="connection-field">
+          <label class="sr-only" for="cred-base-url">本机 API 地址</label>
+          <textarea id="cred-base-url" class="address-value" rows="2" readonly spellcheck="false" aria-label="本机 API 地址"></textarea>
           <button class="btn" onclick="copyCredential('base')"
             style="flex-shrink:0; padding:11px 16px; border-radius:9px;
                    background:rgba(56,189,248,0.16); border:1px solid rgba(56,189,248,0.45);
@@ -1086,8 +1500,9 @@
 
         <div style="font-size:0.78rem;font-weight:600;color:#a5b4fc;margin-bottom:6px;">局域网其他设备</div>
         <p style="font-size:0.75rem;color:var(--text-muted);">其他设备需与手机在同一 WiFi，能否访问还需验证。</p>
-        <div style="display:flex;gap:8px;margin-bottom:14px;">
-          <input id="cred-lan-url" type="text" readonly value="" placeholder="未检测到可用的局域网 IPv4 地址" style="flex:1;min-width:0;padding:11px 13px;border-radius:9px;">
+        <div class="connection-field">
+          <label class="sr-only" for="cred-lan-url">局域网 API 地址</label>
+          <textarea id="cred-lan-url" class="address-value" rows="2" readonly spellcheck="false" aria-label="局域网 API 地址" placeholder="未检测到可用的局域网 IPv4 地址"></textarea>
           <button class="btn" onclick="copyCredential('lan')">📋 复制</button>
           <button class="btn btn-outline" onclick="copyManagementPanelLink()">复制网页管理链接</button>
         </div>
@@ -1103,7 +1518,7 @@
                      color:#38bdf8; border-color:rgba(56,189,248,0.3);">✏️ 修改</button>
           </div>
         </div>
-        <div style="display:flex; gap:8px; align-items:stretch;">
+        <div class="credential-key-row">
           <input id="cred-api-key" type="password" readonly value=""
             style="flex:1; min-width:0; padding:11px 13px; background:#0d0f17; color:#34d399;
                    border:1px solid var(--card-border); border-radius:9px;
@@ -1121,7 +1536,7 @@
             新密钥至少 4 个字符，只能用字母、数字和 <code>. _ ~ ! @ # $ % ^ &amp; * + = : -</code>。
             <b style="color:#fbbf24;">修改后所有客户端里的旧密钥立即失效</b>，需要重新填。
           </div>
-          <div style="display:flex; gap:8px;">
+          <div class="credential-edit-row">
             <input id="cred-new-key" type="text" placeholder="输入新的 API 密钥"
               style="flex:1; min-width:0; padding:10px 13px; background:#0d0f17; color:#fff;
                      border:1px solid var(--card-border); border-radius:9px; font-size:0.8rem;
@@ -1141,64 +1556,17 @@
           </div>
         </div>
       </div>
-
-      <details class="card" id="card-affinity"><summary class="card-title">🔗 会话软亲和</summary>
-        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。客户端提供明确会话标识时，成功交付后尽量沿用商业供应商与凭据。冷却、禁用、移除或出站限制优先，手动路由优先；不同会话仍按原策略分流。进程重启和配置变化会清空绑定，不保证厂商缓存命中。</p>
-        <label style="display:flex;gap:10px;align-items:center"><input id="affinity-enabled" type="checkbox" onchange="affinityEdited()">启用可选会话软亲和</label>
-        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">只使用显式会话请求头，不从提示词推断。绑定保存在有界进程内存中，默认30分钟有效，首次请求预约最长60秒；容量不足时保可用性。订阅、gift及未覆盖特殊通道不承诺绑定。</p>
-        <button id="affinity-save" class="btn" onclick="saveAffinity()">保存</button> <button class="btn btn-outline" onclick="loadAffinity()">读取当前设置</button>
-        <div id="affinity-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
-      </details>
-      <details class="card" id="card-quirks"><summary class="card-title">🧩 供应商兼容规则</summary>
-        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">内置规则只迁移已有 WorkBuddy、WorkBuddy AI 与小浣熊指定接口的静态请求头，精确匹配供应商、协议和地址。凭据处理、智谱错误信封、正文和流式解析保持原逻辑。规则更新由用户主动检查；未配置可信分发源时使用内置规则。</p>
-        <div id="quirks-status" role="status" style="font-size:0.78rem;overflow-wrap:anywhere;">尚未读取</div>
-        <button class="btn btn-outline" onclick="loadQuirks()">读取规则状态</button> <button id="quirks-check" class="btn" onclick="checkQuirks()" disabled>检查更新</button>
-      </details>
-      <details class="card" id="card-backup"><summary class="card-title">🔐 本地加密备份与恢复</summary>
-        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">导出密码加密的完整配置，包含账号令牌、API密钥、服务与路由设置；不含用量账本、隐私脱敏密钥或会话映射。密码在原生窗口输入，不发送给页面。仅 Android 8.0 以上应用内可用。</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn" onclick="openLocalBackup('export')">导出加密备份</button><button class="btn btn-outline" onclick="openLocalBackup('import')">导入并预览</button><button class="btn btn-outline" onclick="openLocalBackup('rollback')">恢复本机回退快照</button></div>
-        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">恢复前先预览数量与服务设置变化，明确确认后替换全部配置并停止当前请求。恢复前配置保存为本机密文快照，使用本次导入密码解密。请保存密码；密码遗失无法解密。浏览器页面不能调用原生备份。</p>
-        <div id="backup-status" role="status" style="font-size:0.75rem;color:var(--text-muted);"></div>
-      </details>
-
-      <details class="card" id="card-resilience"><summary class="card-title">⏳ 请求耐受与流心跳</summary>
-        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">默认关闭。先尝试可用备选，只有明确的短暂限流或过载拒绝才可等待后重试；额度、鉴权、小浣熊账号吞吐墙、代理与执行结果未知不进入耐受重试。等待和重试仍受总尝试次数与请求截止时间约束。</p>
-        <label for="resilience-patience">候选耗尽后的最长耐受（毫秒，0关闭，最大60000）</label>
-        <input id="resilience-patience" type="number" min="0" max="60000" value="0" oninput="resilienceEdited()" style="display:block;width:100%;box-sizing:border-box;margin:8px 0;padding:10px">
-        <label style="display:flex;gap:10px;align-items:center"><input id="resilience-heartbeat" type="checkbox" onchange="resilienceEdited()">流式等待期间发送 SSE 心跳</label>
-        <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">心跳约3秒一次，仅适用于标准 Chat / Messages / Responses 流式接口，完整事件之间发送注释，不算业务进度或 Token。上游半个事件停顿时不能插入。首个心跳之后 HTTP 状态已提交，后续失败通过协议错误返回。并非所有客户端的业务超时都会被心跳重置。</p>
-        <button id="resilience-save" class="btn" onclick="saveResilience()">保存</button> <button class="btn btn-outline" onclick="loadResilience()">读取当前设置</button>
-        <div id="resilience-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
-      </details>
-
-      <details class="card" id="card-outbound"><summary class="card-title">🚦 出站请求限额</summary>
-        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">按真实凭据跨模型共用限额，可叠加供应商共享限额。默认不限制发送频率或并发。当前覆盖普通商业 Chat / Anthropic / Responses 和小浣熊推理；登录、刷新、目录查询及其它特殊通道不在此范围。参数是本机策略，不代表厂商官方限额。</p>
-        <label for="outbound-provider">供应商 ID</label><input id="outbound-provider" type="text" maxlength="128" autocomplete="off" oninput="outboundEdit()" style="display:block;width:100%;box-sizing:border-box;padding:10px;margin:8px 0" placeholder="例如 raccoon">
-        <label for="outbound-domain">限额范围</label><select id="outbound-domain" onchange="outboundEdit()" style="display:block;width:100%;min-width:0;padding:10px;margin:8px 0"><option value="credential">每个凭据独立</option><option value="shared">整个供应商共享</option></select>
-        <button class="btn btn-outline" onclick="outboundSelect()">载入该范围</button>
-        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px">
-          <label>最小发送间隔（毫秒）<input id="outbound-interval" type="number" min="0" max="300000" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
-          <label>滚动 60 秒请求数<input id="outbound-rpm" type="number" min="0" max="10000" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
-          <label>最大在途数<input id="outbound-flight" type="number" min="0" max="64" value="0" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
-          <label>最大排队数<input id="outbound-queue" type="number" min="0" max="128" value="32" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
-          <label>最大排队时间（毫秒）<input id="outbound-wait" type="number" min="0" max="300000" value="10000" oninput="outboundEdit()" style="width:100%;box-sizing:border-box;padding:8px"></label>
-        </div>
-        <p style="font-size:0.75rem;color:var(--text-muted)">间隔、RPM、在途数为 0 表示不限。排队参数为 0 时仍受网关总队列与请求截止时间约束。优先选择可立即发送的可用备选；取消、超时或服务停止会退出等待。</p>
-        <button id="outbound-save" class="btn" onclick="saveOutbound()">保存该范围</button> <button class="btn btn-outline" onclick="loadOutbound()">重新读取</button>
-        <div id="outbound-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
-      </details>
-
-      <details class="card" id="card-network"><summary class="card-title">🌐 出站网络设置</summary>
-        <p style="font-size:0.78rem;color:var(--text-muted);line-height:1.6">设置网关访问供应商的网络方式。显式直连仍可能受 VPN 影响；系统浏览器和登录 WebView 网页由各自网络决定。字面回环 localhost、127.0.0.1、::1 直连。代理失败不会绕行，不支持 SOCKS 或代理认证。</p>
-        <label for="network-mode">网络模式</label><select id="network-mode" onchange="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px"><option value="default">默认网络</option><option value="direct">显式直连</option><option value="http_proxy">HTTP 代理</option></select>
-        <div id="network-proxy-fields" style="display:none"><label for="network-host">代理主机</label><input id="network-host" type="text" autocomplete="off" oninput="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px;box-sizing:border-box"><label for="network-port">代理端口</label><input id="network-port" type="number" min="1" max="65535" oninput="networkEdited()" style="display:block;width:100%;margin:8px 0;padding:10px;box-sizing:border-box"></div>
-        <button id="network-save" class="btn" onclick="saveNetwork()">保存</button> <button class="btn btn-outline" onclick="loadNetwork()">读取当前设置</button><div id="network-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:8px"></div>
-      </details>
-
+      <div class="card access-model-card">
+        <div class="access-section-heading"><div><h2>可接入模型</h2><p>复制完整 ID，填入 Agent 的「模型 / Model」字段。</p></div><button id="access-copy-all" class="btn btn-outline" onclick="copyGatewayModelIds()" disabled>复制全部 ID</button></div>
+        <div class="access-search-row"><label class="sr-only" for="access-model-search">搜索模型 ID 或供应商</label><input id="access-model-search" type="search" placeholder="搜索模型 ID 或供应商…" oninput="renderGatewayModels()"><label class="sr-only" for="access-provider-filter">筛选供应商</label><select id="access-provider-filter" onchange="renderGatewayModels()"><option value="">全部供应商</option></select></div>
+        <p id="access-model-summary" class="access-note"></p>
+        <div id="access-model-list"><div class="access-empty">正在读取已入池模型…</div></div>
+        <p class="access-note">仅列出当前启用凭据与模型目录匹配、且允许对外展示的模型；未入池的供应商不会列出。此处按账号池与路由条件筛选，不会逐条发送推理请求。上游额度、网络或临时限流仍会影响实际调用。</p>
+      </div>
     </section>
 
     <section id="tab-providers" class="tab-pane">
-      <div id="provider-list-view"><div class="provider-list-heading"><h2>已接入供应商</h2><p>管理已导入的账号和 API Key。开启表示允许后续调用，不代表凭据已验证。</p></div><div class="provider-toolbar"><label for="provider-search">搜索供应商</label><input id="provider-search" type="search" placeholder="名称或供应商 ID" oninput="renderProviderList()"><button class="btn btn-outline" onclick="showProviderView('add')">添加供应商</button></div><div id="provider-status" role="status"></div><div id="provider-list"></div></div>
+      <div id="provider-list-view"><div class="provider-list-heading"><h2>已接入供应商</h2><p>管理已导入的账号和 API Key，选择允许网关使用的供应商。</p></div><div class="provider-toolbar"><label for="provider-search">搜索供应商</label><input id="provider-search" type="search" placeholder="名称或供应商 ID" oninput="renderProviderList()"><button class="btn btn-outline" onclick="showProviderView('add')">添加供应商</button></div><div id="provider-status" role="status"></div><div id="provider-list"></div></div>
       <div id="provider-subview" hidden><button class="btn btn-outline" onclick="showProviderView('list')">← 返回已接入</button><div id="provider-detail-info"></div></div>
       <div id="provider-catalog" hidden>
       <div id="provider-catalog-heading" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -1280,11 +1648,15 @@
         </div>
 
         <!-- Loomy -->
-        <div class="card" style="border:1px solid var(--card-border);background:#131622;border-radius:16px;padding:18px 20px;">
+        <div class="card" data-provider-id="loomy" style="border:1px solid var(--card-border);background:#131622;border-radius:16px;padding:18px 20px;">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;"><span data-provider-logo="loomy"></span><b>Loomy</b></div>
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;">现有手动 session 通道，未提供网页登录。</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;">支持短信验证码登录与账号余额管理。</div>
+          <button class="btn btn-outline" onclick="showLoomyLogin()">短信登录</button> <button class="btn btn-outline" onclick="manageProviderAccounts('loomy')">管理账号</button>
+          <button class="btn btn-outline" onclick="syncUniversalModels('loomy')">🔄 同步官方模型</button>
           <button id="endpoint-probe-button-loomy" class="btn btn-outline" onclick="providerEndpointProbe('loomy')">端点探测</button>
           <div id="endpoint-probe-status-loomy" role="status" aria-live="polite" style="font-size:0.74rem;overflow-wrap:anywhere;">仅探测官方固定地址，不改变路由。</div>
+          <div id="model-pool-summary-loomy" style="font-size:0.75rem;color:var(--text-muted);margin:12px 0 10px;">官方云端模型池:</div>
+          <div id="models-tags-loomy" style="display:flex;gap:6px;flex-wrap:wrap;max-height:128px;overflow-y:auto;padding:2px;"></div>
         </div>
 
         <!-- 3. 妙手 CatPaw -->
@@ -2699,7 +3071,7 @@
         if (data.regionBlocked && data.regionWarning) {
           if (box) {
             box.innerHTML = '<span style="color:#fbbf24;">⚠️ 当前网络无法完成 Codex 授权</span><br>'
-              + '<span style="color:#9ca3af;">' + data.regionWarning + '</span>'
+              + '<span style="color:#9ca3af;">' + esc(data.regionWarning) + '</span>'
               + '<div style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.25);">'
               + '<b style="color:#38bdf8;">两条可行路径：</b><br>'
               + '① 开启代理并切到 <b>美国 / 日本 / 新加坡</b> 等支持地区的节点，再点一次「OAuth 授权登录」；<br>'
@@ -2717,13 +3089,13 @@
         if (box) {
           let tip = '';
           if (data.regionWarning) {
-            tip = '<div style="margin-bottom:8px; color:#fbbf24;">⚠️ ' + data.regionWarning + '</div>';
+            tip = '<div style="margin-bottom:8px; color:#fbbf24;">⚠️ ' + esc(data.regionWarning) + '</div>';
           }
           box.innerHTML = tip + '已打开 OpenAI 授权页。完成授权后页面会自动关闭并入池。<br>'
             + '若浏览器无法自动跳转到 localhost:1455，可在地址栏复制最后跳转链接或 code：'
             + '<div style="margin-top:6px; display:flex; gap:6px;">'
             + '<input id="codex-manual-code" placeholder="粘贴跳转后链接或 code" style="flex:1; background:#1e2333; border:1px solid #374151; color:#fff; padding:4px 8px; border-radius:8px; font-size:0.75rem;">'
-            + '<button class="btn btn-outline" style="font-size:0.75rem; padding:4px 10px; border-radius:8px;" onclick="submitCodexCode(\'' + flowId + '\')">提交完成</button>'
+            + '<button class="btn btn-outline" style="font-size:0.75rem; padding:4px 10px; border-radius:8px;" onclick="submitCodexCode(\'' + jsAttr(flowId) + '\')">提交完成</button>'
             + '</div>';
         }
         pollCodexFlow(flowId);
@@ -2744,7 +3116,7 @@
             clearInterval(timer);
             showToast('🎉 Codex 订阅已成功接入：' + d.account);
             const box = document.getElementById('codex-status');
-            if (box) box.innerHTML = '<span style="color:#10a37f;">✅ 已成功接入账号 <b>' + d.account + '</b> (' + (d.plan || 'chatgpt') + ')</span>';
+            if (box) box.innerHTML = '<span style="color:#10a37f;">✅ 已成功接入账号 <b>' + esc(d.account) + '</b> (' + esc(d.plan || 'chatgpt') + ')</span>';
             loadStatus();
           }
         } catch (ignored) {}
@@ -2764,7 +3136,7 @@
         if (d.ok) {
           showToast('🎉 Codex 账号导入成功：' + d.account);
           const box = document.getElementById('codex-status');
-          if (box) box.innerHTML = '<span style="color:#10a37f;">✅ 已成功接入账号 <b>' + d.account + '</b> (' + (d.plan || 'chatgpt') + ')</span>';
+          if (box) box.innerHTML = '<span style="color:#10a37f;">✅ 已成功接入账号 <b>' + esc(d.account) + '</b> (' + esc(d.plan || 'chatgpt') + ')</span>';
           loadStatus();
         } else {
           alert('提交失败: ' + (d.error || '未知原因'));
@@ -2805,23 +3177,23 @@
           if (box) box.innerHTML = '<span style="color:#f87171;">读取用量失败: ' + esc(d.error || res.statusText) + '</span>';
           return;
         }
-        let txt = '<b>Codex 订阅状态</b>：Plan: <span style="color:#10a37f;">' + (d.plan_type || 'chatgpt') + '</span>';
+        let txt = '<b>Codex 订阅状态</b>：Plan: <span style="color:#10a37f;">' + esc(d.plan_type || 'chatgpt') + '</span>';
         if (d.credits && d.credits.balance) {
-          txt += ' · Credits 余额: <span style="color:#fbbf24;">' + d.credits.balance + '</span>';
+          txt += ' · Credits 余额: <span style="color:#fbbf24;">' + esc(d.credits.balance) + '</span>';
         }
         if (d.rate_limit) {
           const rl = d.rate_limit;
           if (rl.primary_window) {
-            txt += '<br>Primary 窗口已用: <b>' + (rl.primary_window.used_percent || 0) + '%</b>';
+            txt += '<br>Primary 窗口已用: <b>' + esc(rl.primary_window.used_percent || 0) + '%</b>';
             if (rl.primary_window.reset_at) txt += ' (重置于: ' + new Date(rl.primary_window.reset_at * 1000).toLocaleTimeString() + ')';
           }
           if (rl.secondary_window) {
-            txt += ' · Secondary 窗口已用: <b>' + (rl.secondary_window.used_percent || 0) + '%</b>';
+            txt += ' · Secondary 窗口已用: <b>' + esc(rl.secondary_window.used_percent || 0) + '%</b>';
           }
         }
         if (box) box.innerHTML = txt;
       } catch (e) {
-        if (box) box.innerHTML = '<span style="color:#f87171;">请求用量异常: ' + e.message + '</span>';
+        if (box) box.innerHTML = '<span style="color:#f87171;">请求用量异常: ' + esc(e.message) + '</span>';
       }
     }
 
@@ -3060,7 +3432,7 @@
         out.innerHTML = lines.join('<br>');
         out.style.color = 'var(--text)';
       } catch (e) {
-        out.innerHTML = '<span style="color:#f87171;">异常：' + e.message + '</span>';
+        out.innerHTML = '<span style="color:#f87171;">异常：' + esc(e.message) + '</span>';
       }
     }
 
@@ -3092,7 +3464,7 @@
     }
 
     /** 供应商卡片的统一清单：两处 render 循环共用，避免新增供应商时漏改一处 */
-    const PROVIDER_CARD_IDS = ['workbuddy', 'workbuddy-ai', 'raccoon', 'catpaw', 'deepseek_web',
+    const PROVIDER_CARD_IDS = ['workbuddy', 'workbuddy-ai', 'raccoon', 'loomy', 'catpaw', 'deepseek_web',
       'zcode', 'qoder_cn', 'cline', 'codex', 'antigravity', 'trae-cn',
       'github-copilot', 'minimax-code'];
 
@@ -3245,7 +3617,7 @@
         html += infoRow(si.tone, '服务状态', serviceHealthInfo(d.service), si.badge);
         box.innerHTML = html;
       } catch (e) {
-        if (box) box.innerHTML = '<div style="color:var(--text-muted);">读取权限状态失败：' + e.message + '</div>';
+        if (box) box.innerHTML = '<div style="color:var(--text-muted);">读取权限状态失败：' + esc(e.message) + '</div>';
       }
     }
 
@@ -3325,7 +3697,7 @@
         const res = await fetch(API_BASE + '/api/guard', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ failover: { enabled: cb ? cb.checked : true, maxTargets: 3, targets } })
+          body: JSON.stringify({ failover: { enabled: cb ? cb.checked : true, targets } })
         });
         const d = await res.json();
         if (d.ok) {
@@ -4170,7 +4542,25 @@
     try { refreshThemeUI(); } catch (e) {}
     window.addEventListener('load', () => setTimeout(() => moveNavPill(document.querySelector('.tab-btn.active')), 30));
 
+    let gatewayAdvancedScroll = 0;
+    function showGatewayAdvanced(open) {
+      const main = document.getElementById('overview-main-view');
+      const advanced = document.getElementById('gateway-advanced-view');
+      if (!main || !advanced) return;
+      if (open && advanced.hidden) gatewayAdvancedScroll = window.scrollY || 0;
+      main.hidden = !!open;
+      advanced.hidden = !open;
+      window.scrollTo(0, open ? 0 : gatewayAdvancedScroll);
+      if (open) {
+        const heading = document.getElementById('gateway-advanced-heading');
+        if (heading) heading.focus({preventScroll:true});
+      }
+    }
+
     function switchTab(tabId, el, preserveScroll) {
+      const advanced = document.getElementById('gateway-advanced-view');
+      if (advanced && !advanced.hidden) showGatewayAdvanced(false);
+      if (tabId === 'gateway') { gatewayAccessLast = 0; refreshGatewayAccess(false); }
       if (tabId === 'privacy') { loadPrivacy(); }
       try {
         const btns = document.querySelectorAll('.tab-btn');
@@ -4208,6 +4598,153 @@
       }
     }
 
+    // Gateway access inventory: server authority only, never default_config or UI provider lists.
+    const GATEWAY_ACCESS_POLL_MS = 30000;
+    let gatewayAccessRows = [], gatewayAccessReady = false, gatewayAccessBusy = false;
+    let gatewayAccessRevision = 0, gatewayAccessLast = 0, gatewayAccessSyncing = false;
+    let gatewayAccessRefreshPending = false;
+    let gatewayAccessRenderSignature = null, gatewayAccessProviderSignature = null, gatewayAccessSyncFailures = 0;
+    function gatewayAccessVisible() {
+      const page = document.getElementById('tab-gateway');
+      return !!(page && page.classList.contains('active') && !document.hidden);
+    }
+    async function gatewayAccessRead(path, options) {
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        const response = await fetch(API_BASE + path, {cache:'no-store', ...options, signal:controller.signal});
+        const data = await response.json();
+        if (!response.ok || !data || data.ok !== true) throw Error('read failed');
+        return data;
+      } finally { clearTimeout(timer); }
+    }
+    function renderGatewayConnectionState() {
+      const node = document.getElementById('access-running');
+      if (node) node.textContent = statusKnown ? (gatewayRunning ? '● 网关运行中' : '网关已停止') : '网关状态暂不可用';
+    }
+    async function refreshGatewayAccess(syncUpstream) {
+      if (gatewayAccessBusy) {
+        // A manual click during a silent read must still trigger an upstream refresh.
+        if (syncUpstream && !gatewayAccessSyncing) gatewayAccessRefreshPending = true;
+        return;
+      }
+      if (!syncUpstream && Date.now() - gatewayAccessLast < GATEWAY_ACCESS_POLL_MS) return;
+      const revision = ++gatewayAccessRevision;
+      gatewayAccessLast = Date.now(); // Throttle failed automatic reads as well.
+      gatewayAccessBusy = true;
+      gatewayAccessSyncing = !!syncUpstream;
+      const button = document.getElementById('access-refresh'), note = document.getElementById('access-refresh-status');
+      const showProgress = !!syncUpstream || !gatewayAccessReady;
+      // Once populated, periodic reads keep the refresh button and status steady.
+      if (showProgress) {
+        if (button) { button.disabled = true; button.textContent = syncUpstream ? '↻ 正在刷新…' : '↻ 读取中…'; }
+        if (note) note.textContent = syncUpstream ? '正在同步已入池账号的模型目录…' : '正在核对当前账号池…';
+      }
+      // An explicit refresh clears copyable old IDs until a new authoritative snapshot arrives.
+      if (syncUpstream || !gatewayAccessReady) { gatewayAccessReady = false; gatewayAccessRows = []; renderGatewayModels(); }
+      let failures = 0;
+      try {
+        if (syncUpstream) {
+          await Promise.all([loadStats(), loadAuthKey()]);
+          const cfgResponse = await fetch(API_BASE + '/api/config', {cache:'no-store'});
+          if (!cfgResponse.ok) throw Error('configuration read failed');
+          const cfg = await cfgResponse.json();
+          if (!cfg || !Array.isArray(cfg.providers)) throw Error('invalid configuration');
+          const synced = new Set(['workbuddy','raccoon','zcode','qoder_cn','trae-cn','catpaw','codex','antigravity','github-copilot','minimax-code','cline']);
+          const credential = p => p && p.enabled !== false && String(p.status || '').toLowerCase() !== 'placeholder' && ((Array.isArray(p.accounts) && p.accounts.some(a => a && a.enabled !== false && ['token','access','refresh','jwt'].some(k => typeof a[k] === 'string' && a[k].trim()))) || (Array.isArray(p.keys) && p.keys.some(k => typeof k === 'string' ? !!k.trim() : k && k.enabled !== false && !k.off && typeof k.key === 'string' && k.key.trim())));
+          const tasks = cfg.providers.filter(p => credential(p) && synced.has(p.id)).map(p => async () => {
+            try {
+              await gatewayAccessRead('/api/auth/' + encodeURIComponent(p.id) + '/sync-models', p.id === 'trae-cn' ? {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'} : undefined);
+            } catch (_) { failures++; }
+            if (p.id === 'zcode' && Array.isArray(p.accounts) && p.accounts.some(a => a && a.enabled !== false && a.jwt)) {
+              try { await gatewayAccessRead('/api/zcode/gift?refresh=1'); } catch (_) { failures++; }
+            }
+          });
+          // Keep upstream catalog lookups bounded; do not launch one request per model.
+          let next = 0;
+          await Promise.all(Array.from({length:Math.min(3,tasks.length)}, async () => { while (next < tasks.length) { const task = tasks[next++]; await task(); } }));
+        }
+        const data = await gatewayAccessRead('/api/gateway-access');
+        if (revision !== gatewayAccessRevision) return;
+        if (!Array.isArray(data.models) || !data.models.every(m => m && typeof m.id === 'string' && m.id.includes('/') && typeof m.provider === 'string' && typeof m.providerName === 'string' && typeof m.name === 'string' && ['model','group'].includes(m.kind))) throw Error('invalid inventory');
+        const seen = new Set(); gatewayAccessRows = data.models.filter(m => !seen.has(m.id) && seen.add(m.id));
+        gatewayAccessReady = true; gatewayAccessLast = Date.now();
+        const filter = document.getElementById('access-provider-filter'), previous = filter ? filter.value : '';
+        const providerSignature = JSON.stringify(gatewayAccessRows.map(m => [m.provider,m.providerName]));
+        if (filter && providerSignature !== gatewayAccessProviderSignature) {
+          gatewayAccessProviderSignature = providerSignature;
+          filter.replaceChildren();
+          const all = document.createElement('option'); all.value = ''; all.textContent = '全部供应商'; filter.appendChild(all);
+          const providers = new Map(); gatewayAccessRows.forEach(m => providers.set(m.provider,m.providerName));
+          providers.forEach((name,id) => { const o = document.createElement('option'); o.value = id; o.textContent = name; filter.appendChild(o); });
+          filter.value = providers.has(previous) ? previous : '';
+        }
+        renderGatewayModels(); renderGatewayConnectionState();
+        if (syncUpstream) gatewayAccessSyncFailures = failures;
+        if (note) note.textContent = '已更新 · ' + new Date(data.observedAt || Date.now()).toLocaleTimeString() + (gatewayAccessSyncFailures ? ' · ' + gatewayAccessSyncFailures + ' 项上游目录同步失败，按现有已入池目录筛选' : '') + (data.unconfirmedCatalogs ? ' · 部分账号目录暂未确认，未列出' : '');
+      } catch (_) {
+        if (revision !== gatewayAccessRevision) return;
+        gatewayAccessReady = false; gatewayAccessRows = []; renderGatewayModels();
+        if (note) note.textContent = '刷新失败，当前模型列表已清空。请检查网关连接后重试。';
+      } finally {
+        if (revision === gatewayAccessRevision) {
+          gatewayAccessBusy = false; gatewayAccessSyncing = false;
+          if (showProgress && button) { button.disabled = false; button.textContent = '↻ 刷新'; }
+          if (gatewayAccessRefreshPending) {
+            gatewayAccessRefreshPending = false;
+            refreshGatewayAccess(true);
+          }
+        }
+      }
+    }
+    function gatewayVisibleModels() {
+      if (!gatewayAccessReady) return [];
+      const search = document.getElementById('access-model-search'), select = document.getElementById('access-provider-filter');
+      const query = search ? search.value.trim().toLowerCase() : '', provider = select ? select.value : '';
+      return gatewayAccessRows.filter(m => (!provider || m.provider === provider) && (!query || [m.id,m.name,m.providerName].join(' ').toLowerCase().includes(query)));
+    }
+    function renderGatewayModels() {
+      const list = document.getElementById('access-model-list'); if (!list) return;
+      const visible = gatewayVisibleModels(), groups = new Map();
+      const signature = JSON.stringify([gatewayAccessReady, gatewayAccessRows, visible]);
+      if (signature === gatewayAccessRenderSignature) return;
+      gatewayAccessRenderSignature = signature;
+      visible.forEach(m => { if (!groups.has(m.provider)) groups.set(m.provider,[]); groups.get(m.provider).push(m); });
+      list.replaceChildren();
+      ['model','provider','group'].forEach(kind => {
+        const el = document.getElementById('access-' + kind + '-count'); if (!el) return;
+        el.textContent = !gatewayAccessReady ? '—' : String(kind === 'provider' ? new Set(gatewayAccessRows.filter(m => m.kind === 'model').map(m => m.provider)).size : gatewayAccessRows.filter(m => m.kind === kind).length);
+      });
+      const summary = document.getElementById('access-model-summary');
+      if (summary) summary.textContent = gatewayAccessReady ? '显示 ' + visible.length + ' / ' + gatewayAccessRows.length + ' 项 · 点击右侧复制完整 ID' : '等待最新账号池数据';
+      const copy = document.getElementById('access-copy-all'); if (copy) { copy.disabled = visible.length === 0; copy.textContent = visible.length === gatewayAccessRows.length ? '复制全部 ID' : '复制筛选结果'; }
+      if (!visible.length) {
+        const empty = document.createElement('div'); empty.className = 'access-empty';
+        empty.textContent = !gatewayAccessReady ? '暂无已确认的模型数据，请刷新。' : gatewayAccessRows.length ? '没有匹配的模型，试试其他名称或供应商。' : '当前没有可接入的模型。请先登录账号、导入 API Key，或检查供应商开关与模型白名单。'; list.appendChild(empty); return;
+      }
+      groups.forEach(rows => {
+        const heading = document.createElement('h3'); heading.className = 'access-provider-heading'; heading.textContent = rows[0].providerName;
+        const count = document.createElement('span'); count.textContent = String(rows.length); heading.appendChild(count); list.appendChild(heading);
+        rows.forEach(m => {
+          const row = document.createElement('div'); row.className = 'access-model-row';
+          const info = document.createElement('div'); info.className = 'access-model-info';
+          const id = document.createElement('code'); id.className = 'access-model-id'; id.textContent = m.id;
+          const name = document.createElement('div'); name.className = 'access-model-name'; name.textContent = m.name + (m.kind === 'group' ? ' · 自动路由入口' : ' · ' + m.providerName);
+          info.appendChild(id); info.appendChild(name);
+          const button = document.createElement('button'); button.className = 'btn btn-outline access-model-copy'; button.textContent = '复制 ID'; button.setAttribute('aria-label','复制 ' + m.id);
+          button.onclick = () => { if (gatewayAccessReady && gatewayAccessRows.some(x => x.id === m.id)) copyText(m.id, '模型 ID 已复制'); };
+          row.appendChild(info); row.appendChild(button); list.appendChild(row);
+        });
+      });
+    }
+    function copyGatewayModelIds() {
+      const rows = gatewayVisibleModels(); if (!rows.length) return;
+      copyText(rows.map(m => m.id).join('\n'), '模型 ID 已复制，每行一项');
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (gatewayAccessVisible()) { gatewayAccessLast = 0; refreshGatewayAccess(false); }
+    });
+    // End gateway access inventory.
+
     let toastTimer = null;
     function showToast(msg) {
       try {
@@ -4243,6 +4780,9 @@
     let statusKnown = false;
     let statusPort = 0;
     let statusLanUrl = '';
+    /* /api/status 的监听计划回显：配置要求什么、socket 真正在听什么、是否需要用户处理。 */
+    let listenPlanNoticeState = null;
+    let listenPlanSignature = '';
     function gatewayBaseUrl() {
       return statusKnown && statusPort ? 'http://127.0.0.1:' + statusPort : '';
     }
@@ -4269,6 +4809,155 @@
       if (el && el.textContent !== value) renderEtaBase(el, value);
     }
 
+    /**
+     * 监听计划（对应上游 internal/gateway/lan.go 的语义）：回环永远服务本机，
+     * 配置里的 server.host 不会在升级后被静默采纳，端口不会被静默改掉。
+     * 这里只读、只显示：不写配置、不改口令、不新建任何开关。
+     */
+    function listenPlanPort() { return statusPort; }
+    function listenHostText(host, port) {
+      const tail = port ? ':' + port : '';
+      if (host === '0.0.0.0') return '所有网卡（0.0.0.0' + tail + '）';
+      if (host === '127.0.0.1' || host === 'localhost') return '仅本机（127.0.0.1' + tail + '）';
+      if (host) return host + tail;
+      return '未知端点';
+    }
+    /** 端口只认合法整型，非法值一律当作「不知道」，不拼进地址。 */
+    function listenPlanPortValue(value) {
+      const n = Number(value);
+      return Number.isInteger(n) && n > 0 && n <= 65535 ? n : 0;
+    }
+    /** 解析 /api/status 的监听字段；端口未知时返回 null（做不到确定就不猜）。 */
+    function readListenPlan(data) {
+      if (!data || !statusPort) return null;
+      const host = typeof data.listenAddress === 'string' ? data.listenAddress.trim() : '';
+      const hostApplied = data.configuredHostApplied !== false;
+      const portApplied = data.configuredPortApplied !== false;
+      return {
+        required: data.listenActionRequired === true || !hostApplied || !portApplied,
+        action: typeof data.listenAction === 'string' ? data.listenAction.trim() : '',
+        note: typeof data.listenNote === 'string' ? data.listenNote.trim().slice(0, 240) : '',
+        host: host,
+        loopback: host === '127.0.0.1' || host === 'localhost',
+        configuredHost: typeof data.configuredHost === 'string' ? data.configuredHost.trim().slice(0, 64) : '',
+        configuredPort: listenPlanPortValue(data.configuredPort),
+        configuredLoopbackOnly: data.configuredLoopbackOnly === true,
+        hostApplied: hostApplied,
+        portApplied: portApplied
+      };
+    }
+    /** 中文提示：真实地址 + 需要重启还是恢复，都写清楚。 */
+    function listenPlanMessage(plan) {
+      const port = listenPlanPort();
+      const local = port ? 'http://127.0.0.1:' + port + '/v1' : '';
+      const lan = gatewayLanUrl();
+      const addresses = '当前实际监听：' + listenHostText(plan.host, port)
+        + (local ? '；本机地址 ' + local : '')
+        + (lan ? '；局域网地址 ' + lan
+          : (plan.loopback ? '；局域网不可用（只监听本机）' : '；暂未检测到可用的局域网 IPv4 地址'));
+      const wanted = [];
+      if (!plan.hostApplied && plan.configuredHost) wanted.push('地址 ' + plan.configuredHost);
+      if (plan.configuredPort && plan.configuredPort !== port) wanted.push('端口 ' + plan.configuredPort);
+      const wantedText = wanted.length ? wanted.join('、') : '监听端点';
+      const restartHint = '重启网关后生效';
+      const restartWhere = '（右上角网关开关关闭再开启，或重启 App）';
+      if (!plan.required) {
+        return {
+          tone: 'info',
+          headline: '当前只监听本机（127.0.0.1）',
+          detail: '网关只接受本机连接，局域网其他设备无法访问。要恢复局域网访问，请把配置里的 server.loopbackOnly 改回 false，'
+            + '然后重启网关' + restartWhere + '；本页不会自动改动这项设置，也不会动你的口令。',
+          addresses: addresses
+        };
+      }
+      switch (plan.action) {
+        case 'restart':
+          return {
+            tone: 'warn',
+            headline: '监听设置尚未生效',
+            detail: '配置里的' + wantedText + '需要' + restartHint + restartWhere + '。'
+              + (plan.configuredLoopbackOnly
+                ? '重启后只允许本机访问，局域网设备将无法连接。'
+                : '在重启前请继续使用下面的实际地址；本页不会替你切换连接或口令。'),
+            addresses: addresses
+          };
+        case 'recover-config':
+          return {
+            tone: 'warn',
+            headline: '配置文件损坏，网关已临时只监听本机',
+            detail: '配置读不出来，网关按安全默认不对外开放，恢复前整份配置的保存都会被拒绝。请先恢复配置（例如用你保存的加密备份恢复），'
+              + '恢复完成后再重启网关' + restartWhere + '；在此之前请继续使用下面的本机地址。',
+            addresses: addresses
+          };
+        case 'enable-loopback':
+          return {
+            tone: 'warn',
+            headline: '配置里的「仅本机」尚未生效',
+            detail: '配置写了只允许本机（' + (plan.configuredHost || '127.0.0.1') + '），但网关仍在对外监听：没有擅自收紧，避免切断已经在用的局域网连接。'
+              + '确实要只允许本机时，请显式设置 server.loopbackOnly=true，然后重启网关' + restartWhere + '；否则继续使用当前地址即可，本页不会自动改动。',
+            addresses: addresses
+          };
+        case 'unsupported-host':
+          return {
+            tone: 'warn',
+            headline: '配置里的监听地址不会被采用',
+            detail: '配置里的地址 ' + (plan.configuredHost || '（空）') + ' 无法安全采纳（IPv6 回环或通配、具体网卡地址都不支持），网关仍按实际端点监听。'
+              + '请把 server.host 改回 0.0.0.0 或留空，然后重启网关' + restartWhere + '；本页不会自动改写你的配置。',
+            addresses: addresses
+          };
+        case 'port-fixed':
+          return {
+            tone: 'warn',
+            headline: '配置里的端口不会生效',
+            detail: '网关端口固定为 ' + port + '，配置里的端口 ' + (plan.configuredPort || '（空）') + ' 不会被采纳。'
+              + '改动端口会让已按 ' + port + ' 配好的客户端失联，所以这里只提示、不自动切换；请让客户端继续指向下面的实际地址。',
+            addresses: addresses
+          };
+        default:
+          return {
+            tone: 'warn',
+            headline: '监听设置与当前实际监听不一致',
+            detail: '服务端未给出可识别的动作（' + (plan.action || '空') + '）。请检查配置里的监听设置，然后重启网关' + restartWhere + '。'
+              + (plan.note ? ' 服务端说明：' + plan.note : ''),
+            addresses: addresses
+          };
+      }
+    }
+    /** 只在真的需要说明时才出现；同样内容不重复写 DOM。 */
+    function renderListenPlan() {
+      const box = document.getElementById('listen-plan-notice');
+      if (!box) return;
+      const plan = listenPlanNoticeState;
+      const message = plan && statusPort && (plan.required || plan.loopback) ? listenPlanMessage(plan) : null;
+      const signature = message
+        ? message.tone + '|' + message.headline + '|' + message.detail + '|' + message.addresses : '';
+      if (signature === listenPlanSignature) return;
+      listenPlanSignature = signature;
+      if (!message) {
+        box.hidden = true;
+        return;
+      }
+      const headline = document.getElementById('listen-plan-headline');
+      const detail = document.getElementById('listen-plan-detail');
+      const address = document.getElementById('listen-plan-address');
+      if (headline) headline.textContent = message.headline;
+      if (detail) detail.textContent = message.detail;
+      if (address) address.textContent = message.addresses;
+      if (box.setAttribute) box.setAttribute('data-tone', message.tone);
+      box.hidden = false;
+    }
+
+    /** 真正在听的是回环地址时，局域网根本不可达：任何「局域网可用」的说法都要收起来。 */
+    function listenLoopbackOnly() {
+      return !!(listenPlanNoticeState && listenPlanNoticeState.loopback);
+    }
+    /** 局域网地址空缺的原因：只监听本机时不能说成「没检测到 IP」。 */
+    function lanAddressUnavailableText() {
+      return listenLoopbackOnly()
+        ? '当前只监听本机（127.0.0.1），局域网设备无法连接；要恢复局域网访问请把 server.loopbackOnly 改回 false 并重启网关'
+        : '未检测到可用的局域网 IPv4 地址';
+    }
+
     /** 刷新卡片里的两项取值 */
     function renderCredentials() {
       const etaKey = document.getElementById('eta-key');
@@ -4277,16 +4966,22 @@
       const keyEl = document.getElementById('cred-api-key');
       if (baseEl) { baseEl.value = gatewayBaseUrl() ? gatewayBaseUrl() + '/v1' : ''; baseEl.placeholder = '服务地址暂不可用'; }
       const lanEl = document.getElementById('cred-lan-url');
-      if (lanEl) lanEl.value = gatewayLanUrl();
+      if (lanEl) {
+        lanEl.value = gatewayLanUrl();
+        lanEl.placeholder = lanAddressUnavailableText();
+      }
       if (keyEl) {
         keyEl.value = currentAuthKey || '（未设置，网关当前不校验）';
         keyEl.type = authKeyVisible ? 'text' : 'password';
       }
       const state = document.getElementById('cred-key-state');
       if (state) {
+        // 只监听本机时局域网设备连都连不上，不能再写「局域网内任何人可用」。
         state.innerHTML = currentAuthKey
           ? '<span style="color:#34d399;">● 已启用鉴权</span>'
-          : '<span style="color:#fbbf24;">● 未设口令（局域网内任何人可用）</span>';
+          : (listenLoopbackOnly()
+            ? '<span style="color:#fbbf24;">● 未设口令（当前只监听本机，局域网设备无法连接）</span>'
+            : '<span style="color:#fbbf24;">● 未设口令（局域网内任何人可用）</span>');
       }
     }
 
@@ -4330,7 +5025,12 @@
       if (!window.AllInNative || typeof window.AllInNative.copyManagementPanelLink !== 'function') {
         showToast('请在手机 App 中复制网页管理链接'); return;
       }
-      showToast(window.AllInNative.copyManagementPanelLink() ? '管理链接已复制，仅交给可信设备；与调用模型的 Key 分开' : '未能复制，请检查网关和局域网连接');
+      const copied = window.AllInNative.copyManagementPanelLink();
+      showToast(copied
+        ? '管理链接已复制，仅交给可信设备；与调用模型的 Key 分开'
+        : (listenLoopbackOnly()
+          ? '未能复制：当前只监听本机（127.0.0.1），网页管理链接只能在手机上打开'
+          : '未能复制，请检查网关和局域网连接'));
     }
 
     function copyCredential(which) {
@@ -4340,7 +5040,7 @@
         if (!text) { showToast('服务地址暂不可用'); return; }
       } else if (which === 'lan') {
         text = gatewayLanUrl();
-        if (!text) { showToast('未检测到可用的局域网 IPv4 地址'); return; }
+        if (!text) { showToast(lanAddressUnavailableText()); return; }
       } else {
         text = currentAuthKey || '';
         if (!text) { showToast('还没有设置密钥'); return; }
@@ -4459,19 +5159,24 @@
         statusKnown = !!statusPort;
         if (Object.prototype.hasOwnProperty.call(data, 'localBaseUrl') && !parseEndpoint(data.localBaseUrl, true, statusPort)) statusKnown = false;
         gatewayIp = data.ip || '';
+        listenPlanNoticeState = readListenPlan(data);
         if (Object.prototype.hasOwnProperty.call(data, 'lanBaseUrl')) {
           statusLanUrl = parseEndpoint(data.lanBaseUrl, false, statusPort);
         } else {
-          statusLanUrl = validLanIp(gatewayIp) && statusPort ? 'http://' + gatewayIp + ':' + statusPort + '/v1' : '';
+          // 只监听本机时，用 IPv4 拼出来的「局域网地址」是假的：宁可不填，也不误导。
+          const loopbackOnly = !!(listenPlanNoticeState && listenPlanNoticeState.loopback);
+          statusLanUrl = !loopbackOnly && validLanIp(gatewayIp) && statusPort
+            ? 'http://' + gatewayIp + ':' + statusPort + '/v1' : '';
         }
         if (previousBase !== gatewayBaseUrl()) window.__etaSnippet = '';
-        try { renderCredentials(); syncEtaAddress(); } catch (e) {}
+        try { renderListenPlan(); renderCredentials(); syncEtaAddress(); } catch (e) {}
         statsFailures = 0;
         if (!gatewayRunning) applyGatewayUI(true);
       } catch (e) {
         if (revision !== statusRevision) return;
         statusKnown = false; statusPort = 0; gatewayIp = ''; statusLanUrl = ''; window.__etaSnippet = '';
-        try { renderCredentials(); syncEtaAddress(); } catch (ignored) {}
+        listenPlanNoticeState = null;
+        try { renderListenPlan(); renderCredentials(); syncEtaAddress(); } catch (ignored) {}
         statsFailures++;
         // 给足 8 次容忍度，避免冷启动瞬时未就绪误判为关闭
         if (statsFailures >= 8 && gatewayRunning) applyGatewayUI(false);
@@ -4706,6 +5411,14 @@
       if (visible('dup-account-modal')) { closeDupModal(); return true; }
       if (visible('inapp-login-modal')) { closeInAppLogin(); return true; }
       if (visible('account-manage-modal')) { closeAccountModal(); return true; }
+      const gateway = document.getElementById('tab-gateway');
+      if (gateway && gateway.classList.contains('active')) { switchTab('overview'); return true; }
+      const overview = document.getElementById('tab-overview');
+      const advanced = document.getElementById('gateway-advanced-view');
+      if (overview && overview.classList.contains('active') && advanced && !advanced.hidden) {
+        showGatewayAdvanced(false);
+        return true;
+      }
       const providers = document.getElementById('tab-providers');
       if (providers && providers.classList.contains('active') && providerView !== 'list') {
         showProviderView('list');
@@ -4735,10 +5448,12 @@
       if (providerView === 'add') { info.textContent = '添加供应商'; const available = (cards && Array.from(cards.children).some(x => !x.hidden)) || (commercial && Array.from(commercial.children).some(x => !x.hidden)); if (!available) { const note = document.createElement('p'); note.textContent = '暂无可添加的供应商'; info.appendChild(note); } return; }
       const p = providers.find(x => x.id === providerDetail); if (!p) return;
       const heading = document.createElement('h3'); heading.textContent = p.name || p.id; info.appendChild(heading);
-      const c = providerCounts(p), desc = document.createElement('p'); desc.textContent = '账号 ' + c.accounts + ' · Key ' + c.keys + ' · 模型 ' + c.models + '（配置） · 已配置 · 未验证'; info.appendChild(desc);
+      const c = providerCounts(p), desc = document.createElement('p'); desc.textContent = '账号 ' + c.accounts + ' · Key ' + c.keys + ' · 模型 ' + c.models + '（配置） · 已配置'; info.appendChild(desc);
       if (c.accounts) { const b = document.createElement('button'); b.className = 'btn btn-outline'; b.textContent = '管理账号'; b.onclick = () => manageProviderAccounts(p.id); info.appendChild(b); }
+      if (p.id === 'loomy') { const login = document.createElement('button'); login.className = 'btn btn-outline'; login.textContent = '短信登录'; login.onclick = showLoomyLogin; info.appendChild(login); }
       renderProviderBilling(info, p.id);
       const hasCard = cards && Array.from(cards.children).some(x => !x.hidden), hasCommercial = details && !details.hidden;
+      if (!hasCard && !hasCommercial && p.id === 'loomy') { const sync = document.createElement('button'); sync.className = 'btn btn-outline'; sync.textContent = '🔄 同步官方模型'; sync.onclick = () => syncUniversalModels('loomy'); info.appendChild(sync); }
       if (!hasCard && !hasCommercial && ['loomy','workbuddy-ai'].includes(p.id) && String(p.status || '').toLowerCase() !== 'placeholder') { const probe = document.createElement('div'); probe.innerHTML = endpointProbeControls(p.id); info.appendChild(probe); hydrateEndpointProbe(p.id); }
       if (!hasCard && !hasCommercial && Array.isArray(p.models)) { const models = document.createElement('p'); models.textContent = '模型：' + p.models.map(m => typeof m === 'string' ? m : (m && (m.name || m.id)) || '').filter(Boolean).join('、'); info.appendChild(models); }
       if (!hasCard && !hasCommercial) { const note = document.createElement('p'); note.textContent = '当前未提供该类型配置入口'; info.appendChild(note); }
@@ -4796,6 +5511,27 @@
         else if (a.stale || snapshot.stale) parts.push('时间未知');
         if (a.errorKind) parts.push('刷新失败：' + String(a.errorKind));
         row.textContent = parts.join(' · '); box.appendChild(row);
+        if (id === 'minimax-code') {
+          const pools = Array.isArray(allowance.modelPools) ? allowance.modelPools : [];
+          pools.forEach(pool => {
+            if (!pool || typeof pool.name !== 'string') return;
+            const details = (Array.isArray(pool.windows) ? pool.windows : []).map(w => {
+              if (!w) return '';
+              const amount = billingAllowanceText(w, 'percent');
+              if (!amount) return '';
+              const total = billingNumber(w.total);
+              const count = total !== null && billingNumber(w.remaining) !== null ? ' / ' + total + ' ' + billingUnit(w.unit) : '';
+              const pct = billingNumber(w.remainingPercent);
+              const reset = w.resetAt ? new Date(w.resetAt) : null;
+              const resetText = reset && !isNaN(reset.getTime()) ? ' · 重置 ' + reset.toLocaleString() : '';
+              return String(w.name || '额度') + ' 剩 ' + amount + count + (count && pct !== null && pct <= 100 ? '（' + pct + '%）' : '') + resetText;
+            }).filter(Boolean);
+            if (!details.length) return;
+            const line = document.createElement('p');
+            line.textContent = String(a.name || a.accountId) + ' · 模型专属额度 · ' + pool.name + ' · ' + details.join(' · ');
+            box.appendChild(line);
+          });
+        }
       });
     }
     function renderProviderList() {
@@ -4814,7 +5550,7 @@
         const text = document.createElement('span'), title = document.createElement('strong'), small = document.createElement('small'), c = providerCounts(p);
         title.textContent = p.name || p.id;
         const counts = []; if (c.accounts) counts.push(c.accounts + ' 个账号'); if (c.keys) counts.push(c.keys + ' 把 Key'); counts.push(c.models + ' 个模型');
-        small.textContent = counts.join(' · ') + (providerUnknown.has(p.id) ? ' · 状态待确认' : ' · 未验证');
+        small.textContent = counts.join(' · ') + (providerUnknown.has(p.id) ? ' · 状态待确认' : '');
         text.appendChild(title); text.appendChild(small); b.appendChild(text); wrap.appendChild(b);
         const sw = document.createElement('input'); sw.type = 'checkbox'; sw.className = 'provider-switch'; sw.setAttribute('role','switch'); sw.setAttribute('aria-label', (p.name || p.id) + '启用'); sw.dataset.providerFocus = 'switch:' + p.id; sw.checked = providerEnabled(p); sw.disabled = providerWrites.has(p.id) || providerUnknown.has(p.id); sw.onchange = () => setProviderEnabled(p.id, sw.checked); wrap.appendChild(sw); parent.appendChild(wrap);
       }
@@ -5030,7 +5766,7 @@
       const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null;
     }
     function billingUnit(unit) {
-      const labels = {gift_units:'赠送单位', USD:'美元', usd:'美元', credits:'积分', request:'次数', requests:'次数'};
+      const labels = {gift_units:'赠送单位', USD:'美元', usd:'美元', credits:'积分', request:'次数', requests:'次数', count:'个'};
       return labels[unit] || (typeof unit === 'string' ? unit : '');
     }
     function billingAllowanceText(allowance, fallbackUnit) {
@@ -5426,6 +6162,24 @@
     let groupDraft = null;         // 编辑中的组副本
     let groupsSig = '';            // 数据指纹，避免每 3 秒重建 DOM 丢点击
 
+    /**
+     * 路由组卡片的唯一转义入口（目标 / 组名 / 组 ID / 供应商名 / 模型 ID）。
+     *
+     * 为什么不用全局 esc()：tests/dashboard-usage-routing.cjs 会把
+     * 「let groupDraft」到「async function saveProviders」之间的代码单独载入执行，
+     * 那个作用域里没有 esc()，直接调用会 ReferenceError。所以这里自带实现。
+     * 规则必须与 esc() 完全一致（& < > " '），由 scripts/beta-dashboard-xss.cjs
+     * 对同一批合成 payload 断言两者输出逐字相同，改了一边另一边会红。
+     */
+    function groupEsc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function groupsFingerprint() {
       try {
         return JSON.stringify((appConfig && appConfig.groups) || []);
@@ -5518,7 +6272,7 @@
             + '<span style="font-size:0.68rem;color:var(--text-muted);width:16px;flex-shrink:0;">' + (ti + 1) + '</span>'
             + '<span style="flex:1;min-width:0;font-size:0.76rem;font-family:ui-monospace,monospace;'
             + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-            + (alive ? '' : 'opacity:0.45;') + '" title="' + t + '">' + t + '</span>'
+            + (alive ? '' : 'opacity:0.45;') + '" title="' + groupEsc(t) + '">' + groupEsc(t) + '</span>'
             + (alive ? '' : '<span class="badge badge-muted" style="font-size:0.6rem;">账号掉了</span>')
             + (g.strategy === 'manual'
               ? '<span data-action="pick" data-g="' + gi + '" data-i="' + ti + '" role="button" '
@@ -5540,20 +6294,20 @@
           let inner = '';
           o.models.forEach(m => {
             if (g.targets.indexOf(m) >= 0) return;   // 已经在组里就不重复列
-            inner += '<option value="' + m + '">' + m + '</option>';
+            inner += '<option value="' + groupEsc(m) + '">' + groupEsc(m) + '</option>';
           });
-          if (inner) opts += '<optgroup label="' + o.name + '">' + inner + '</optgroup>';
+          if (inner) opts += '<optgroup label="' + groupEsc(o.name) + '">' + inner + '</optgroup>';
         });
 
         card.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
-          + '<input data-action="rename" data-g="' + gi + '" value="' + (g.name || '').replace(/"/g, '&quot;') + '" '
+          + '<input data-action="rename" data-g="' + gi + '" value="' + groupEsc(g.name || '') + '" '
           + 'style="flex:1;min-width:0;background:transparent;border:none;border-bottom:1px dashed rgba(255,255,255,0.15);'
           + 'color:#fff;font-size:0.9rem;font-weight:600;padding:4px 2px;outline:none;">'
           + '<span data-action="delgroup" data-g="' + gi + '" role="button" '
           + 'style="cursor:pointer;font-size:0.7rem;color:#f87171;padding:3px 8px;border:1px solid rgba(239,68,68,0.3);border-radius:9px;">删除组</span>'
           + '</div>'
           + '<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:9px;">'
-          + '客户端填 <code style="color:#a78bfa;">group/' + g.id + '</code>'
+          + '客户端填 <code style="color:#a78bfa;">group/' + groupEsc(g.id) + '</code>'
           + ' · ' + g.targets.length + ' 个目标</div>'
           + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
           + '<span style="font-size:0.72rem;color:var(--text-muted);flex-shrink:0;">策略</span>'
@@ -5809,29 +6563,358 @@
         return;
       }
 
-      // 已经设置过，但口令还是默认的：给一条可关的提示，不阻断使用
-      if (d.authKeyIsDefault) showWeakKeyBanner();
+      // 已经设置过（setup.done）但口令仍是随安装包发布的公开默认值：
+      // 后端已对非回环请求返回 403 legacy_default_auth_key，这里必须给出可见的迁移入口。
+      if (d.authKeyMigrationRequired || d.authKeyIsDefault) showWeakKeyBanner();
     }
+
+    // 旧装机升级迁移卡片：只改 server.authKey，不碰供应商账号、登录态、路由或其它配置。
+    let weakKeyBusy = false;
 
     function showWeakKeyBanner() {
       if (document.getElementById('weakkey-banner')) return;
       const bar = document.createElement('div');
       bar.id = 'weakkey-banner';
       bar.className = 'warn-bar';
+      bar.setAttribute('data-migration', 'legacy-default-auth-key');
       bar.style.cssText = 'margin:0 0 14px;padding:14px 16px;border-radius:20px;'
-        + 'background:#fdf6e9;border:1px solid #f4e3c3;'
-        + 'color:#7a5410;font-size:13px;line-height:1.65;display:flex;gap:10px;'
-        + 'justify-content:space-between;align-items:flex-start;';
-      bar.innerHTML = '<div>口令仍是默认的 <code>magpie</code>，而网关监听 0.0.0.0，'
-        + '同一 WiFi 下任何人都能刷你的额度。去「服务地址与 API 密钥」换一个。</div>';
-      const close = document.createElement('span');
-      close.innerText = '✕';
-      close.style.cssText = 'cursor:pointer;font-weight:700;flex-shrink:0;';
-      close.onclick = () => bar.remove();
-      bar.appendChild(close);
+        + 'background:#fdeee8;border:1px solid #eec2ae;border-left:4px solid #d9480f;'
+        + 'color:#7a2e10;font-size:13px;line-height:1.65;';
+      const head = document.createElement('div');
+      head.style.cssText = 'font-weight:700;font-size:13.5px;margin-bottom:6px;';
+      head.innerText = '⚠️ 口令还是公开默认值 magpie，局域网/远程访问已被网关拒绝';
+      const body = document.createElement('div');
+      body.innerHTML = '这台手机（本机 127.0.0.1）仍然能用；<b>电脑和其它设备用 magpie 已经连不上</b>'
+        + '（HTTP 403 <code>legacy_default_auth_key</code>）。下面只改网关口令，'
+        + '供应商账号、已登录状态和路由配置都不会动。';
+      const steps = document.createElement('div');
+      steps.style.cssText = 'margin-top:8px;';
+      steps.innerHTML = '①「生成」新口令 → ②「复制」留底 → ③「应用并保存」。'
+        + '应用后请到<b>电脑端把客户端的 API 密钥换成新口令</b>（地址和端口不变），否则电脑仍会 401。';
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;';
+      const input = document.createElement('input');
+      input.id = 'weakkey-new';
+      input.type = 'text';
+      input.readOnly = true;
+      input.value = '';
+      input.placeholder = '点「生成」得到新口令';
+      input.style.cssText = 'flex:1;min-width:180px;padding:8px 11px;border-radius:10px;'
+        + 'border:1px solid #e2b8a4;background:#fff;color:#7a2e10;font-size:12.5px;'
+        + 'font-family:ui-monospace,SFMono-Regular,monospace;';
+      row.appendChild(input);
+      row.appendChild(weakKeyButton('weakkey-gen', '🎲 生成', '#34d399', 'rgba(16,185,129,0.3)', weakKeyRegen));
+      row.appendChild(weakKeyButton('weakkey-copy', '📋 复制', '#38bdf8', 'rgba(56,189,248,0.3)', weakKeyCopy));
+      row.appendChild(weakKeyButton('weakkey-apply', '✅ 应用并保存', '#c7d2fe', 'rgba(99,102,241,0.5)', weakKeyApply));
+      // 只在「保存结果未确认」时出现：给一条只读的核实通道，避免用户靠重复提交试出来。
+      const reread = weakKeyButton('weakkey-reread', '🔄 重新读取当前口令', '#a5b4fc', 'rgba(165,180,252,0.45)', weakKeyReread);
+      reread.style.display = 'none';
+      row.appendChild(reread);
+      const status = document.createElement('div');
+      status.id = 'weakkey-status';
+      status.style.cssText = 'margin-top:8px;font-size:12px;';
+
+      [head, body, steps, row, status].forEach(el => bar.appendChild(el));
       const host = document.getElementById('setup-anchor') || document.body;
       if (host.firstChild) host.insertBefore(bar, host.firstChild);
       else host.appendChild(bar);
+      // 卡片被重建时（例如权限页返回后重绘）要沿用未确认状态，否则按钮会假装可以再提交。
+      weakKeyUnknownLock(!!weakKeyUnknown);
+    }
+
+    function weakKeyButton(id, label, color, border, handler) {
+      const b = document.createElement('button');
+      b.id = id;
+      b.className = 'btn btn-outline';
+      b.innerText = label;
+      b.style.cssText = 'flex-shrink:0;padding:8px 12px;border-radius:10px;font-size:12.5px;'
+        + 'color:' + color + ';border:1px solid ' + border + ';';
+      b.onclick = handler;
+      return b;
+    }
+
+    function weakKeyStatus(msg) {
+      const el = document.getElementById('weakkey-status');
+      if (el) el.innerText = msg || '';
+    }
+
+    function weakKeyButtons(busy) {
+      ['weakkey-gen', 'weakkey-copy', 'weakkey-apply', 'weakkey-reread'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = busy;
+      });
+    }
+
+    // 上一次写入的结果未确认时记住“提交时的口令”，在核实之前不允许再提交，
+    // 也不允许“生成”把它覆盖掉——那是唯一能和网关当前值比对的依据。
+    // watched 标记这条写请求是“超时”结束的：它可能稍后才落地；late 保存它真正的结局。
+    // 只要 late 还是 null，它就仍可能改写网关，任何一次只读复核都只是“此刻的样子”。
+    let weakKeyUnknown = null;
+
+    // 未确认期间锁住“生成”和“应用”，但保留“复制”：用户要能先把这个可能已经落地的口令留底。
+    function weakKeyUnknownLock(locked) {
+      const reread = document.getElementById('weakkey-reread');
+      if (reread) reread.style.display = locked ? '' : 'none';
+      const apply = document.getElementById('weakkey-apply');
+      if (apply) apply.disabled = !!locked;
+      const gen = document.getElementById('weakkey-gen');
+      if (gen) gen.disabled = !!locked;
+    }
+
+    // 授权链按 GatewayServer / GatewayAccessPolicy / LocalBridge 实读复核：
+    //  · /api/* 只认管理凭据（X-All-In-Management，或 Bearer <管理凭据>），与 server.authKey 无关；
+    //  · 管理凭据不通过或设置未完成时，网关在读 body、进 handler 之前就回 401/403，handler 不会执行；
+    //  · 所以这些 4xx 能证明“这次没有写入”，但反过来 401 不能证明新口令是否生效——它说的是管理授权；
+    //  · 因此提示里绝不把管理授权失败和口令状态混为一谈，也不复述网关那句容易误解的“需要网关口令”。
+    function weakKeyRefusalText(r) {
+      if (!r) return '网关拒绝';
+      if (r.status === 401) return '管理授权未通过（HTTP 401）：这条管理通道只认管理凭据，不认网关口令';
+      if (r.status === 404 || r.status === 405) return '网关没有这个写入接口（HTTP ' + r.status + '）';
+      return r.message || ('HTTP ' + r.status);
+    }
+
+    // 只有“网关自己的错误信封”才算确定拒绝；代理页、门户跳转、HTML 4xx 都没有资格。
+    function weakKeyRefusal(res, data) {
+      if (!res || res.ok !== false) return null;
+      const status = res.status;
+      if (!(status === 400 || status === 401 || status === 403 || status === 404 || status === 405)) return null;
+      const err = data && typeof data === 'object' ? data.error : null;
+      if (err && typeof err === 'object' && typeof err.message === 'string' && err.message.trim()) {
+        return { status: status, code: typeof err.code === 'string' ? err.code : '', message: err.message.trim() };
+      }
+      // unauthorizedResponse 的信封是 {"error":"…","hint":"…"}
+      if (typeof err === 'string' && err.trim() && data && typeof data.hint === 'string') {
+        return { status: status, code: '', message: '' };
+      }
+      return null;
+    }
+
+    // 没有回音就是“不知道”：不能一直挂着把整张卡片锁死，也不能当成保存失败。
+    // （测试会把它调小，不必真等 20 秒。）
+    let WEAK_KEY_TIMEOUT_MS = 20000;
+    // onLate 只对“超时”生效：超时的写请求可能稍后才落地，必须继续盯着它，直到它真正结束
+    // （拿到回包或连接关闭）。在它结束之前，任何一次 GET 都可能被它随后的写入作废。
+    function weakKeyRace(work, ms, onLate) {
+      let timer = null, settled = false;
+      const guarded = new Promise(resolve => {
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve({ timeout: true });
+        }, ms);
+      });
+      // 超时后原请求仍可能落地：用 then 兜住它，既不会产生未处理的 rejection，也不影响结论。
+      const boxed = Promise.resolve().then(work).then(value => ({ value: value }), error => ({ error: error }));
+      return Promise.race([boxed, guarded]).then(out => {
+        clearTimeout(timer);
+        settled = true;
+        if (out.timeout && typeof onLate === 'function') {
+          boxed.then(late => { try { onLate(late); } catch (e) {} });
+        }
+        return out;
+      });
+    }
+
+    // token 只在“写请求超时、仍可能迟到落地”时才带上；断连、5xx、回显不符都说明那条请求已经结束，
+    // 之后不会再有写入到达，只读复核可以直接下结论。
+    function weakKeyUncertain(next, reason, token) {
+      weakKeyUnknown = token && token.key === next ? token : { key: next, watched: false, late: null, lateVerdict: '' };
+      weakKeyUnknownLock(true);
+      weakKeyStatus('保存结果未确认：' + (reason || '网关没有给出明确答复')
+        + '。这次提交可能已经写入网关，既不能当作口令没变，也不能重复提交；'
+        + '请点「🔄 重新读取当前口令」或刷新面板，读到网关当前口令后再决定下一步。');
+      // 万一那条请求在状态落地之前就回来了，立刻按它的结局收敛，别把用户留在半空。
+      if (weakKeyUnknown.late) weakKeyLateSettle(weakKeyUnknown).catch(() => {});
+    }
+
+    // 迟到的回包就是那条“超时后仍可能落地”的写请求真正的结局：
+    //  · 明确成功且回显就是提交的口令 → 直接确认（不需要再读一次，更不能重发一次）；
+    //  · 其它结局 → 它已经不会再改动网关，但结果仍未知，保持锁，只允许重新读取。
+    async function weakKeyLateSettle(token) {
+      if (!token || !token.late) return;
+      if (!token.lateVerdict) {
+        token.lateVerdict = 'pending';
+        let verdict = 'unknown';
+        try {
+          const late = token.late;
+          if (!late.timeout && !late.error) {
+            const res = late.value;
+            let data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+            if (res && res.ok === true && data && data.ok === true && data.authKey === token.key) verdict = 'applied';
+          }
+        } catch (e) { verdict = 'unknown'; }
+        token.lateVerdict = verdict;
+      }
+      if (weakKeyUnknown !== token) return;
+      if (token.lateVerdict === 'pending') return;
+      if (token.lateVerdict === 'applied') { weakKeyAdopt(token.key); weakKeyApplied(token.key); return; }
+      weakKeyUnknownLock(true);
+      weakKeyStatus('上一次的保存请求现在才结束，结果仍未确认。它已经不会再改动网关，'
+        + '现在可以点「🔄 重新读取当前口令」核对；在读到之前仍然不要重复提交。');
+    }
+
+    // 只有拿到确定证据时才切换本机口令：确定成功的回包（含迟到的回包），或只读核实到的当前值。
+    function weakKeyAdopt(key) {
+      weakKeyUnknown = null;
+      weakKeyUnknownLock(false);
+      authKeyRevision++;
+      currentAuthKey = key;
+      AUTH_KEY = key;
+      authKeyKnown = true;
+      try { sessionStorage.setItem('magpieAuthKey', AUTH_KEY); } catch (e) {}
+      try { renderCredentials(); } catch (e) {}
+    }
+
+    // 只读核实：GET /api/server-key（管理凭据授权，不写任何配置）。
+    // 保守前提：超时的那条写请求可能还在路上，网关的值随时会被它改写。它还没结束时，
+    // 这次读到的只是“此刻的值”——既不据此解锁提交，也不据此切换本机口令。
+    async function weakKeyReread() {
+      if (weakKeyBusy) return;
+      const pending = weakKeyUnknown;
+      const stillOpen = !!(pending && pending.watched && !pending.late);
+      weakKeyBusy = true;
+      weakKeyButtons(true);
+      weakKeyStatus('正在读取网关当前口令…');
+      let current = null, failed = '';
+      const out = await weakKeyRace(() => fetch(API_BASE + '/api/server-key', { cache: 'no-store' }), WEAK_KEY_TIMEOUT_MS);
+      if (out.timeout) failed = '读取超时（没有回音）';
+      else if (out.error) failed = (out.error && out.error.message) || '连接失败';
+      else {
+        const res = out.value;
+        let data = null, parsed = true;
+        try { data = await res.json(); } catch (e) { parsed = false; }
+        if (res.ok && data && data.ok && typeof data.authKey === 'string') current = data.authKey;
+        else if (!parsed) failed = '回包无法解析（HTTP ' + res.status + '）';
+        else if (res.status === 401 || res.status === 403) failed = '管理授权未通过（HTTP ' + res.status + '），这条通道读不到口令';
+        else failed = (data && data.error && (data.error.message || (typeof data.error === 'string' ? data.error : ''))) || ('HTTP ' + res.status);
+      }
+      weakKeyBusy = false;
+      weakKeyButtons(false);
+      // 这次读取期间，那条迟到的写请求可能已经回来并完成确认：卡片已经换成“已保存”，这里不能再动 DOM。
+      if (pending && weakKeyUnknown !== pending) return;
+      if (current === null) {
+        weakKeyUnknownLock(true);
+        weakKeyStatus('重新读取失败：' + failed + '。当前口令仍未确认，仍不允许重复提交。');
+        return;
+      }
+      if (stillOpen && !pending.late) {
+        weakKeyUnknownLock(true);
+        weakKeyStatus('已读到网关当前口令' + (current === pending.key ? '，与待核对的口令相同' : '（与待核对的口令不同）')
+          + '，但上一次的保存请求仍可能在途：它稍后落地就会把网关改成待核对的口令，所以这次读取不能当结论，'
+          + '也不会解锁提交。等那条请求结束（卡片会自动提示）或刷新面板后再核对；在此之前不要重复提交。');
+        return;
+      }
+      if (stillOpen) {
+        weakKeyUnknownLock(true);
+        weakKeyStatus('上一次的保存请求刚刚结束，结果仍未确认；它有可能是在这次读取之后才落地的，'
+          + '所以这次读到的值暂不作结论。请再点一次「🔄 重新读取当前口令」；在此之前不要重复提交。');
+        return;
+      }
+      weakKeyAdopt(current);
+      if (pending && current === pending.key) { weakKeyApplied(current); return; }
+      // 读到的是另一个值：只说明“此刻生效的是它”。这既不能证明上次没写入，
+      // 也不能证明写入了（可能写入后又被改过，也可能提交还在路上）。
+      weakKeyStatus('已读取网关当前口令' + (current ? '' : '（当前未设置口令）')
+        + '。它与这次提交的口令不同，但读到的值不能证明上次提交是否写入过；'
+        + '如需改用刚才生成的口令，请重新提交（会再写一次）。若刚才保存很慢，建议稍后刷新面板再核对一次。');
+    }
+
+    function weakKeyRegen() {
+      if (weakKeyBusy) return;
+      if (weakKeyUnknown) {
+        weakKeyStatus('上一次保存结果还没确认，现在生成会覆盖待核对的口令；请先点「🔄 重新读取当前口令」');
+        return;
+      }
+      const input = document.getElementById('weakkey-new');
+      if (input) { input.value = setupGenKey(); input.focus(); }
+      weakKeyStatus('已生成，请先「复制」留底，再「应用并保存」');
+    }
+
+    function weakKeyCopy() {
+      const input = document.getElementById('weakkey-new');
+      const v = (input ? input.value : '').trim();
+      if (!v) { weakKeyStatus('先点「生成」得到新口令'); return; }
+      copyText(v, '✅ 新口令已复制；应用后请把它填到电脑端客户端');
+    }
+
+    // 写口令只有一条路径：POST /api/server-key。结果只能分三种，绝不能混：
+    //  · 确定成功：ok:true 且回显就是这次提交的口令；
+    //  · 确定拒绝：网关自己的错误信封 + 400/401/403/404/405（handler 未执行）——只有这种能说没写入；
+    //  · 结果未知：超时、网络中断、回包不可解析、5xx、回显对不上、其它 4xx。
+    //    这时可能已经写入：不宣称没变、不自动重试、不允许重复提交，只能重新读取或刷新后确认。
+    async function weakKeyApply() {
+      if (weakKeyBusy) return;
+      if (weakKeyUnknown) {
+        weakKeyStatus('上次保存结果未确认，请先点「🔄 重新读取当前口令」确认当前口令后再提交');
+        return;
+      }
+      const input = document.getElementById('weakkey-new');
+      const next = (input ? input.value : '').trim();
+      if (next.length < 8) { weakKeyStatus('口令至少 8 个字符才能用于局域网，请点「生成」'); return; }
+      weakKeyBusy = true;
+      weakKeyButtons(true);
+      weakKeyStatus('正在保存…');
+      let verdict = 'unknown', refusal = null, reason = '';
+      // 这条写请求超时之后仍可能落地：留一个 token，盯住它真正的结局。
+      const token = { key: next, watched: false, late: null, lateVerdict: '' };
+      const out = await weakKeyRace(() => fetch(API_BASE + '/api/server-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authKey: next })
+      }), WEAK_KEY_TIMEOUT_MS, late => { token.late = late || { error: true }; weakKeyLateSettle(token).catch(() => {}); });
+      if (out.timeout) {
+        token.watched = true;
+        reason = '提交后 ' + Math.round(WEAK_KEY_TIMEOUT_MS / 1000) + ' 秒没有回音，写入与否未知';
+      } else if (out.error) {
+        reason = '网络请求中断（' + ((out.error && out.error.message) || '连接失败') + '）';
+      } else {
+        const res = out.value;
+        let data = null, parsed = true;
+        try { data = await res.json(); } catch (e) { parsed = false; }
+        refusal = weakKeyRefusal(res, data);
+        if (res.ok && data && data.ok === true && data.authKey === next) verdict = 'applied';
+        else if (refusal) verdict = 'refused';
+        else if (!parsed) reason = '网关回包无法解析（HTTP ' + res.status + '）';
+        else if (res.ok && data && data.ok === true) reason = '服务端回显的口令与提交的不一致';
+        else reason = '网关没有确认这次修改（HTTP ' + res.status + '）';
+      }
+      weakKeyBusy = false;
+      weakKeyButtons(false);
+      if (verdict === 'refused') {
+        weakKeyUnknownLock(false);
+        weakKeyStatus('保存失败：' + weakKeyRefusalText(refusal)
+          + '；这次请求没有执行，网关口令没有变化' + (authKeyKnown ? '，原口令仍然有效' : ''));
+        return;
+      }
+      if (verdict !== 'applied') { weakKeyUncertain(next, reason, token); return; }
+      weakKeyAdopt(next);
+      weakKeyApplied(next);
+    }
+
+    function weakKeyApplied(key) {
+      const bar = document.getElementById('weakkey-banner');
+      if (!bar) return;
+      bar.style.background = '#eef8f2';
+      bar.style.borderColor = '#b7e3c9';
+      bar.style.borderLeftColor = '#0f9d58';
+      bar.style.color = '#14532d';
+      bar.innerHTML = '<div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">'
+        + '✅ 新口令已保存，本机已自动切换</div>'
+        + '<div>局域网/远程现在要用新口令。请到<b>电脑端把客户端的 API 密钥改成下面这串</b>'
+        + '（地址和端口不变），否则电脑仍然是 401。</div>';
+      const line = document.createElement('div');
+      line.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;';
+      const code = document.createElement('code');
+      code.id = 'weakkey-applied-key';
+      code.textContent = key;
+      code.style.cssText = 'flex:1;min-width:0;word-break:break-all;padding:8px 11px;'
+        + 'border-radius:10px;background:#fff;border:1px solid #b7e3c9;font-size:12.5px;';
+      line.appendChild(code);
+      line.appendChild(weakKeyButton('weakkey-applied-copy', '📋 复制新口令',
+        '#34d399', 'rgba(16,185,129,0.45)', () => copyText(key, '✅ 新口令已复制')));
+      bar.appendChild(line);
     }
 
     function openSetupWizard(existingKey) {
@@ -6198,7 +7281,7 @@
         showToast('✅ 设置完成');
         try { renderCredentials(); } catch (e) {}
         try { loadConfig(); } catch (e) {}
-        if (d.authKeyIsDefault) showWeakKeyBanner();
+        if (d.authKeyMigrationRequired || d.authKeyIsDefault) showWeakKeyBanner();
       } catch (e) {
         showToast('保存失败：' + e.message);
       } finally {
@@ -6408,7 +7491,7 @@
         const d=await r.json(); if(rev!==quirksReadRevision)return;
         if(d.loadError || typeof d.version!=='string' || !Number.isInteger(d.ruleCount))throw Error('内置规则未加载，保留原兼容处理');
         const update=d.update||{}, source=({'builtin':'内置','verified-cache':'已验证缓存','verified-update':'已验证更新'})[d.source]||'未知来源';
-        const results={disabled:'可信分发未激活',unsupported:'此 Android 版本不支持规则更新',configuration_invalid:'可信配置无效，更新已禁用',ready:'尚未检查',cache_restored:'已恢复缓存',cache_invalid:'缓存无效，保留内置规则',builtin_newer:'当前内置规则较新，暂无可用更新',newer_local:'当前规则较新，暂无可用更新',updated:'更新成功',unchanged:'规则无变化',http_error:'服务器拒绝或重定向，保留现有规则',invalid_response:'响应无效，保留现有规则',failed:'检查失败，保留现有规则',timeout:'检查超时，保留现有规则',busy:'前次检查尚未结束',network_unavailable:'网络安全状态无法确认',retired:'服务已停止'};
+        const results={disabled:'可信分发未激活',unsupported:'此 Android 版本不支持规则更新',configuration_invalid:'可信配置无效，更新已禁用',ready:'尚未检查',cache_restored:'已恢复缓存',cache_invalid:'缓存无效，保留内置规则',builtin_newer:'当前内置规则较新，暂无可用更新',newer_local:'当前规则较新，暂无可用更新',updated:'更新成功',unchanged:'规则无变化',http_error:'服务器拒绝或重定向，保留现有规则',invalid_response:'响应无效，保留现有规则',failed:'检查失败，保留现有规则',timeout:'检查超时，保留现有规则',interrupted:'检查被中断，保留现有规则',busy:'前次检查尚未结束',network_unavailable:'网络安全状态无法确认',retired:'服务已停止'};
         quirksEnabled=update.enabled===true; quirksUnknown=false;
         node.textContent=source+'版本 '+d.version+' · '+d.ruleCount+' 条精确规则 · '+(results[update.result]||'状态未知')+' · 请求期间固定快照';
       } catch(e) { if(rev===quirksReadRevision) {quirksEnabled=false;if(node)node.textContent='读取失败：'+e.message;} }
@@ -6452,7 +7535,13 @@
       try { loadAuthKey(); } catch (e) {}
       // 首启向导：口令 → 权限 → 保活。API 不通时自动跳过，不会把面板锁死
       try { checkSetup(); } catch (e) {}
-      setInterval(() => {
+      // Slow the entire access-page polling bundle, not just its model request.
+      function dashboardPollDelay() {
+        return document.hidden || gatewayAccessVisible() ? GATEWAY_ACCESS_POLL_MS : 3000;
+      }
+      function pollDashboard() {
+        try {
+          if (document.hidden) return;
         const running = queryGatewayState();
         if (!running) {
           // 自愈探测：即使当前显示关闭，也定期探测端口，服务一旦运行立即自动唤醒并刷新！
@@ -6468,7 +7557,10 @@
         loadStats();
         loadConfig();
         if (insightVisible()) refreshInsightData();
-      }, 3000);
+        if (gatewayAccessVisible()) refreshGatewayAccess(false);
+        } finally { setTimeout(pollDashboard, dashboardPollDelay()); }
+      }
+      setTimeout(pollDashboard, dashboardPollDelay());
     });
 
     let inAppPollTimer = null;
@@ -6881,6 +7973,43 @@
       return parts.join(' · ');
     }
 
+    /**
+     * Qoder 排队回包：供应商把请求排进队列，既没开始推理，也没拒凭据。
+     *
+     * 为什么单独认：/api/test-model 实测一次排队回包长这样（qoder_cn/fast、lmodel、
+     * qmodel_38max 三个模型同一形状）——
+     *   statusCode 503、errorKind "schema"、failureLayer "inference"、
+     *   failureLabel "回包结构认不出"、retryAfter "60"、executionUnknown true、
+     *   error "Qoder queued the request; try again later"
+     * 排队回包里没有推理正文，网关只能按「认不出回包」记账；面板照原样渲染，
+     * 用户看到的就是一句「失败」，很容易去重登账号或换 Key —— 而这次其实什么都没坏。
+     *
+     * 只认这一种确定语义，三个证据同时成立才算：provider/model 属于 qoder、
+     * 原文里确实有排队字样、状态码是 503。任何一条对不上就返回 null，
+     * 继续走原来的通用渲染：登录失效、限流、额度不足、协议变化都不能被说成排队。
+     */
+    function modelPingQueueNotice(result) {
+      result = result || {};
+      if (result.ok) return null;
+      const provider = result.provider == null ? '' : String(result.provider);
+      const model = result.model == null ? '' : String(result.model);
+      if (!/^qoder/i.test(provider) && !/^qoder[\/_-]/i.test(model)) return null;
+      const official = errText(result.error, '');
+      if (!/\bqueued\b/i.test(official) && official.indexOf('排队') < 0) return null;
+      if (Number(result.statusCode) !== 503) return null;
+      // 等待秒数只读网关给的值；读不出来就说不知道，不替供应商编一个数字。
+      const raw = result.retryAfter;
+      const parsed = (raw == null || raw === '' || !isFinite(Number(raw))) ? 0 : Number(raw);
+      const seconds = parsed > 0 ? parsed : 0;
+      return {
+        provider: provider || 'qoder',
+        official: official,
+        waitSeconds: seconds,
+        waitText: seconds > 0 ? '约 ' + seconds + ' 秒后再测' : '供应商这次没给等待秒数，稍后再测',
+        label: [result.failureLayerLabel, result.failureLabel].filter(Boolean).join(' · ')
+      };
+    }
+
     async function executeModelPingTest(targetModel, quiet) {
       const model = targetModel;
       if (!model) return false;
@@ -6932,6 +8061,32 @@
           }
           if (!quiet) showToast('✅ ' + model + ' 连通正常 (' + data.latencyMs + 'ms)');
           return true;
+        }
+
+        // Qoder 排队不是失败、更不是登录失败：先按供应商的排队语义说清楚，
+        // 只有排队证据不成立时才落到下面那条通用失败渲染。
+        const queue = modelPingQueueNotice(data);
+        if (queue) {
+          if (status) status.innerHTML = '<span style="color:#fbbf24;">⏸ ' + escapeHtml(model)
+            + ' · 供应商排队中（不是登录失败） · ' + escapeHtml(queue.waitText) + '</span>';
+          if (out) {
+            out.style.background = 'rgba(251, 191, 36, 0.10)';
+            out.style.border = '1px solid rgba(251,191,36,0.45)';
+            out.style.color = '#fbbf24';
+            out.innerHTML = '<b>⏸ ' + escapeHtml(model) + ' 被供应商排进队列</b>'
+              + (data.latencyMs != null ? ' · ' + escapeHtml(data.latencyMs) + ' ms' : '')
+              + '<br><span style="font-size:0.78rem;color:var(--text);">这不是登录失败：凭据没被拒，不需要重登账号，也不需要换 Key；'
+              + escapeHtml(queue.waitText) + '。</span>'
+              + '<br><code style="word-break:break-all;">' + escapeHtml(modelPingFailureText(data)) + '</code>'
+              + '<br><span style="font-size:0.74rem;color:var(--text-muted);">排队回包里没有推理正文，网关才把它记成「'
+              + escapeHtml(queue.label || '未分层') + '」；这是排队回包的形状，不代表供应商改了协议。</span>'
+              + '<br><span style="font-size:0.74rem;color:var(--text);">排队只是供应商的排期，不能据此判定这个模型可用或不可用。</span>'
+              + (data.executionUnknown === true
+                  ? '<br><span style="font-size:0.74rem;color:#fbbf24;">网关把这次记为执行状态未知（没拿到可判读结果）：先别连续重放，过了等待时间再测一次。</span>' : '')
+              + (data.hint ? '<br><span style="font-size:0.74rem;color:var(--text-muted);">' + escapeHtml(data.hint) + '</span>' : '');
+          }
+          if (!quiet) showToast('⏸ ' + model + ' 供应商排队中（不是登录失败）');
+          return false;
         }
 
         const err = modelPingFailureText(data);
@@ -7433,7 +8588,7 @@
       const body = document.getElementById('dup-account-body');
       if (body) {
         body.innerHTML = [
-          '【<b style="color:#fff;">' + pName + '</b>】池内已经有同名同账号 <b style="color:#fbbf24;">' + who + '</b> 了'
+          '【<b style="color:#fff;">' + esc(pName) + '</b>】池内已经有同名同账号 <b style="color:#fbbf24;">' + esc(who) + '</b> 了'
             + (when ? '（入池时间 ' + when + '）' : '') + '。',
           '<div style="margin-top:8px; color:var(--text-muted); font-size:0.78rem;">为避免同一个账号被重复占用配额，本次没有再次加入。如果确认要强行再添加一遍，请点「仍然添加」。</div>'
         ].join('');
@@ -7626,8 +8781,112 @@
           '  <button class="btn btn-outline" style="color:#ef4444; border-color:rgba(239,68,68,0.35); background:rgba(239,68,68,0.08); padding:5px 12px; font-size:0.75rem; border-radius:16px;" onclick="removeProviderAccount(\'' + jsAttr(providerId) + '\', \'' + jsAttr(acc.id) + '\')">🗑️ 移除</button>',
           '</div>'
         ].join('');
+        if (['raccoon','loomy'].includes(providerId) && acc.id && acc.enabled !== false && !acc.off) addAccountOperations(item, providerId, acc.id);
         listEl.appendChild(item);
       });
+    }
+
+    // Account operations: all results are scoped to the selected account and rendered as text.
+    function addAccountOperations(item, provider, accountId) {
+      item.style.flexWrap = 'wrap';
+      const area = document.createElement('div'); area.style = 'flex-basis:100%;font-size:0.75rem;color:var(--text-muted);';
+      const note = document.createElement('div');
+      note.textContent = provider === 'raccoon' ? '余额查询在回退时可能触发每日赠送。首登奖励仅可尝试一次，结果可能未知。' : '余额查询与每日签到针对当前账号。';
+      area.appendChild(note);
+      const status = document.createElement('div'); status.setAttribute('role','status'); status.style = 'margin-top:6px;overflow-wrap:anywhere;';
+      const buttons = [];
+      function add(label, action) {
+        const b = document.createElement('button'); b.className = 'btn btn-outline'; b.textContent = label; b.style = 'margin:6px 6px 0 0;font-size:0.75rem;';
+        b.onclick = async () => {
+          if (action === 'onboarding' && !confirm('首登奖励只能尝试一次，即使请求失败也可能无法重试。确定领取？')) return;
+          buttons.forEach(x => x.disabled = true); status.textContent = '处理中…';
+          try {
+            const r = await fetch(API_BASE + '/api/account-ops/' + provider + '/' + action, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId})});
+            if (r.status === 403) { status.textContent = '此操作仅限手机本机，请在手机上的 All In 中操作。'; return; }
+            const data = await r.json();
+            if (!r.ok || data.ok !== true || data.accountId !== accountId) {
+              status.textContent = r.status === 403 ? '此操作仅限手机本机，请在手机上的 All In 中操作。' : data.expired ? '登录已失效，请重新登录。' : (r.status === 409 && action === 'onboarding' ? '奖励已尝试或账号已变化，结果可能未知。' : '操作失败，请稍后重试。');
+            } else if (action === 'balance') {
+              if (provider === 'raccoon') status.textContent = typeof data.balance === 'number' && Number.isFinite(data.balance) ? '余额：' + data.balance : '余额暂不可用';
+              else {
+                const w = data.wallet || {}, fields = [['permanent','永久'],['daily','每日'],['dailyLimit','每日上限'],['dailyRemaining','每日剩余'],['dailyUsed','每日已用']];
+                const parts = fields.filter(([k]) => typeof w[k] === 'number' && Number.isFinite(w[k])).map(([k,n]) => n + '：' + w[k]);
+                status.textContent = parts.length ? parts.join(' · ') : '余额暂不可用';
+              }
+            } else if (action === 'onboarding') {
+              const x = data.result || {}; status.textContent = x.settled === true ? (x.granted === true ? '首登奖励已领取' + (typeof x.credit === 'number' && Number.isFinite(x.credit) ? '：' + x.credit : '') : '未领取到首登奖励') : '奖励结果未知，不能再次尝试。';
+            } else {
+              const x = data.result || {}, labels = {claimed:'签到已领取',done:'今日已完成',unknown:'签到结果未知',refreshed:'每日额度已刷新',already:'今日已完成'};
+              status.textContent = labels[x.outcome] || '签到结果未知';
+              if (typeof x.credit === 'number' && Number.isFinite(x.credit)) status.textContent += '：' + x.credit;
+            }
+          } catch (_) { status.textContent = action === 'onboarding' ? '请求失败，奖励结果可能未知，不能再次尝试。' : '请求失败，请稍后重试。'; }
+          finally { buttons.forEach(x => x.disabled = false); }
+        };
+        buttons.push(b); area.appendChild(b);
+      }
+      add('查询余额', 'balance'); add('每日签到', 'checkin');
+      if (provider === 'raccoon') add('领取一次性首登奖励', 'onboarding');
+      area.appendChild(status); item.appendChild(area);
+    }
+
+    function showLoomyLogin() {
+      const overlay = document.createElement('div');
+      overlay.style = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+      const box = document.createElement('div'); box.className = 'card'; box.style = 'width:100%;max-width:380px;padding:20px;';
+      const title = document.createElement('h3'); title.textContent = 'Loomy 短信登录'; box.appendChild(title);
+      const phone = document.createElement('input'); phone.type = 'password'; phone.inputMode = 'tel'; phone.autocomplete = 'off'; phone.placeholder = '手机号'; phone.style = 'width:100%;box-sizing:border-box;margin:6px 0;padding:10px;'; box.appendChild(phone);
+      const code = document.createElement('input'); code.type = 'password'; code.inputMode = 'numeric'; code.autocomplete = 'one-time-code'; code.placeholder = '短信验证码'; code.style = phone.style.cssText; box.appendChild(code);
+      const send = document.createElement('button'); send.className = 'btn btn-outline'; send.textContent = '发送验证码'; box.appendChild(send);
+      const verify = document.createElement('button'); verify.className = 'btn btn-outline'; verify.textContent = '登录'; verify.disabled = true; box.appendChild(verify);
+      const close = document.createElement('button'); close.className = 'btn btn-outline'; close.textContent = '关闭'; box.appendChild(close);
+      const status = document.createElement('div'); status.setAttribute('role','status'); status.style = 'margin-top:10px;'; box.appendChild(status);
+      overlay.appendChild(box); document.body.appendChild(overlay);
+      let flowId = '', busy = false, closed = false;
+      const updateButtons = () => { send.disabled = busy; verify.disabled = busy || !flowId || !code.value.trim(); };
+      const errorText = (d, fallback) => {
+        const error = d && d.error;
+        return (typeof error === 'string' && error) || (error && typeof error.message === 'string' && error.message) || fallback;
+      };
+      const readResult = async r => { try { return await r.json(); } catch (_) { return null; } };
+      code.addEventListener('input', updateButtons);
+      close.onclick = () => { closed = true; flowId = ''; phone.value = ''; code.value = ''; overlay.remove(); };
+      send.onclick = async () => {
+        if (busy) return; busy = true; updateButtons(); status.textContent = '正在发送…';
+        try {
+          const r = await fetch(API_BASE + '/api/account-ops/loomy/send-code', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:phone.value.trim()})});
+          const d = await readResult(r);
+          if (r.status === 403) throw new Error('短信登录仅限手机本机，请在手机上的 All In 中操作。');
+          if (!r.ok || !d || d.ok !== true) throw new Error(errorText(d, '发送失败（HTTP ' + r.status + '），请重试。'));
+          if (typeof d.flowId !== 'string' || !d.flowId.trim()) throw new Error('发送结果无有效流程 ID，请重试。');
+          if (!closed) { flowId = d.flowId; status.textContent = '验证码已发送，五分钟内有效。'; }
+        } catch (e) { if (!closed) status.textContent = (e.message || '发送失败，请重试。') + (flowId ? ' 之前的验证码流程仍可尝试。' : ''); }
+        finally { busy = false; if (!closed) updateButtons(); }
+      };
+      verify.onclick = async () => {
+        if (busy || !flowId || !code.value.trim()) return; busy = true; updateButtons(); status.textContent = '正在登录…';
+        const currentFlow = flowId;
+        try {
+          const r = await fetch(API_BASE + '/api/account-ops/loomy/verify', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({flowId:currentFlow,code:code.value.trim()})});
+          const d = await readResult(r);
+          if (r.status === 403) throw new Error('短信登录仅限手机本机，请在手机上的 All In 中操作。');
+          if (!r.ok || !d || d.ok !== true) {
+            const message = errorText(d, '登录结果未确认（HTTP ' + r.status + '）。');
+            // Structured verify state takes precedence over legacy error wording.
+            if (d && (d.flowExpired === true || d.retryable === false ||
+                (d.flowExpired !== false && d.retryable !== true && (d.stage === 'session' || d.stage === 'save')) ||
+                (d.flowExpired == null && d.retryable == null && !d.stage && message === '登录流程已失效，请重新发送验证码'))) flowId = '';
+            throw new Error(message);
+          }
+          if (typeof d.accountId !== 'string' || !d.accountId.trim()) throw new Error('登录结果缺少账号 ID，请检查账号列表后重试。');
+          const returnToList = !closed;
+          flowId = ''; phone.value = ''; code.value = '';
+          if (returnToList) { closed = true; overlay.remove(); closeAccountModal(); }
+          try { await loadConfig(); refreshProviderBadges(); } catch (_) {}
+          if (returnToList) showProviderView('list');
+        } catch (e) { if (!closed) status.textContent = e.message || '登录结果未确认，请检查账号列表后重试。'; }
+        finally { busy = false; if (!closed) updateButtons(); }
+      };
     }
 
     function closeAccountModal() {

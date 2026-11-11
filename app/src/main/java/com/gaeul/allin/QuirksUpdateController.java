@@ -48,7 +48,15 @@ final class QuirksUpdateController {
     private final int timeoutMs; private final ExecutorService executor;
     private FutureTask<Status> flight; private volatile Status status;
     private volatile Transport active;
-    private long generation; private boolean closed; private volatile boolean activeWork;
+    private long generation; private boolean closed;
+    /**
+     * A flight some check already gave up on: it was cancelled at the deadline and its worker has
+     * not left {@link #download} yet. Until it does, no new download may start — the abandoned
+     * worker is still talking to the network, and letting a second one run beside it is exactly the
+     * double-flight the "busy" answer exists to prevent. Cleared by that worker, under the lock, in
+     * {@link #finishWorker}; never by a waiter.
+     */
+    private FutureTask<Status> abandoned;
     QuirksUpdateController(TrustConfig cfg,File cache,byte[] builtin,int androidApi) throws Exception {
         this(cfg,cache,builtin,androidApi,(deadline,timeout)-> { QuirksHttpsTransport t=new QuirksHttpsTransport(deadline,timeout); return new Transport() { public byte[] fetch(NetworkPolicy.Snapshot p,String u)throws IOException{return t.fetch(p,u);} public void close(){t.close();} }; },15000);
     }
@@ -64,30 +72,102 @@ final class QuirksUpdateController {
     }
     ProviderQuirks.Snapshot snapshot(){return store.snapshot();}
     Status status(){return status;}
+    /**
+     * Answer the caller without ever inventing state. "busy", "interrupted" and "retired" describe
+     * this call only, so they are returned as throwaway values; a reply that mutates {@link #status}
+     * is reserved for an outcome of the work itself. Otherwise a request that merely found the
+     * updater busy would leave that word in the panel after the real check had already finished.
+     *
+     * <p>Concurrent callers join the one download in progress. A caller that arrives after that
+     * download finished — the flight's worker still returning, a few instructions behind — starts
+     * the next download rather than being told the updater is busy: the previous check left no work
+     * running, only bookkeeping. {@link #finishWorker} is what used to create that false window,
+     * because a waiter retired the flight while the worker cleared its own flag afterwards; the
+     * worker now retires the flight itself, so its own completion and the handle disappearing are
+     * one step and half-finished state is not observable.
+     *
+     * <p>"busy" remains for the one case that is not bookkeeping: a flight that timed out. Its
+     * worker can still be inside the network call, and a second download started next to it could
+     * be overtaken by work the caller was already told had failed.
+     */
     Status check() {
         if(!store.enabled()) return status;
         FutureTask<Status> task;
         synchronized(this) {
             if(closed) return new Status(false,"retired",store.snapshot());
-            if(flight==null && activeWork) return failed("busy");
-            if(flight==null) {
-                final NetworkPolicy.Snapshot policy=NetworkPolicy.capture();
-                activeWork=true; final long id=++generation; final long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-                flight=new FutureTask<>(()->download(policy,id,deadline)); final FutureTask<Status> submitted=flight; executor.execute(()->{try{submitted.run();}finally{activeWork=false;}});
-            }
+            if(abandoned!=null) return new Status(true,"busy",store.snapshot());
             task=flight;
+            if(task==null || task.isDone()) {
+                /* Nothing joinable is left: start this call's own download. Cancelled handles only
+                   exist while abandoned is set, so a done handle here is a completed check whose
+                   worker is merely tidying up. */
+                if(task!=null && task.isCancelled()) return new Status(true,"busy",store.snapshot());
+                final NetworkPolicy.Snapshot policy=NetworkPolicy.capture();
+                final long id=++generation;
+                final long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+                final FutureTask<Status> created=new FutureTask<>(()->download(policy,id,deadline));
+                flight=created;
+                try { executor.execute(()->{ try { created.run(); } finally { finishWorker(created); } }); }
+                catch(RuntimeException rejected) {   // no worker will ever run: undo, and say so
+                    if(flight==created) flight=null;
+                    generation++;
+                    return failed("failed");
+                }
+                task=created;
+            }
         }
         try { return task.get(timeoutMs,TimeUnit.MILLISECONDS); }
-        catch(TimeoutException e) { synchronized(this) { if(flight==task) { generation++; task.cancel(true); Transport c=active; if(c!=null)try{c.close();}catch(IOException ignored){} return failed("timeout"); } return status; } }
-        catch(CancellationException e) { return status; }
+        catch(TimeoutException e) {
+            synchronized(this) {
+                /* The deadline and the completion can land together; a finished flight's own answer
+                   is the truth and must not be overwritten with "timeout". */
+                if(task.isDone()) return answerOf(task);
+                if(flight!=task) return status;             // superseded while this call waited
+                generation++;
+                task.cancel(true);
+                /* From here until the worker leaves download(), this controller has work running
+                   that no caller can join, so every other caller is told "busy". */
+                abandoned=task;
+                Transport c=active; if(c!=null)try{c.close();}catch(IOException ignored){}
+                return failed("timeout");
+            }
+        }
+        catch(CancellationException e) {
+            /* Only a cancelled flight ends here, which means some other call gave up on it and its
+               worker may still be running. Report that instead of starting a second download or
+               handing this caller the result of a call it did not make. */
+            synchronized(this) { return closed ? new Status(false,"retired",store.snapshot()) : new Status(true,"busy",store.snapshot()); }
+        }
         catch(InterruptedException e) { Thread.currentThread().interrupt(); return new Status(true,"interrupted",store.snapshot()); }
         catch(ExecutionException e) { return failed("failed"); }
-        finally { synchronized(this) { if(flight==task && task.isDone()) flight=null; } }
     }
+
     void close() {
         Transport connection;
-        synchronized(this) { if(closed)return; closed=true; generation++; if(flight!=null) flight.cancel(true); connection=active; executor.shutdownNow(); status=new Status(false,"retired",store.snapshot()); }
+        synchronized(this) { if(closed)return; closed=true; generation++; connection=active;
+            /* Publish the retired state before cancelling: cancel() wakes a waiting check() at once,
+               and that caller must not be able to observe the pre-close status. */
+            status=new Status(false,"retired",store.snapshot());
+            if(flight!=null) flight.cancel(true); executor.shutdownNow(); }
         if(connection!=null) try{connection.close();}catch(IOException ignored){}
+    }
+    /**
+     * The worker's own exit, and the only place a flight handle is retired. Doing it here rather
+     * than in a waiter means "the flight completed" and "the handle is gone" happen in one step
+     * under the lock, so no caller can observe the gap between them.
+     */
+    private void finishWorker(FutureTask<Status> task) {
+        synchronized(this) {
+            if(abandoned==task) abandoned=null;
+            if(flight==task) flight=null;
+        }
+    }
+    /** Read a finished flight's own result, for a call that raced its completion. */
+    private Status answerOf(FutureTask<Status> task) {
+        try { return task.get(); }
+        catch(InterruptedException e) { Thread.currentThread().interrupt(); return new Status(true,"interrupted",store.snapshot()); }
+        catch(CancellationException e) { return new Status(true,"busy",store.snapshot()); }
+        catch(ExecutionException e) { return failed("failed"); }
     }
     private Status failed(String result) { Status s=new Status(true,result,store.snapshot()); status=s;return s; }
     private synchronized Status failureFor(long id,String result) {return !closed && id==generation ? failed(result) : new Status(true,"timeout",store.snapshot());}

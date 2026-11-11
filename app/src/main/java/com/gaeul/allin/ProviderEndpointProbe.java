@@ -127,7 +127,7 @@ public final class ProviderEndpointProbe {
             new Endpoint("api", "推理服务", "https://api.hunyuan.cloud.tencent.com/v1/chat/completions", "OPTIONS"),
         });
         catalog.put("loomy", new Endpoint[] {
-            new Endpoint("website", "网页入口（登录未支持，需手动 session）", "https://loomyad.xunfei.cn/", "GET"),
+            new Endpoint("website", "网页入口", "https://loomyad.xunfei.cn/", "GET"),
             new Endpoint("api", "模型 API", "https://loomyad.xunfei.cn/api/v1/chat/completions", "OPTIONS"),
         });
         CATALOG = Collections.unmodifiableMap(catalog);

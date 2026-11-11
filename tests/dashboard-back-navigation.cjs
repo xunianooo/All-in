@@ -12,6 +12,7 @@ const ctx=vm.createContext({window:{},document:{getElementById:id=>nodes[id]},pr
  closeInAppLogin:()=>{closed.push('login');nodes['inapp-login-modal'].style.display='none'},
  closeAccountModal:()=>{closed.push('accounts');nodes['account-manage-modal'].style.display='none'},
  showProviderView:view=>{navigations.push(view);ctx.providerView=view},
+ showGatewayAdvanced:open=>{nodes['gateway-advanced-view'].hidden=!open},
  fetch:()=>{throw Error('back must not make network requests')}});
 vm.runInContext(html.slice(start,end),ctx);
 assert.equal(ctx.window.allInHandleBack(),false,'root uses native fallback');
@@ -21,6 +22,36 @@ nodes['account-manage-modal'].style.display='flex';assert.equal(ctx.window.allIn
 nodes['account-manage-modal'].style.display='flex';nodes['dup-account-modal'].style.display='flex';assert.equal(ctx.window.allInHandleBack(),true);assert.equal(closed.at(-1),'dup');assert.equal(nodes['account-manage-modal'].style.display,'flex');
 nodes['account-manage-modal'].style.display='none';nodes['inapp-login-modal'].style.display='flex';assert.equal(ctx.window.allInHandleBack(),true);assert.equal(closed.at(-1),'login');
 assert.equal(ctx.window.allInHandleBack(),true);assert.equal(ctx.window.allInHandleBack(),false,'next back at root can leave app');
+nodes['tab-overview']={classList:{contains:()=>true}};
+nodes['gateway-advanced-view']={hidden:false};
+ctx.providerView='list';
+assert.equal(ctx.window.allInHandleBack(),true,'advanced page returns to overview');
+assert.equal(nodes['gateway-advanced-view'].hidden,true);
+assert.equal(ctx.window.allInHandleBack(),false,'overview root delegates to native');
+// Exercise real secondary-page navigation without fetching or saving settings.
+let scrolled=[],focused=0;
+nodes['overview-main-view']={hidden:false};
+nodes['gateway-advanced-heading']={focus:()=>focused++};
+ctx.window.scrollY=420;ctx.window.scrollTo=(...args)=>scrolled.push(args);
+const navStart=html.indexOf('    let gatewayAdvancedScroll = 0;');
+const navEnd=html.indexOf('    function switchTab(',navStart);
+vm.runInContext(html.slice(navStart,navEnd),ctx);
+ctx.showGatewayAdvanced(true);
+assert.equal(nodes['overview-main-view'].hidden,true);
+assert.equal(nodes['gateway-advanced-view'].hidden,false);
+assert.equal(focused,1);
+ctx.showGatewayAdvanced(false);
+assert.equal(nodes['overview-main-view'].hidden,false);
+assert.equal(nodes['gateway-advanced-view'].hidden,true);
+assert.deepEqual(scrolled.at(-1),[0,420],'return restores overview scroll');
+const advancedStart=html.indexOf('<div id="gateway-advanced-view" hidden>');
+const advancedEnd=html.indexOf('</section>',advancedStart);
+for(const card of ['affinity','resilience','outbound']) {
+ const at=html.indexOf('id="card-'+card+'"');
+ assert(at>advancedStart&&at<advancedEnd,card+' is only on the secondary page');
+ assert.equal(html.split('id="card-'+card+'"').length,2,'no duplicate controls');
+}
+nodes['tab-gateway']={classList:{contains:()=>true}};ctx.switchTab=tab=>{assert.equal(tab,'overview');nodes['tab-gateway'].classList.contains=()=>false};assert.equal(ctx.window.allInHandleBack(),true,'gateway page returns to overview');
 const native=fs.readFileSync('app/src/main/java/com/gaeul/allin/MainActivity.java','utf8');
 assert(native.includes('public void onBackPressed()'));assert(native.includes('window.allInHandleBack()===true'));assert(native.includes('if (panel == null || !bridgeAllowed())'));assert(native.includes('if (!"true".equals(handled)) finishBackNavigation();'));assert(!native.includes('keyCode == KeyEvent.KEYCODE_BACK && webView'));
 console.log('dashboard back navigation: detail/add/root/dialog priorities, hidden tab, no-network and native delegation PASS');

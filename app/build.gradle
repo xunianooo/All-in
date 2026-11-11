@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 27
-        versionName '1.2.21'
+        versionCode 29
+        versionName '1.2.23-test'
     }
 
     signingConfigs {
@@ -68,6 +68,39 @@ dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
 
 // 保留原有 9 个套件，并运行网关、Responses 和首次设置回归测试。
 def offlineTestMains = [
+        'com.gaeul.allin.AntigravityClientOfflineTest',
+        'com.gaeul.allin.AccountOpsGatewayOfflineTest',
+        'com.gaeul.allin.GatewayAccessCatalogOfflineTest',
+        'com.gaeul.allin.GatewayAccessGiftCacheOfflineTest',
+        'com.gaeul.allin.GatewayAccessHttpOfflineTest',
+        'com.gaeul.allin.GatewayAccessReviewOfflineTest',
+        'com.gaeul.allin.GiftRefreshConcurrencyOfflineTest',
+        'com.gaeul.allin.LoomyAuthHttpTest',
+        'com.gaeul.allin.LoomyCatalogGatewayHttpTest',
+        'com.gaeul.allin.LoomyImagePolicyOfflineTest',
+        'com.gaeul.allin.LoomyInferenceGatewayHttpTest',
+        'com.gaeul.allin.RaccoonAccountServiceOfflineTest',
+        'com.gaeul.allin.RaccoonAuthorizationFlowOfflineTest',
+        'com.gaeul.allin.RaccoonLoginProtocolOfflineTest',
+        'com.gaeul.allin.RaccoonRefreshPolicyOfflineTest',
+        'com.gaeul.allin.RaccoonRefreshServiceOfflineTest',
+        'com.gaeul.allin.WorkBuddyNativePolicyOfflineTest',
+        'com.gaeul.allin.WorkBuddyChatPolicyOfflineTest',
+        'com.gaeul.allin.WorkBuddyChatGatewayAdapterOfflineTest',
+        'com.gaeul.allin.WorkBuddySignatureRetryPolicyOfflineTest',
+        'com.gaeul.allin.WorkBuddyNativeAggregatorOfflineTest',
+        'com.gaeul.allin.WorkBuddyNativeTransportOfflineTest',
+        'com.gaeul.allin.WorkBuddyFilterRefusalStreamOfflineTest',
+        'com.gaeul.allin.WorkBuddyFilterRefusalGatewayHttpTest',
+        'com.gaeul.allin.WorkBuddyNativeGatewayHttpTest',
+        'com.gaeul.allin.CatPawMiniGatewayHttpTest',
+        'com.gaeul.allin.CatPawToolBridgeOfflineTest',
+        'com.gaeul.allin.WorkBuddyCompletionGatewayHttpTest',
+        'com.gaeul.allin.CompletionStatusGatewayHttpTest',
+        'com.gaeul.allin.CompletionBudgetOfflineTest',
+        'com.gaeul.allin.ZCodeBoundaryGatewayHttpTest',
+        'com.gaeul.allin.RequestTimingOfflineTest',
+        'com.gaeul.allin.LongTaskGatewayHttpTest',
         'com.gaeul.allin.GatewayManagementCredentialOfflineTest',
         'com.gaeul.allin.ConfigurationViewOfflineTest',
         'com.gaeul.allin.GatewayAccessBoundaryOfflineTest',
@@ -94,10 +127,19 @@ def offlineTestMains = [
         'com.gaeul.allin.MiniMaxPollPolicyOfflineTest',
         'com.gaeul.allin.ProviderRetryPolicyOfflineTest',
         'com.gaeul.allin.CodexRefreshOfflineTest',
+        'com.gaeul.allin.CodexRequestPolicyOfflineTest',
         'com.gaeul.allin.CodexPersistenceOfflineTest',
         'com.gaeul.allin.CatPawPolicyOfflineTest',
         'com.gaeul.allin.WorkBuddyCatalogHttpTest',
         'com.gaeul.allin.RaccoonCatalogHttpTest',
+        'com.gaeul.allin.RaccoonResponsePolicyOfflineTest',
+        'com.gaeul.allin.ProviderParityWiringHttpTest',
+        'com.gaeul.allin.LoomyDrawGovernanceHttpTest',
+        'com.gaeul.allin.ZCodeDynamicCatalogGatewayHttpTest',
+        'com.gaeul.allin.ZCodeProviderConfigOfflineTest',
+        'com.gaeul.allin.ZCodeCapabilitySyncHttpTest',
+        'com.gaeul.allin.WorkBuddyNativeSignatureRecoveryOfflineTest',
+        'com.gaeul.allin.NativeRecoveryHttpTest',
         'com.gaeul.allin.ProviderCatalogCommitOfflineTest',
         'com.gaeul.allin.AccountTokenCoordinatorOfflineTest',
         'com.gaeul.allin.ProviderTokenCandidateOfflineTest',
@@ -117,6 +159,7 @@ def offlineTestMains = [
         'com.gaeul.allin.ProviderAllowanceOfflineTest',
         'com.gaeul.allin.CatPawCatalogHttpTest',
         'com.gaeul.allin.ProviderBillingGatewayHttpTest',
+        'com.gaeul.allin.ProviderBudgetParityGatewayHttpTest',
         'com.gaeul.allin.QoderPolicyOfflineTest',
         'com.gaeul.allin.QoderProtocolOfflineTest',
         'com.gaeul.allin.QoderTextToolsOfflineTest',
@@ -124,7 +167,10 @@ def offlineTestMains = [
         'com.gaeul.allin.QoderAgentGatewayHttpTest',
         'com.gaeul.allin.QoderAgentBoundaryHttpTest',
         'com.gaeul.allin.QoderTransportOfflineTest',
+        'com.gaeul.allin.QoderRefreshSendOutcomeOfflineTest',
         'com.gaeul.allin.QoderGatewayHttpTest',
+        'com.gaeul.allin.QoderDisabledModelQuotaOfflineTest',
+        'com.gaeul.allin.QoderDisabledModelQuotaHttpTest',
         'com.gaeul.allin.ZCodeToolSearchOfflineTest',
         'com.gaeul.allin.ZCodeToolSearchGatewayHttpTest',
         'com.gaeul.allin.TraeDeviceOfflineTest',
@@ -138,7 +184,9 @@ def offlineTestMains = [
         'com.gaeul.allin.WorkBuddyPolicyOfflineTest',
         'com.gaeul.allin.WorkBuddyRefusalPolicyOfflineTest',
         'com.gaeul.allin.VendorPolicyGatewayHttpTest',
+        'com.gaeul.allin.GatewayWiringAuditHttpTest',
         'com.gaeul.allin.ClineRoutingPolicyOfflineTest',
+        'com.gaeul.allin.ClineAuthRefreshFenceOfflineTest',
         'com.gaeul.allin.ClientFingerprintOfflineTest',
         'com.gaeul.allin.CommercialToolSchemaPreservationOfflineTest',
         'com.gaeul.allin.ZCodeRequestPolicyOfflineTest',
@@ -146,6 +194,7 @@ def offlineTestMains = [
         'com.gaeul.allin.ZCodeGiftPolicyHttpTest',
 
         'com.gaeul.allin.TraeGatewayHttpTest',
+        'com.gaeul.allin.TraeMaxUsageGatewayHttpTest',
 
         'com.gaeul.allin.ProviderEnabledOfflineTest',
         'com.gaeul.allin.WorkBuddyHarnessPolicyOfflineTest',
@@ -158,6 +207,9 @@ def offlineTestMains = [
         'com.gaeul.allin.ToolContractStrictOfflineTest',
         'com.gaeul.allin.RequestDiagnosticsOfflineTest',
         'com.gaeul.allin.ProviderQuirksOfflineTest',
+        'com.gaeul.allin.WorkBuddyNativeQuirksHttpTest',
+        'com.gaeul.allin.AnthropicOutputDefaultQuirksHttpTest',
+        'com.gaeul.allin.WorkBuddyChatRuleOrderingHttpTest',
         'com.gaeul.allin.SignedQuirksStoreOfflineTest',
         'com.gaeul.allin.QuirksUpdateControllerOfflineTest',
         'com.gaeul.allin.QuirksHttpsTransportOfflineTest',
@@ -189,6 +241,7 @@ def offlineTestMains = [
         'com.gaeul.allin.IngressBodyOfflineTest',
         'fi.iki.elonen.AllInRawHeaderTcpTest',
         'com.gaeul.allin.ZCodeAnthropicOfflineTest',
+        'com.gaeul.allin.AnthropicReasoningPolicyOfflineTest',
         'com.gaeul.allin.GatewayProtocolOfflineTest',
         'com.gaeul.allin.DeepSeekWebTest',
         'com.gaeul.allin.DeepSeekWebChatTest',
@@ -209,8 +262,23 @@ def offlineTestMains = [
         'com.gaeul.allin.UsageLedgerHeatmapOfflineTest',
         'com.gaeul.allin.RecoveryPolicyTest',
         'com.gaeul.allin.ForegroundServicePolicyTest',
+        'com.gaeul.allin.GatewayReleaseHardeningOfflineTest',
+        'com.gaeul.allin.QoderCatalogBudgetHttpTest',
+        'com.gaeul.allin.AntigravitySendOutcomeOfflineTest',
+        'com.gaeul.allin.AntigravityRefreshSendOutcomeOfflineTest',
+        'com.gaeul.allin.AntigravityAuthTierRefusalOfflineTest',
+        'com.gaeul.allin.BackupActivityControllerRestoreFailureOfflineTest',
+        'com.gaeul.allin.BackupCoordinatorDamagedConfigOfflineTest',
+        'com.gaeul.allin.BackupCoordinatorMissingConfigOfflineTest',
+        'com.gaeul.allin.BackupDamagedConfigWiringOfflineTest',
+        'com.gaeul.allin.BridgeRequestValidatorOfflineTest',
         'fi.iki.elonen.TrackedResponseOfflineTest',
         'fi.iki.elonen.HeldResponseOfflineTest',
+        'fi.iki.elonen.AllInRawHeaderDeadlineTest',
+        'com.gaeul.allin.GatewayListenAddressOfflineTest',
+        'com.gaeul.allin.QoderHistoryRepairTest',
+        'com.gaeul.allin.ZCodeGiftModelsOfflineTest',
+        'com.gaeul.allin.ZCodeGiftDecimalUnitsHttpTest',
 ]
 
 def mainClassesDir = provider { tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().destinationDirectory.get() }
@@ -226,6 +294,23 @@ tasks.register('compileOfflineTests', JavaCompile) {
     targetCompatibility = '1.8'
 }
 
+def antigravityOfflineTestClasses = layout.buildDirectory.dir('antigravity-offline-test-classes')
+tasks.register('compileAntigravityOfflineTest', JavaCompile) {
+    dependsOn 'compileReleaseJavaWithJavac'
+    source = files('src/test/java/com/gaeul/allin/AntigravityClientOfflineTest.java')
+    classpath = files({ [mainClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    destinationDirectory = antigravityOfflineTestClasses
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+}
+tasks.register('antigravityOfflineTest', JavaExec) {
+    group = 'verification'
+    description = '运行 Antigravity 协议转换定向离线测试'
+    dependsOn 'compileAntigravityOfflineTest'
+    classpath = files({ [mainClassesDir.get(), antigravityOfflineTestClasses.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.AntigravityClientOfflineTest'
+}
+
 def offlineTestTasks = offlineTestMains.collect { name ->
     def simple = name.substring(name.lastIndexOf('.') + 1)
     tasks.register("offlineTest_${simple}", JavaExec) {
@@ -235,6 +320,14 @@ def offlineTestTasks = offlineTestMains.collect { name ->
         classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
         mainClass = name
     }
+}
+
+tasks.register('raccoonRefreshOfflineTest', JavaExec) {
+    group = 'verification'
+    description = '运行 Raccoon 刷新协议独立离线测试（不联网）'
+    dependsOn 'compileOfflineTests'
+    classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
+    mainClass = 'com.gaeul.allin.RaccoonRefreshServiceOfflineTest'
 }
 
 tasks.register('offlineTests') {
@@ -332,4 +425,21 @@ tasks.named('streamingHttpTests') { dependsOn 'patienceRoutingHttpTests' }
         mainClass = 'com.gaeul.allin.' + name
     }
     tasks.named('streamingHttpTests') { dependsOn taskName }
+}
+
+// Compile the bundled org.json first so javac resolves its unchecked JSONException
+// before Android's boot classpath, including on clean and incremental builds.
+def bundledJsonClasses = layout.buildDirectory.dir('bundled-json-classes')
+tasks.register('compileBundledJson', JavaCompile) {
+    source = fileTree('src/main/java/org/json') { include '**/*.java' }
+    classpath = files()
+    destinationDirectory = bundledJsonClasses
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+}
+tasks.withType(JavaCompile).configureEach {
+    if (name == 'compileReleaseJavaWithJavac') {
+        dependsOn 'compileBundledJson'
+        doFirst { options.bootstrapClasspath = files(bundledJsonClasses, options.bootstrapClasspath) }
+    }
 }

@@ -41,7 +41,13 @@ public final class ClinePersistenceOfflineTest {
         check("two".equals(account(g).optString("refresh")), "memory commit");
         check("two".equals(new JSONObject(new String(Files.readAllBytes(file),"UTF-8")).getJSONArray("providers").getJSONObject(0).getJSONArray("accounts").getJSONObject(0).optString("refresh")), "disk commit");
         for (String change : new String[]{"delete", "disable", "replace"}) {
-            GatewayServer r = setup(file); CountDownLatch in = new CountDownLatch(1), out = new CountDownLatch(1);
+            // A consumed refresh value stays fenced for as long as the fence beside that
+            // configuration lives, so this phase gets its own directory: the previous phase
+            // already spent "one", and reusing its directory would be blocked before the
+            // exchange instead of exercising the cancellation below.
+            Path phase = Files.createTempDirectory("cline-persist-phase-");
+            Path config = phase.resolve("config.json");
+            GatewayServer r = setup(config); CountDownLatch in = new CountDownLatch(1), out = new CountDownLatch(1);
             r.setClineRefreshForTests(token -> { in.countDown(); await(out); return next(); });
             JSONObject selected = account(r); AtomicReference<Throwable> failed = new AtomicReference<>();
             Thread t = new Thread(() -> { try { refresh(r,selected); } catch (Throwable e) { failed.set(e); } });
@@ -54,12 +60,20 @@ public final class ClinePersistenceOfflineTest {
             }
             out.countDown(); t.join(5000);
             check(!t.isAlive() && failed.get()!=null, "cancel " + change);
-            check(!new String(Files.readAllBytes(file),"UTF-8").contains("\"two\""), "no stale write " + change);
+            check(!new String(Files.readAllBytes(config),"UTF-8").contains("\"two\""), "no stale write " + change);
         }
-        GatewayServer bad = setup(file); JSONObject original = account(bad);
-        ResponsesGatewayOfflineTest.set(bad,"configFile",dir.resolve("missing/config.json").toFile());
-        bad.setClineRefreshForTests(token -> next());
+        // The exchange really happens and only then the configuration cannot be replaced: an
+        // existing directory full of a marker file stands in for the configuration, so the fence
+        // beside it stays writable while the atomic replacement must fail.
+        Path disk = Files.createTempDirectory("cline-persist-disk-");
+        Path blocked = Files.createDirectories(disk.resolve("blocked"));
+        Files.write(blocked.resolve("keep"), new byte[]{'x'});
+        GatewayServer bad = setup(disk.resolve("config.json")); JSONObject original = account(bad);
+        ResponsesGatewayOfflineTest.set(bad,"configFile",blocked.toFile());
+        AtomicInteger exchanges = new AtomicInteger();
+        bad.setClineRefreshForTests(token -> { exchanges.incrementAndGet(); return next(); });
         try { refresh(bad,original); throw new AssertionError("disk failure accepted"); } catch (IOException expected) {}
+        check(exchanges.get()==1, "disk failure without an exchange");
         check("one".equals(account(bad).optString("refresh")), "disk failure changed memory");
         System.out.println("ClinePersistenceOfflineTest passed");
     }

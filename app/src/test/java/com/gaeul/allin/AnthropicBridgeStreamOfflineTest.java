@@ -99,7 +99,7 @@ public final class AnthropicBridgeStreamOfflineTest {
         require(truncated.onEnd().toString().contains("event: error"), "truncated stream reported success");
         AnthropicBridge.StreamState empty = new AnthropicBridge.StreamState("fixture");
         empty.onChunk(chunk("{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"));
-        require(empty.onEnd().toString().contains("event: error"), "empty completed stream reported success");
+        require(empty.onEnd().toString().contains("message_stop"), "completed empty text must remain supported");
         AnthropicBridge.StreamState bounded = new AnthropicBridge.StreamState("fixture");
         bounded.onChunk(chunk("{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"x\",\"function\":{\"name\":\"one\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"y\",\"function\":{\"name\":\"two\"}}]}}]}"));
         StringBuilder huge = new StringBuilder();
@@ -107,6 +107,42 @@ public final class AnthropicBridgeStreamOfflineTest {
         JSONObject call = new JSONObject().put("index", 1).put("function", new JSONObject().put("arguments", huge.toString()));
         JSONObject c = new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", new JSONObject().put("tool_calls", new org.json.JSONArray().put(call)))));
         require(bounded.onChunk(c).toString().contains("event: error") && bounded.isFailed(), "deferred buffer overflow must fail");
+    }
+
+    private static void finishSemantics() throws Exception {
+        String[] finishes = {"stop", "length", "tool_calls", "function_call", "content_filter"};
+        String[] expected = {"end_turn", "max_tokens", "tool_use", "tool_use", "refusal"};
+        for (int i = 0; i < finishes.length; i++) {
+            JSONObject choice = new JSONObject().put("message", new JSONObject().put("content", ""))
+                    .put("finish_reason", finishes[i]);
+            JSONObject response = new JSONObject().put("choices", new org.json.JSONArray().put(choice));
+            require(expected[i].equals(AnthropicBridge.responseToAnthropic(response, "fixture").optString("stop_reason")), "nonstream mapping " + finishes[i]);
+            AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
+            List<String> events = new ArrayList<String>();
+            add(events, state.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", new JSONObject()).put("finish_reason", finishes[i])))));
+            add(events, state.onEnd());
+            require(events.toString().contains("\"stop_reason\":\"" + expected[i] + "\"") && !state.isFailed(), "stream mapping " + finishes[i]);
+        }
+        for (Object finish : new Object[] {JSONObject.NULL, "", "mystery", 123}) {
+            JSONObject choice = new JSONObject().put("message", new JSONObject().put("content", "partial")).put("finish_reason", finish);
+            require("error".equals(AnthropicBridge.responseToAnthropic(new JSONObject().put("choices", new org.json.JSONArray().put(choice)), "fixture").optString("type")), "nonstream invalid finish " + finish);
+            AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
+            state.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", new JSONObject().put("content", "partial")).put("finish_reason", finish))));
+            String end = state.onEnd().toString();
+            require(state.isFailed() && end.contains("event: error") && !end.contains("message_stop"), "stream invalid finish " + finish);
+        }
+        require("error".equals(AnthropicBridge.responseToAnthropic(new JSONObject(), "fixture").optString("type")), "missing choices");
+        require("error".equals(AnthropicBridge.responseToAnthropic(chunk("{\"choices\":[{\"message\":{\"content\":\"x\"}}]}"), "fixture").optString("type")), "missing finish");
+        String[] deltas = {"{\"reasoning_content\":\"thought\"}", "{\"refusal\":\"no\"}", "{\"tool_calls\":[{\"index\":0,\"id\":\"t\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}"};
+        for (String delta : deltas) {
+            AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
+            state.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", chunk(delta)))));
+            state.onChunk(chunk("{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"));
+            require(state.onEnd().toString().contains("message_stop") && !state.isFailed(), "valid content " + delta);
+        }
+        AnthropicBridge.StreamState refusalWithoutFinish = new AnthropicBridge.StreamState("fixture");
+        refusalWithoutFinish.onChunk(chunk("{\"choices\":[{\"delta\":{\"refusal\":\"no\"}}]}"));
+        require(refusalWithoutFinish.onEnd().toString().contains("event: error"), "refusal must not imply finish");
     }
 
     private static void fragmentedIdentityAndUsage() throws Exception {
@@ -124,8 +160,130 @@ public final class AnthropicBridgeStreamOfflineTest {
         require(ended.hasFinishReason() && ended.onEnd().toString().contains("message_stop"), "finish then EOF must succeed");
     }
 
+    // Repro: an upstream that repeats the complete id/name in every delta produced
+    // "call_1call_1"/"lookuplookup"; real fragments must still concatenate.
+    private static void repeatedIdentitySnapshots() throws Exception {
+        AnthropicBridge.StreamState s = new AnthropicBridge.StreamState("fixture");
+        List<String> e = new ArrayList<String>();
+        String[][] deltas = {
+            {"call_1", "lookup", "{\"a\":"},
+            {"call_1", "lookup", "1"},
+            {"call_1", "lookup", "}"}
+        };
+        for (String[] d : deltas) add(e, s.onChunk(toolChunk(d[0], d[1], d[2])));
+        add(e, s.onChunk(chunk("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")));
+        add(e, s.onEnd());
+        validateLifecycle(e);
+        String all = e.toString();
+        require(!s.isFailed(), "repeated snapshot must still complete");
+        require(all.contains("\"id\":\"call_1\"") && !all.contains("call_1call_1"), "repeated id snapshot duplicated");
+        require(all.contains("\"name\":\"lookup\"") && !all.contains("lookuplookup"), "repeated name snapshot duplicated");
+        require(all.contains("\"type\":\"input_json_delta\""), "argument fragments kept");
+    }
+
+    // Fragments must never be guessed away: only an exact repeated complete
+    // snapshot is collapsed; real fragments, including repeated text, still
+    // concatenate and a later different value is not silently overwritten.
+    private static void fragmentIdentityIsNeverGuessed() throws Exception {
+        AnthropicBridge.StreamState s = new AnthropicBridge.StreamState("fixture");
+        List<String> e = new ArrayList<String>();
+        add(e, s.onChunk(toolChunk("call_", "same_", "{\"a\":")));
+        add(e, s.onChunk(toolChunk("repeat", "repeat", "1}")));
+        add(e, s.onChunk(toolChunk("repeat", "repeat", "")));
+        add(e, s.onChunk(chunk("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")));
+        add(e, s.onEnd());
+        validateLifecycle(e);
+        String all = e.toString();
+        require(!s.isFailed(), "fragment identity must complete");
+        require(all.contains("\"id\":\"call_repeatrepeat\""), "legitimate repeated id fragments must not be deduplicated");
+        require(all.contains("\"name\":\"same_repeatrepeat\""), "legitimate repeated name fragments must not be deduplicated");
+        AnthropicBridge.StreamState changed = new AnthropicBridge.StreamState("fixture");
+        List<String> second = new ArrayList<String>();
+        add(second, changed.onChunk(toolChunk("call_a", "f", "{}")));
+        add(second, changed.onChunk(toolChunk("call_b", "f", null)));
+        add(second, changed.onChunk(chunk("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")));
+        add(second, changed.onEnd());
+        String text = second.toString();
+        require(!changed.isFailed() && text.contains("call_a") && text.contains("call_b"),
+                "a changed identity must not be silently overwritten");
+    }
+
+    private static JSONObject toolChunk(String id, String name, String args) throws Exception {
+        JSONObject fn = new JSONObject().put("name", name);
+        if (args != null && !args.isEmpty()) fn.put("arguments", args);
+        JSONObject call = new JSONObject().put("index", 0);
+        if (!id.isEmpty()) call.put("id", id);
+        call.put("function", fn);
+        return chunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject()
+                .put("index", 0).put("delta", new JSONObject().put("tool_calls", new org.json.JSONArray().put(call)))))
+                .toString());
+    }
+
+    // Repro: complete object arguments are published verbatim, while missing,
+    // empty, truncated and non-object argument text must fail explicitly. Zero
+    // bytes cannot be distinguished from a dropped payload, so no implicit {}.
+    private static void toolArgumentCompleteness() throws Exception {
+        AnthropicBridge.StreamState complete = new AnthropicBridge.StreamState("fixture");
+        List<String> e = new ArrayList<String>();
+        add(e, complete.onChunk(toolChunk("call_c", "lookup", "{\"a\":")));
+        add(e, complete.onChunk(toolChunk("call_c", "lookup", "1}")));
+        add(e, complete.onChunk(chunk("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")));
+        add(e, complete.onEnd());
+        validateLifecycle(e);
+        String all = e.toString();
+        require(!complete.isFailed(), "complete object arguments must be published");
+        require(all.contains("\"partial_json\":\"{\\\"a\\\":\"") && all.contains("\"partial_json\":\"1}\""),
+                "argument fragments must stay verbatim");
+
+        String[] rejected = {null, "", "{\"a\":", "{\"a\":1", "[", "[]", "\"x\"", "123", "{}x"};
+        for (String args : rejected) {
+            AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
+            List<String> events = new ArrayList<String>();
+            add(events, state.onChunk(toolChunk("call_t", "f", args)));
+            add(events, state.onChunk(chunk("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")));
+            add(events, state.onEnd());
+            String text = events.toString();
+            require(state.isFailed() && text.contains("event: error") && !text.contains("message_stop"),
+                    "incomplete tool arguments accepted: " + args);
+        }
+    }
+
+    // Repro: a non-string delta content was stringified into the answer (a JSON
+    // blob became the model reply) instead of failing.
+    private static void nonStringDeltaContentFails() throws Exception {
+        for (String content : new String[] {"{\"k\":1}", "42", "true", "[1,2]"}) {
+            AnthropicBridge.StreamState s = new AnthropicBridge.StreamState("fixture");
+            String out = s.onChunk(chunk("{\"choices\":[{\"delta\":{\"content\":" + content + "}}]}")).toString();
+            require(s.isFailed() && out.contains("event: error") && !out.contains("text_delta"), "non-string delta content accepted: " + content);
+            AnthropicBridge.StreamState reasoning = new AnthropicBridge.StreamState("fixture");
+            String thought = reasoning.onChunk(chunk("{\"choices\":[{\"delta\":{\"reasoning_content\":" + content + "}}]}")).toString();
+            require(reasoning.isFailed() && thought.contains("event: error"), "non-string reasoning delta accepted: " + content);
+        }
+        AnthropicBridge.StreamState ok = new AnthropicBridge.StreamState("fixture");
+        String quiet = ok.onChunk(chunk("{\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":null}}]}")).toString();
+        require(!quiet.contains("event: error"), "null delta content must stay an empty delta");
+    }
+
+    // Repro: a non-stream upstream that returns content as parts dropped the
+    // whole answer (empty message, stop_reason end_turn). Text parts convert;
+    // unknown parts fail explicitly.
+    private static void nonStreamContentArrays() throws Exception {
+        JSONObject array = chunk("{\"choices\":[{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"part one\"},{\"type\":\"text\",\"text\":\" & two\"}]},\"finish_reason\":\"stop\"}]}");
+        JSONObject converted = AnthropicBridge.responseToAnthropic(array, "fixture");
+        require("message".equals(converted.optString("type")), "text array content must convert: " + converted);
+        require("part one & two".equals(converted.getJSONArray("content").getJSONObject(0).getString("text")), "array text content lost");
+        String[] unsupported = {"{\"type\":\"image\"}", "{\"type\":\"text\",\"text\":3}", "[1]", "{\"unknown\":true}", "42"};
+        for (String content : unsupported) {
+            JSONObject source = chunk("{\"choices\":[{\"message\":{\"content\":" + content + "},\"finish_reason\":\"stop\"}]}");
+            JSONObject error = AnthropicBridge.responseToAnthropic(source, "fixture");
+            require("error".equals(error.optString("type")), "unsupported response content accepted: " + content);
+        }
+        JSONObject nullContent = chunk("{\"choices\":[{\"message\":{\"content\":null},\"finish_reason\":\"stop\"}]}");
+        require("message".equals(AnthropicBridge.responseToAnthropic(nullContent, "fixture").optString("type")), "null content must stay empty");
+    }
+
     private static void usageRoundTrip() throws Exception {
-        JSONObject anth = chunk("{\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":30,\"output_tokens\":2}}");
+        JSONObject anth = chunk("{\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":30,\"output_tokens\":2}}");
         JSONObject open = ZCodeAnthropic.toOpenAI(anth, "fixture");
         assertUsage(AnthropicBridge.responseToAnthropic(open, "fixture").getJSONObject("usage"), 10, 20, 30, 2);
         AnthropicBridge.StreamState s = new AnthropicBridge.StreamState("fixture");
@@ -168,9 +326,11 @@ public final class AnthropicBridgeStreamOfflineTest {
             if ("message_delta".equals(ev.optString("type"))) assertUsage(ev.getJSONObject("usage"), 10, 20, 30, 2);
         }
         JSONObject readOnly = chunk("{\"usage\":{\"prompt_tokens\":60,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":20}}}");
+        readOnly.put("choices", new org.json.JSONArray().put(new JSONObject().put("finish_reason", "stop").put("message", new JSONObject().put("content", ""))));
         JSONObject u = AnthropicBridge.responseToAnthropic(readOnly, "fixture").getJSONObject("usage");
         require(u.getLong("input_tokens") == 40 && u.getLong("cache_read_input_tokens") == 20 && !u.has("cache_creation_input_tokens"), "absent cache write is unknown");
         JSONObject invalid = chunk("{\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":-4,\"prompt_tokens_details\":{\"cached_tokens\":-5,\"cache_write_tokens\":30}}}");
+        invalid.put("choices", new org.json.JSONArray().put(new JSONObject().put("finish_reason", "stop").put("message", new JSONObject().put("content", ""))));
         u = AnthropicBridge.responseToAnthropic(invalid, "fixture").getJSONObject("usage");
         assertUsage(u, 0, 0, 30, 0);
     }
@@ -197,11 +357,17 @@ public final class AnthropicBridgeStreamOfflineTest {
         require(state.onEnd().isEmpty(), "onEnd must be idempotent");
         require(state.onChunk(chunk("{\"choices\":[{\"delta\":{\"content\":\"late\"}}]}" )).isEmpty(),
                 "chunks after message_stop must be ignored");
+        finishSemantics();
         reasoningAndLateToolArguments();
         emptyStream();
         lateIdentityAndErrors();
         truncatedAndBounded();
         fragmentedIdentityAndUsage();
+        repeatedIdentitySnapshots();
+        fragmentIdentityIsNeverGuessed();
+        toolArgumentCompleteness();
+        nonStringDeltaContentFails();
+        nonStreamContentArrays();
         usageRoundTrip();
 
         Map<Integer, String> toolIds = new HashMap<Integer, String>();

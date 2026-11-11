@@ -31,7 +31,7 @@ public final class RequestContext implements OutboundLimiter.Cancellation, AutoC
     RequestContext(String protocol, NetworkPolicy.Snapshot network, long durationMillis, ProviderQuirks.Snapshot quirks, String explicitSession, String authScope, long affinityEpoch) {
         this.protocol = protocol; this.network = network;
         this.quirks=quirks; this.explicitSession=explicitSession; this.authScope=authScope; this.affinityEpoch=affinityEpoch;
-        this.deadlineNanos = System.nanoTime() + Math.max(1, Math.min(300000, durationMillis)) * 1000000L;
+        this.deadlineNanos = System.nanoTime() + Math.max(1, Math.min(RequestTiming.MAX_REQUEST_MS, durationMillis)) * 1000000L;
     }
     public long remainingMillis() { return Math.max(0, (deadlineNanos-System.nanoTime()+999999L)/1000000L); }
     public boolean isCancelled() { return cancelled.get() || Thread.currentThread().isInterrupted() || remainingMillis()==0; }

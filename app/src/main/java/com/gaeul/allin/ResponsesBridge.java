@@ -325,6 +325,43 @@ final class ResponsesBridge {
         Object value=object.opt(field);
         return ToolContract.index(value);
     }
+    /**
+     * Merge one Chat tool identity fragment (id or name) into the value collected
+     * so far.
+     *
+     * Chat streams a tool call's id and name once, in the chunk that opens the
+     * call; only arguments are deltas. Exactly two upstream deviations are
+     * handled: a fragment identical to the collected value is a repeated complete
+     * snapshot (the whole id/name re-sent in every chunk) and is absorbed instead
+     * of appended, and every other fragment is a genuine delta and is appended
+     * verbatim.
+     *
+     * A fragment that merely repeats or extends a *prefix* of the collected value
+     * is not a snapshot decision this bridge can make: "get_"+"g" is either the
+     * repeated snapshot "get_" or the next fragment of "get_git_status", and the
+     * stream carries nothing that decides. Overwriting the collected value with
+     * such a fragment produced different tool names than the upstream streamed
+     * ("get_"+"g"+"it_status" became "get_it_status"), so prefix relations are
+     * never guessed away: the collected value is kept and the fragment appended.
+     * A provider that really re-sends growing snapshots is unsupported and shows
+     * up as a doubled identity, never as a silently different tool name.
+     * An exact-identical fragment stays ambiguous by construction (a re-sent
+     * snapshot and a delta of exactly that text are the same bytes); the repeat
+     * reading is kept because it is the observed quirk and the only reading that
+     * leaves a re-sent identity valid.
+     * (Same rule and evidence as AnthropicBridge.joinIdentity.)
+     */
+    private static String mergeToolIdentity(String current, String fragment) {
+        if (fragment.isEmpty()) return current;
+        if (current.isEmpty()) return fragment;
+        if (fragment.equals(current)) return current; // repeated complete snapshot
+        return current+fragment;                       // genuine fragment
+    }
+    /** SSE data field value, with the optional space after the colon removed. */
+    private static String dataPayload(String line) {
+        if (line==null || !line.startsWith("data:")) return null;
+        return line.substring(5).trim();
+    }
     private static void uniqueToolId(Set<String> ids, String id) {
         if (!ids.add(id)) throw new IllegalArgumentException("duplicate tool call id");
     }
@@ -414,6 +451,7 @@ final class ResponsesBridge {
     }
 
     static JSONObject chatResponseToResponses(JSONObject chat, String requestedModel) throws Exception {
+        if (chat.has("error") && !chat.isNull("error")) throw new IllegalArgumentException("Upstream Chat response contains an error");
         JSONArray choices=chat.optJSONArray("choices");
         if (choices==null || choices.length()!=1) throw new IllegalArgumentException("expected one Chat choice");
         JSONObject choice=choices.getJSONObject(0), msg=choice.getJSONObject("message");
@@ -443,7 +481,7 @@ final class ResponsesBridge {
             if (!(msg.opt("refusal") instanceof String)) throw new IllegalArgumentException("invalid refusal");
             output.put(refusalItem(msg.getString("refusal")));
         }
-        String finish=choice.optString("finish_reason", "stop");
+        String finish=choice.opt("finish_reason") instanceof String ? choice.optString("finish_reason") : "";
         if (!Arrays.asList("stop", "tool_calls", "length", "content_filter").contains(finish)) throw new IllegalArgumentException("Unsupported finish reason: "+finish);
         JSONObject result=responseEnvelope(requestedModel!=null?requestedModel:chat.optString("model"),output,finish);
         result.put("id",chat.optString("id", result.optString("id")));
@@ -511,7 +549,9 @@ final class ResponsesBridge {
                 event("response.refusal.delta",new JSONObject().put("item_id",item.getString("id")).put("output_index",refusalIndex).put("content_index",0).put("delta",value));
             }
             void chunk(JSONObject chunk) throws Exception {
-                if(chunk.has("error")) throw new java.io.IOException("upstream stream error");
+                // "error": null is a legal carrier in Chat chunks; only a real
+                // error value may fail the stream.
+                if(chunk.has("error") && !chunk.isNull("error")) throw new java.io.IOException("upstream stream error");
                 if(chunk.optJSONObject("usage")!=null) usage=responsesUsage(chunk.getJSONObject("usage"));
                 JSONArray choices=chunk.optJSONArray("choices"); if(choices==null || choices.length()==0)return;
                 if(choices.length()!=1) throw new java.io.IOException("multiple choices unsupported");
@@ -531,10 +571,15 @@ final class ResponsesBridge {
                         }
                         String callId=toolFragment(call,"id"), name=toolFragment(fn,"name"), args=toolFragment(fn,"arguments");
                         reserveTool(callId.length()); reserveTool(name.length()); reserveTool(args.length());
-                        // Chat fields are deltas, not cumulative snapshots. Do not
-                        // overwrite an earlier ID fragment or guess repeated text.
-                        item.put("call_id",item.getString("call_id")+callId);
-                        item.put("name",item.getString("name")+name);
+                        // Chat tool identity is normally a delta, but some providers
+                        // repeat the complete id/name in every chunk. Only an exact
+                        // repeat of the collected value is absorbed; every other
+                        // fragment is appended, because a prefix relation between the
+                        // two readings cannot be decided from the stream (see
+                        // mergeToolIdentity). Arguments stay a pure delta and are
+                        // never reconciled here.
+                        item.put("call_id",mergeToolIdentity(item.getString("call_id"),callId));
+                        item.put("name",mergeToolIdentity(item.getString("name"),name));
                         item.put("arguments",item.getString("arguments")+args);
                     }
                 }
@@ -571,8 +616,11 @@ final class ResponsesBridge {
                     try {
                         start(); String line=in.readLine();
                         if(line==null) { complete(); ended=true; }
-                        else if(line.trim().equals("data: [DONE]")) { complete(); ended=true; }
-                        else if(line.startsWith("data:")) { String data=line.substring(5).trim(); if(!data.isEmpty()) chunk(new JSONObject(data)); }
+                        else {
+                            String payload=dataPayload(line);
+                            if("[DONE]".equals(payload)) { complete(); ended=true; }
+                            else if(payload!=null && !payload.isEmpty()) chunk(new JSONObject(payload));
+                        }
                     } catch(Exception e) {
                         ended=true;
                         try { start(); JSONObject error=new JSONObject().put("code","upstream_stream_error").put("message",e.getMessage()==null?"upstream stream failed":e.getMessage()); response.put("status","failed").put("error",error); event("response.failed",new JSONObject().put("response",response)); } catch(Exception ignored) {}
@@ -586,7 +634,15 @@ final class ResponsesBridge {
         };
     }
 
+    static String incompleteFinish(JSONObject response) {
+        JSONObject details=response.optJSONObject("incomplete_details");
+        Object reason=details==null ? null : details.opt("reason");
+        if ("max_output_tokens".equals(reason)) return "length";
+        if ("content_filter".equals(reason)) return "content_filter";
+        throw new IllegalArgumentException("Unsupported or missing incomplete reason");
+    }
     static JSONObject responsesResponseToChat(JSONObject response,String model) throws Exception {
+        if (response.has("error") && !response.isNull("error")) throw new IllegalArgumentException("Upstream Responses response contains an error");
         if (!Arrays.asList("completed", "incomplete").contains(response.optString("status"))) throw new IllegalArgumentException("Responses response is not complete");
         StringBuilder text=new StringBuilder(), reasoning=new StringBuilder(), refusal=new StringBuilder(); JSONArray calls=new JSONArray(), output=response.optJSONArray("output");
         Set<String> callIds=new HashSet<String>();
@@ -601,7 +657,7 @@ final class ResponsesBridge {
         }
         JSONObject msg=new JSONObject().put("role","assistant").put("content",text.length()==0?JSONObject.NULL:text.toString());
         if(refusal.length()>0) msg.put("refusal",refusal.toString()); if(reasoning.length()>0) msg.put("reasoning_content",reasoning.toString()); if(calls.length()>0)msg.put("tool_calls",calls);
-        String finish=calls.length()>0?"tool_calls":"stop"; if("incomplete".equals(response.optString("status"))) { JSONObject details=response.optJSONObject("incomplete_details"); finish=details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"; }
+        String finish=calls.length()>0?"tool_calls":"stop"; if("incomplete".equals(response.optString("status"))) { finish=incompleteFinish(response); }
         JSONObject out=new JSONObject().put("id",response.optString("id","chatcmpl-"+System.currentTimeMillis())).put("object","chat.completion").put("created",response.optLong("created_at",System.currentTimeMillis()/1000)).put("model",model).put("choices",new JSONArray().put(new JSONObject().put("index",0).put("message",msg).put("finish_reason",finish)));
         JSONObject u=response.optJSONObject("usage"); if(u!=null)out.put("usage",chatUsage(u)); return out;
     }
@@ -686,8 +742,8 @@ final class ResponsesBridge {
             boolean fill() throws java.io.IOException {
                 while(at>=bytes.length) {
                     if(ended)return false; String result="";
-                    try { String line=in.readLine(); if(line==null || line.trim().equals("data: [DONE]")) { ended=true; if(!completed) result="data: {\"error\":{\"message\":\"Responses stream ended before completion\"}}\n\n"; }
-                        else if(line.startsWith("data:")) { String raw=line.substring(5).trim(); if(raw.isEmpty())continue; JSONObject event=new JSONObject(raw); String type=event.optString("type"); JSONObject delta=new JSONObject();
+                    try { String line=in.readLine(); String payload=dataPayload(line); if(line==null || "[DONE]".equals(payload)) { ended=true; if(!completed) result="data: {\"error\":{\"message\":\"Responses stream ended before completion\"}}\n\n"; }
+                        else if(payload!=null && !payload.isEmpty()) { JSONObject event=new JSONObject(payload); String type=event.optString("type"); JSONObject delta=new JSONObject();
                             if("response.output_text.delta".equals(type) || "response.text.delta".equals(type)) { result=appendContent("content",event.optInt("output_index"),event.optInt("content_index"),event.optString("delta")); }
                             else if("response.refusal.delta".equals(type)) { result=appendContent("refusal",event.optInt("output_index"),event.optInt("content_index"),event.optString("delta")); }
                             else if("response.reasoning_summary_text.delta".equals(type) || "response.reasoning_text.delta".equals(type)) { result=appendContent("reasoning_content",event.optInt("output_index"),event.optInt("summary_index"),event.optString("delta")); }
@@ -709,8 +765,22 @@ final class ResponsesBridge {
                                 int output=toolIndex(event,"output_index"); if(!calls.containsKey(output)) throw new java.io.IOException("function arguments before item");
                                 result=reconcileCall(output,new JSONObject().put("arguments",toolArguments(event)));
                             }
-                            else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); if(r==null || !type.substring(9).equals(r.optString("status"))) throw new java.io.IOException("invalid Responses terminal status"); JSONArray finalOutput=r.optJSONArray("output"); for(int i=0;finalOutput!=null && i<finalOutput.length();i++) result+=reconcileItem(i,finalOutput.getJSONObject(i)); validateCalls(); JSONObject u=r.optJSONObject("usage"); JSONObject details=r.optJSONObject("incomplete_details"); String reason="response.incomplete".equals(type)?(details!=null && "content_filter".equals(details.optString("reason"))?"content_filter":"length"):calls.isEmpty()?"stop":"tool_calls"; result+=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
-                            else if("response.failed".equals(type)||"error".equals(type)) { result="data: "+new JSONObject().put("error",event.opt("error") == null ? event : event.opt("error")).toString()+"\n\n"; ended=true; }
+                            else if("response.completed".equals(type) || "response.incomplete".equals(type)) { JSONObject r=event.optJSONObject("response"); if(r==null || !type.substring(9).equals(r.optString("status"))) throw new java.io.IOException("invalid Responses terminal status"); if(r.has("error") && !r.isNull("error")) throw new java.io.IOException("terminal Responses contains error"); String incompleteReason="response.incomplete".equals(type)?incompleteFinish(r):null; JSONArray finalOutput=r.optJSONArray("output"); for(int i=0;finalOutput!=null && i<finalOutput.length();i++) result+=reconcileItem(i,finalOutput.getJSONObject(i)); validateCalls(); JSONObject u=r.optJSONObject("usage"); String reason=incompleteReason!=null?incompleteReason:calls.isEmpty()?"stop":"tool_calls"; result+=chunk(delta,reason,u==null?null:chatUsage(u))+"data: [DONE]\n\n"; completed=true; ended=true; }
+                            else if("response.failed".equals(type)||"error".equals(type)) {
+                                // A null error field must still surface one real error
+                                // object; falling back to the event body or to a fixed
+                                // message keeps clients from receiving "error":null.
+                                Object failure=event.opt("error");
+                                if(failure==null || failure==JSONObject.NULL || (failure instanceof String && ((String)failure).trim().isEmpty())) {
+                                    JSONObject terminal=event.optJSONObject("response"); Object nested=terminal==null?null:terminal.opt("error");
+                                    failure = nested==null || nested==JSONObject.NULL || (nested instanceof String && ((String)nested).trim().isEmpty()) ? null : nested;
+                                }
+                                JSONObject reported = failure instanceof JSONObject ? (JSONObject)failure
+                                        : failure instanceof String ? new JSONObject().put("message",(String)failure)
+                                        : event.has("message") || event.has("code") ? event
+                                        : new JSONObject().put("code","upstream_stream_error").put("message","Responses stream failed");
+                                result="data: "+new JSONObject().put("error",reported).toString()+"\n\n"; ended=true;
+                            }
                         }
                     } catch(Exception ex) { ended=true; result="data: {\"error\":{\"message\":\"Invalid Responses stream\"}}\n\n"; }
                     if(!result.isEmpty()) {bytes=result.getBytes(java.nio.charset.StandardCharsets.UTF_8);at=0;return true;}

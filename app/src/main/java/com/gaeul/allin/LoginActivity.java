@@ -15,6 +15,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebResourceRequest;
 import android.widget.*;
 
 import org.json.JSONObject;
@@ -45,6 +46,9 @@ public class LoginActivity extends Activity {
     private boolean isPolling = false;
     private String currentState = "";
     private String currentProvider = "workbuddy";
+    private volatile RaccoonAuthorizationFlow raccoonAuthorizationFlow;
+    private volatile boolean raccoonExchangeRunning;
+    private volatile int raccoonOAuthGeneration;
     private String currentZCodeSite = "zai";
     private String zcodeFlowId = "";
     private String clineFlowId = "";
@@ -155,6 +159,13 @@ public class LoginActivity extends Activity {
         subtitleView.setTextColor(Color.parseColor("#a5b4fc"));
         subtitleView.setPadding(10, 8, 0, 0);
         header.addView(subtitleView);
+        if ("raccoon".equals(currentProvider)) {
+            Button raccoonOAuthBtn = new Button(this);
+            raccoonOAuthBtn.setText("授权码登录（自动保存并入池）");
+            raccoonOAuthBtn.setTextSize(12);
+            raccoonOAuthBtn.setOnClickListener(v -> startRaccoonAuthorizationFlow());
+            header.addView(raccoonOAuthBtn);
+        }
 
         TextView policyHint = new TextView(this);
         policyHint.setText("网络策略修改对新请求生效；当前原生登录需重新打开登录页才会使用新策略。浏览器和网页使用系统网络设置。");
@@ -250,6 +261,9 @@ public class LoginActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 if ("deepseek_web".equals(currentProvider)) return !isDeepSeekOrigin(url);
+                if ("raccoon".equals(currentProvider) && raccoonAuthorizationFlow != null
+                        && raccoonAuthorizationFlow.ownsCallbackUrl(url))
+                    return raccoonAuthorizationFlow.acceptCallbackNavigation(url);
                 if (url == null) return false;
                 if (url.startsWith("zcode://")) {
                     onOAuthCallback(url);
@@ -261,6 +275,17 @@ public class LoginActivity extends Activity {
                     return true;
                 }
                 return false;
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (request == null || request.getUrl() == null) return false;
+                String url = request.getUrl().toString();
+                if ("deepseek_web".equals(currentProvider)) return !isDeepSeekOrigin(url);
+                if ("raccoon".equals(currentProvider) && raccoonAuthorizationFlow != null
+                        && raccoonAuthorizationFlow.ownsCallbackUrl(url))
+                    return raccoonAuthorizationFlow.acceptCallbackNavigation(url);
+                return shouldOverrideUrlLoading(view, url);
             }
         });
 
@@ -1386,6 +1411,88 @@ public class LoginActivity extends Activity {
         })).start();
     }
 
+    private void startRaccoonAuthorizationFlow() {
+        if (!"raccoon".equals(currentProvider) || webView == null || isFinishing()) return;
+        if (raccoonExchangeRunning) {
+            Toast.makeText(this, "小浣熊授权正在处理中", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        RaccoonAuthorizationFlow previous = raccoonAuthorizationFlow;
+        if (previous != null) previous.close();
+        final int generation = ++raccoonOAuthGeneration;
+        try {
+            final RaccoonAuthorizationFlow flow = RaccoonAuthorizationFlow.start(callback ->
+                    mainHandler.post(() -> finishRaccoonAuthorization(generation, callback)));
+            raccoonAuthorizationFlow = flow;
+            subtitleView.setText("请在小浣熊授权页完成登录；回调校验、凭据交换与安全入池将自动完成。");
+            webView.loadUrl(flow.authorizeUrl());
+        } catch (Exception failure) {
+            raccoonAuthorizationFlow = null;
+            subtitleView.setText("无法启动本机授权回调，请稍后重试。");
+            Toast.makeText(this, "无法启动小浣熊授权回调", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void finishRaccoonAuthorization(int generation, RaccoonAuthorizationFlow.Callback callback) {
+        if (generation != raccoonOAuthGeneration || isFinishing() || callback == null) return;
+        RaccoonAuthorizationFlow flow = raccoonAuthorizationFlow;
+        raccoonAuthorizationFlow = null;
+        if (flow != null) flow.close();
+        if (callback.timedOut) {
+            subtitleView.setText("小浣熊授权等待超时，请重新发起授权；也可继续使用旧的 access-only 入池方式。");
+            Toast.makeText(this, "小浣熊授权等待超时", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (callback.denied) {
+            subtitleView.setText("小浣熊授权已取消；可重试授权码登录，或继续使用旧的 access-only 入池方式。");
+            Toast.makeText(this, "小浣熊授权已取消", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (callback.code == null || callback.code.isEmpty()) {
+            subtitleView.setText("小浣熊授权回调无效，请重新发起登录。");
+            return;
+        }
+        raccoonExchangeRunning = true;
+        subtitleView.setText("授权回调已验证，正在安全交换登录凭据…");
+        final String code = callback.code;
+        new Thread(scopedLoginTask(() -> {
+            String resultText;
+            boolean saved=false;
+            try {
+                RaccoonLoginProtocol.Credentials credentials = RaccoonOAuthClient.production()
+                        .exchangeAuthorizationCode(code);
+                if(!"raccoon".equals(credentials.providerId) || !"browser".equals(credentials.source)
+                        || credentials.access.isEmpty() || credentials.refresh.isEmpty()
+                        || credentials.uid.isEmpty() && credentials.name.isEmpty())
+                    throw new java.io.IOException("Incomplete Raccoon OAuth credentials");
+                JSONObject account=new JSONObject().put("provider",credentials.providerId).put("type","oauth")
+                        .put("source",credentials.source).put("access",credentials.access).put("refresh",credentials.refresh)
+                        .put("expires",credentials.expires).put("accountId",credentials.accountId)
+                        .put("uid",credentials.uid).put("name",credentials.name);
+                String response=LocalBridge.post("/api/auth/raccoon/oauth-add",account.toString());
+                if(response==null) throw new java.io.IOException("Gateway save result unavailable");
+                JSONObject persisted=new JSONObject(response);
+                if(!persisted.optBoolean("ok") || persisted.optString("provider").isEmpty()
+                        || persisted.optString("id").isEmpty())
+                    throw new java.io.IOException("Gateway did not confirm account persistence");
+                saved=true;
+                resultText="小浣熊账号 ["+(credentials.name.isEmpty()?credentials.accountId:credentials.name)+"] 已安全保存并加入网关池。";
+            } catch (Exception failure) {
+                resultText="小浣熊授权未完成入池。若保存结果未确认，请返回账号列表检查后再操作；可重新发起授权。";
+            } finally {
+                raccoonExchangeRunning = false;
+            }
+            final String message = resultText;
+            final boolean accountSaved=saved;
+            mainHandler.post(() -> {
+                if (generation != raccoonOAuthGeneration || isFinishing()) return;
+                subtitleView.setText(message);
+                Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                if(accountSaved) finish(); // MainActivity.onResume reloads the saved provider pool.
+            });
+        })).start();
+    }
+
     private void extractTokenFromPage(final boolean isManualClick) {
         if ("deepseek_web".equals(currentProvider)) { extractDeepSeek(isManualClick); return; }
         if ("zhipu_web".equals(currentProvider)) return;
@@ -1724,6 +1831,10 @@ public class LoginActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        raccoonOAuthGeneration++;
+        RaccoonAuthorizationFlow raccoonFlow = raccoonAuthorizationFlow;
+        raccoonAuthorizationFlow = null;
+        if (raccoonFlow != null) raccoonFlow.close();
         traeActive = false;
         traeGeneration++;
         isPolling = false;

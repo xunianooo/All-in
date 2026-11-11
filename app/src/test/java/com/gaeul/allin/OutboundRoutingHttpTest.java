@@ -60,8 +60,11 @@ public final class OutboundRoutingHttpTest {
                 .put("outbound",new JSONObject().put("paced",new JSONObject().put("credential",policy)));
     }
     static HttpURLConnection connection(Gateway gateway,String model,boolean stream) throws Exception {
+        return connection(gateway,model,stream,12000);
+    }
+    static HttpURLConnection connection(Gateway gateway,String model,boolean stream,int readTimeout) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+gateway.getListeningPort()+"/v1/chat/completions").openConnection(Proxy.NO_PROXY);
-        c.setRequestMethod("POST"); c.setDoOutput(true);c.setConnectTimeout(3000);c.setReadTimeout(12000);c.setRequestProperty("Authorization","Bearer fixture-auth");c.setRequestProperty("Content-Type","application/json");
+        c.setRequestMethod("POST"); c.setDoOutput(true);c.setConnectTimeout(3000);c.setReadTimeout(readTimeout);c.setRequestProperty("Authorization","Bearer fixture-auth");c.setRequestProperty("Content-Type","application/json");
         byte[] body=bytes(new JSONObject().put("model",model).put("stream",stream).put("messages",new JSONArray().put(new JSONObject().put("role","user").put("content","hello"))).toString());
         try(OutputStream out=c.getOutputStream()) { out.write(body); } return c;
     }

@@ -53,6 +53,7 @@ public final class GatewayMissingProviderOfflineTest {
         Map<String, String> headers = new HashMap<String, String>();
         headers.put("content-length", String.valueOf(bytes.length));
         headers.put("content-type", "application/json");
+        headers.put("host", "127.0.0.1:3425");
         headers.put("authorization", "Bearer secret");
         return (NanoHTTPD.IHTTPSession) Proxy.newProxyInstance(GatewayMissingProviderOfflineTest.class.getClassLoader(),
                 new Class<?>[]{NanoHTTPD.IHTTPSession.class}, (proxy, method, args) -> {

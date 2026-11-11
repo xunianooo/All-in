@@ -48,8 +48,12 @@ public final class WorkBuddyRequestPolicy {
             if(report!=null) {report.messages=changed.messages;report.descriptions=changed.descriptions;}
         }
         if(out.has("n") && !out.isNull("n") && (!(out.opt("n") instanceof Number) || ((Number)out.opt("n")).doubleValue()!=1)) throw bad("only n=1 supported");
+        // WorkBuddy keeps a chat's own max_tokens and only fills it from max_completion_tokens when
+        // it is absent (opencode-workbuddy-auth index.mjs:951-969 systemOn). The two are not
+        // interchangeable caps, so taking the smaller of both is not what its own client sends.
         boolean a=out.has("max_tokens")&&!out.isNull("max_tokens"), b=out.has("max_completion_tokens")&&!out.isNull("max_completion_tokens");
-        if(a||b) { long v=a?limit(out.opt("max_tokens")):limit(out.opt("max_completion_tokens")); if(b)v=Math.min(v,limit(out.opt("max_completion_tokens")));out.put("max_tokens",v); }
+        if(a) out.put("max_tokens",limit(out.opt("max_tokens")));
+        else if(b) out.put("max_tokens",limit(out.opt("max_completion_tokens")));
         out.remove("max_completion_tokens");
         JSONArray messages=out.optJSONArray("messages");
         if(messages==null) throw bad("missing messages");

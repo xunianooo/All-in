@@ -31,14 +31,25 @@ public final class WorkBuddyPolicy {
     public static Map<String, String> headers(String provider, String url, String credential,
                                                JSONObject account, String explicitSession,
                                                String logicalRequestId, JSONObject outboundPayload) {
+        return endpointHeaders(provider, url, credential, account, explicitSession, outboundPayload, false);
+    }
+
+    /** Native Messages authentication is restricted to the fixed CN origin and exact path. */
+    public static Map<String, String> nativeHeaders(String provider, String url, String credential,
+            JSONObject account, String explicitSession, JSONObject outboundPayload) {
+        return endpointHeaders(provider, url, credential, account, explicitSession, outboundPayload, true);
+    }
+
+    private static Map<String, String> endpointHeaders(String provider, String url, String credential,
+            JSONObject account, String explicitSession, JSONObject outboundPayload, boolean nativeMessages) {
         boolean ai = "workbuddy-ai".equals(provider);
-        if (!ai && !"workbuddy".equals(provider)) return Collections.emptyMap();
+        if ((!ai && !"workbuddy".equals(provider)) || (nativeMessages && ai)) return Collections.emptyMap();
         try {
             URI u = new URI(url);
             String host = ai ? "www.workbuddy.ai" : "copilot.tencent.com";
             if (!"https".equalsIgnoreCase(u.getScheme()) || !host.equalsIgnoreCase(u.getHost())
                     || u.getRawUserInfo() != null || u.getPort() != -1 || u.getRawQuery() != null
-                    || u.getRawFragment() != null || !"/v2/chat/completions".equals(u.getRawPath()))
+                    || u.getRawFragment() != null || !(nativeMessages ? "/v1/messages" : "/v2/chat/completions").equals(u.getRawPath()))
                 return Collections.emptyMap();
         } catch (Exception e) { return Collections.emptyMap(); }
         String key = credential == null ? "" : credential.trim();
@@ -63,7 +74,8 @@ public final class WorkBuddyPolicy {
         h.put("X-Agent-Purpose", "conversation");
         h.put("X-Agent-Type", "main");
         h.put("X-Agent-Runtime", "local-agent");
-        h.put("Accept", "application/json");
+        h.put("Accept", nativeMessages ? "text/event-stream" : "application/json");
+        if (nativeMessages) h.put("anthropic-version", "2023-06-01");
         h.put("Accept-Encoding", "identity");
         h.put("X-Stainless-Retry-Count", "0");
         h.put("X-Stainless-Timeout", "1200");

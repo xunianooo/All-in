@@ -12,10 +12,11 @@ public final class ZCodeGiftPolicyHttpTest {
     static void check(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
     public static void main(String[] args) throws Exception {
         final ServerSocket server = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
-        final AtomicInteger calls=new AtomicInteger(); final String[] mode={"3012"}, received={""}, sid={""}; final long[] now={0}; final java.util.List<String> bodies=java.util.Collections.synchronizedList(new java.util.ArrayList<String>()); final java.util.List<Long> times=java.util.Collections.synchronizedList(new java.util.ArrayList<Long>());
+        final AtomicInteger calls=new AtomicInteger(); final String[] mode={"3012"}, received={""}, sid={""}, title={""}, qid={null}; final long[] now={0}; final java.util.List<String> bodies=java.util.Collections.synchronizedList(new java.util.ArrayList<String>()); final java.util.List<Long> times=java.util.Collections.synchronizedList(new java.util.ArrayList<Long>());
         Thread worker=new Thread(new Runnable() { public void run() {
             while (!server.isClosed()) try {
                 Socket socket=server.accept(); socket.setSoTimeout(5000);
+                qid[0]=null; title[0]="";
                 try {
                     InputStream input=socket.getInputStream(); ByteArrayOutputStream headers=new ByteArrayOutputStream();
                     int state=0, v;
@@ -27,6 +28,8 @@ public final class ZCodeGiftPolicyHttpTest {
                         String lower=line.toLowerCase(Locale.ROOT);
                         if (lower.startsWith("content-length:")) length=Integer.parseInt(line.substring(line.indexOf(':')+1).trim());
                         if (lower.startsWith("x-session-id:")) sid[0]=line.substring(line.indexOf(':')+1).trim();
+                        if (lower.startsWith("x-title:")) title[0]=line.substring(line.indexOf(':')+1).trim();
+                        if (lower.startsWith("x-query-id:")) qid[0]=line.substring(line.indexOf(':')+1).trim();
                     }
                     ByteArrayOutputStream request=new ByteArrayOutputStream();
                     while (length-->0) { v=input.read(); if(v<0) throw new EOFException(); request.write(v); }
@@ -95,6 +98,50 @@ public final class ZCodeGiftPolicyHttpTest {
             ZCodeGift.Stream ok=ZCodeGift.openStream("token","device","zai","m",empty,"sess",3000,false);
             JSONObject uid=new JSONObject(new JSONObject(received[0]).getJSONObject("metadata").getString("user_id"));
             check(uid.getString("session_id").equals(sid[0]),"generated session matches"); ok.is.close();
+            for (String metadata : new String[]{"null", "[]", "\"opaque\"", "{\"user_id\":null,\"trace\":7}"}) {
+                JSONObject original=new JSONObject("{\"messages\":[],\"metadata\":"+metadata+"}");
+                ZCodeGift.Stream dressed=ZCodeGift.openStream("token","device","zai","m",original,"sess",3000,true);
+                check(new JSONObject(received[0]).get("metadata").toString().equals(original.get("metadata").toString()),"dressed metadata preserved: "+metadata);
+                dressed.is.close();
+            }
+            // ---- 3.17.2 的 X-Title 与 x-query-id：全部走回环夹具，不对真网 ----
+            mode[0]="ok"; String turnSid=ZCodeGift.sessionOf("sess","device");
+            JSONObject ask=new JSONObject("{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"fix it\"}]}]}");
+            ZCodeGift.Stream turnZ=ZCodeGift.openStream("token","device","zai","m",ask,"sess",3000,true);
+            check("Z Code@electron".equals(title[0]),"x-title is Z Code@electron");
+            String turnId=qid[0];
+            check(turnId!=null && turnId.equals(ZCodeGift.queryOf(ask.toString(),turnSid)),"x-query-id names this turn");
+            check(turnId.equals(ZCodeGift.uuidOf("zcode-query\0"+turnSid+"\0"+1)),"x-query-id seed is session and turn count");
+            check(turnId.matches("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),"x-query-id is a v4 shaped uuid");
+            check(!turnId.contains("fix") && turnId.length()==36,"x-query-id carries no query text");
+            check(!ZCodeGift.queryOf(ZCodeGift.dress(new JSONObject(ask.toString()),"zai","m","device",turnSid).toString(),turnSid).equals(turnId),
+                    "the name comes from the agent's ask, not the dressed body");
+            turnZ.is.close();
+            JSONObject continued=new JSONObject("{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"fix it\"}]},"
+                    +"{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{}}]},"
+                    +"{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"a\"}]}]}");
+            ZCodeGift.Stream nextZ=ZCodeGift.openStream("token","device","zai","m",continued,"sess",3000,true);
+            check(turnId.equals(qid[0]) && nextZ.sends==1,"tool results keep the turn's x-query-id"); nextZ.is.close();
+            JSONObject asked=new JSONObject("{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"fix it\"}]},"
+                    +"{\"role\":\"assistant\",\"content\":\"done\"},{\"role\":\"user\",\"content\":\"thanks\"}]}");
+            ZCodeGift.Stream secondZ=ZCodeGift.openStream("token","device","zai","m",asked,"sess",3000,true);
+            check(qid[0]!=null && !qid[0].equals(turnId),"the next user message is a new x-query-id"); secondZ.is.close();
+            ZCodeGift.Stream otherZ=ZCodeGift.openStream("token","device","zai","m",ask,"other-sess",3000,true);
+            check(qid[0]!=null && !qid[0].equals(turnId),"another session is another x-query-id"); otherZ.is.close();
+            JSONObject resultsOnly=new JSONObject("{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"a\"}]}]}");
+            ZCodeGift.Stream noneZ=ZCodeGift.openStream("token","device","zai","m",resultsOnly,"sess",3000,true);
+            check(qid[0]==null,"tool results alone send no x-query-id"); noneZ.is.close();
+            check(ZCodeGift.queryOf(resultsOnly.toString(),turnSid).isEmpty(),"no user text, no query id");
+            check(ZCodeGift.queryOf("{","s1").isEmpty(),"an unreadable body sends none");
+            check(ZCodeGift.queryOf("{\"messages\":\"none\"}","s1").isEmpty(),"messages that is no array sends none");
+            check(ZCodeGift.queryOf("{\"messages\":[{\"role\":\"assistant\",\"content\":\"hi\"}]}","s1").isEmpty(),"the model's own words are no query");
+            check(ZCodeGift.queryOf("{\"messages\":[{\"role\":\"user\",\"content\":\"   \"}]}","s1").isEmpty(),"a blank ask sends none");
+            check(ZCodeGift.queryOf("{\"messages\":[{\"role\":\"user\",\"content\":\"\u00a0\"}]}","s1").isEmpty(),"a non-breaking space is no ask");
+            check(ZCodeGift.queryOf("{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}","s1")
+                    .equals(ZCodeGift.uuidOf("zcode-query\0s1\0"+"1")),"a plain string ask counts");
+            check(!ZCodeGift.queryOf(ask.toString(),"other").equals(turnId),"the session is part of the name");
+            JSONObject unusual=ZCodeGift.dress(new JSONObject("{\"messages\":[]}"),"zai","m","device\"quoted","session");
+            check(new JSONObject(unusual.getJSONObject("metadata").getString("user_id")).getString("device_id").equals("device\"quoted"),"escaped device id");
             mode[0]="slow"; RequestContext deadline=new RequestContext("gift",NetworkPolicy.capture(),150);
             ZCodeGift.Stream slow=ZCodeGift.openStream("token","device","zai","m",empty,"sess",3000,false,deadline);
             check(slow.status==200,"slow response opened"); boolean expired=false;

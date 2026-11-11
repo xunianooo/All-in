@@ -136,12 +136,19 @@ public final class QoderStreamOfflineTest {
             source.released = true;
             String rest = read(stream);
             check(rest.contains("thinking") && rest.contains("length") && rest.contains("[DONE]"), "terminal output");
-            check(seen[0].getInt("prompt_tokens") == 12 && !seen[0].has("completion_tokens"), "usage fabricated fields");
+            check(seen[0].getInt("prompt_tokens") == 12 && seen[0].getInt("completion_tokens") == 0 && seen[0].getInt("total_tokens") == 12 && seen[0].getJSONObject("prompt_tokens_details").getInt("cached_tokens") == 4, "Qoder usage normalization");
         }
         check(sent[0] && fake.disconnected && source.closed && fake.request.size() > 0, "transport closure");
         Fake eof = new Fake(200, new Source(first + delta(new JSONObject(), "stop")));
         try (QoderStream.Stream stream = open(eof)) { check(read(stream).contains("[DONE]"), "clean EOF after finish"); }
         invalid(first + delta(new JSONObject(), "stop") + "data: {", original());
+        String contentFilter = delta(new JSONObject().put("content", "ok"), "content_filter") + done();
+        try (QoderStream.Stream stream = open(new Fake(200, new Source(contentFilter)))) { JSONObject result=stream.aggregate(); check("content_filter".equals(result.getJSONArray("choices").getJSONObject(0).getString("finish_reason")), "content filter finish preserved"); }
+        String unknownFinish = delta(new JSONObject().put("content", "ok"), "vendor_stop") + done();
+        try (QoderStream.Stream stream = open(new Fake(200, new Source(unknownFinish)))) { JSONObject result=stream.aggregate(); check("stop".equals(result.getJSONArray("choices").getJSONObject(0).getString("finish_reason")), "unknown finish maps to stop"); }
+        String usageOnly = envelope(new JSONObject().put("choices", new JSONArray()).put("usage", new JSONObject().put("prompt_tokens", 8).put("completion_tokens", 3).put("total_tokens", 99).put("prompt_tokens_details", new JSONObject().put("cached_tokens", 0))));
+        try (QoderStream.Stream stream = open(new Fake(200, new Source(first + delta(new JSONObject(), "stop") + usageOnly + done())))) { JSONObject u=stream.aggregate().getJSONObject("usage"); check(u.getInt("total_tokens")==11 && !u.has("prompt_tokens_details"), "usage total recomputed and zero details omitted"); }
+
     }
 
     static void nativeTools() throws Exception {
@@ -161,6 +168,7 @@ public final class QoderStreamOfflineTest {
         invalid(wire, original().put("tool_choice", "none"));
         invalid(delta(new JSONObject().put("content", "text"), "stop") + done(), original().put("tool_choice", "required"));
         invalid(tools(tool(0, "x", "one", "{}")) + delta(new JSONObject(), "length") + done(), original());
+        invalid(tools(tool(0, "x", "one", "{}")) + delta(new JSONObject(), "tool_calls") + done(), original().put("tool_choice", new JSONObject().put("type","function").put("function",new JSONObject().put("name","two"))));
     }
 
     static void failures() throws Exception {
@@ -274,28 +282,20 @@ public final class QoderStreamOfflineTest {
         final JSONObject[] observed = {null};
         try (QoderStream.Stream stream = open(new Fake(200, new Source(wire)), null, u -> observed[0] = u, original())) {
             JSONObject result = stream.aggregate();
-            JSONObject usage = result.getJSONObject("usage"), details = usage.getJSONObject("details");
-            check(usage.getInt("prompt_tokens") == 12 && usage.getInt("completion_tokens") == 7,
-                    "partial usage merge");
-            check(details.getInt("cached_tokens") == 4 && details.getInt("reasoning_tokens") == 3,
-                    "nested usage merge");
-            check(!usage.has("total_tokens") && observed[0].getInt("prompt_tokens") == 12,
-                    "invented total or observer missed input");
+            JSONObject usage = result.getJSONObject("usage");
+            check(usage.getInt("prompt_tokens") == 0 && usage.getInt("completion_tokens") == 7,
+                    "latest usage snapshot");
+            check(usage.getInt("total_tokens") == 7, "per-frame usage total");
+            check(!usage.has("prompt_tokens_details") && !usage.has("completion_tokens_details"),
+                    "usage normalization and zero detail omission");
+            check(observed[0].getInt("completion_tokens") == 7, "observer missed latest usage");
         }
         String invalid = delta(new JSONObject().put("content", "visible"), null)
                 + tools(tool(0, "native", "one", "{}")) + delta(new JSONObject(), "unrecognized") + done();
         try (QoderStream.Stream stream = open(new Fake(200, new Source(invalid)))) {
-            ByteArrayOutputStream delivered = new ByteArrayOutputStream();
-            byte[] buffer = new byte[1024];
-            try {
-                int n;
-                while ((n = stream.read(buffer)) >= 0) delivered.write(buffer, 0, n);
-                throw new AssertionError("invalid finish accepted");
-            } catch (IOException expected) {
-                String output = delivered.toString("UTF-8");
-                check(output.contains("visible") && !output.contains("tool_calls") && !output.contains("[DONE]"),
-                        "invalid finish emitted tool or success");
-            }
+            JSONObject result=stream.aggregate(); JSONObject choice=result.getJSONArray("choices").getJSONObject(0);
+            check("tool_calls".equals(choice.getString("finish_reason")) && choice.getJSONObject("message").getJSONArray("tool_calls").length()==1,
+                    "tool calls override unknown finish");
         }
     }
 

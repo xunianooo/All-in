@@ -36,6 +36,9 @@ public final class ConfigurationView {
         return "/" + tag + value.length() + ":" + value;
     }
 
+    // Names are matched exactly after folding case and separators. A broader rule such as "any name
+    // containing key" would also redact public keys, key ids and the provider "keys" pool, so a new
+    // secret field must be listed here explicitly.
     private static boolean sensitive(String key) {
         String normalized=key.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "");
         if(normalized.endsWith("token") || normalized.endsWith("secret") || normalized.equals("devicerefresh")) return true;
@@ -45,6 +48,9 @@ public final class ConfigurationView {
             case "password": case "passwd": case "secret": case "clientsecret":
             case "idtoken": case "cookie": case "authorization": case "sessionid": case "session":
             case "sid": case "credential": case "accesskey": case "privatekey": return true;
+            // Trae device binding stores a PEM EC private key next to its public key; only the
+            // private half is secret, so the public half stays readable for pairing and diagnostics.
+            case "deviceprivatekey": return true;
             default: return false;
         }
     }

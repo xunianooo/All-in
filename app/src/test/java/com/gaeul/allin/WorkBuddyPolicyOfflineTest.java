@@ -7,6 +7,7 @@ public class WorkBuddyPolicyOfflineTest {
     private static final String CN = "https://copilot.tencent.com/v2/chat/completions";
     private static final String AI = "https://www.workbuddy.ai/v2/chat/completions";
     static void check(boolean b) { if (!b) throw new AssertionError(); }
+    static void check(boolean b,String message) { if(!b) throw new AssertionError(message); }
     static Map<String,String> h(String p,String url,String key,JSONObject a,String s,String r) {
         return WorkBuddyPolicy.headers(p,url,key,a,s,r);
     }

@@ -10,5 +10,7 @@ const run=s=>vm.runInContext(s,ctx),response=d=>({ok:true,json:async()=>d}),stat
  p=run('checkQuirks()');assert(nodes['quirks-check'].disabled);let count=calls.length;await run('checkQuirks()');assert.equal(calls.length,count);pending.shift().reject(Error('unknown'));await p;assert.match(nodes['quirks-status'].textContent,/未确认/);assert(nodes['quirks-check'].disabled);
  p=run('loadQuirks()');pending.shift().resolve(response(state(true,'cache_restored','verified-cache')));await p;assert.match(nodes['quirks-status'].textContent,/已验证缓存/);
  p=run('checkQuirks()');pending.shift().resolve(response({result:'updated'}));await new Promise(r=>setImmediate(r));pending.shift().resolve(response(state(true,'updated','verified-update')));await p;assert.match(nodes['quirks-status'].textContent,/更新成功/);
+ p=run('loadQuirks()');pending.shift().resolve(response(state(true,'interrupted')));await p;assert.match(nodes['quirks-status'].textContent,/中断/);
+ p=run('loadQuirks()');pending.shift().resolve(response(state(true,'not_a_state')));await p;assert.match(nodes['quirks-status'].textContent,/状态未知/);
  console.log('dashboard q2 PASS');
 })().catch(e=>{console.error(e);process.exitCode=1});

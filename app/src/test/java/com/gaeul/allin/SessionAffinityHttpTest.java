@@ -24,8 +24,8 @@ public final class SessionAffinityHttpTest {
         String events="event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"x\",\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"+
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"+
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
-        Method method=GatewayServer.class.getDeclaredMethod("nativeAnthropicResponse",InputStream.class,PrivacyMasker.Session.class,ContextGuard.Result.class,java.net.HttpURLConnection.class);method.setAccessible(true);
-        NanoHTTPD.Response response=(NanoHTTPD.Response)method.invoke(g,new ByteArrayInputStream(events.getBytes(StandardCharsets.UTF_8)),null,null,null);local.remove();
+        Method method=GatewayServer.class.getDeclaredMethod("nativeAnthropicResponse",InputStream.class,PrivacyMasker.Session.class,ContextGuard.Result.class,java.net.HttpURLConnection.class,boolean.class);method.setAccessible(true);
+        NanoHTTPD.Response response=(NanoHTTPD.Response)method.invoke(g,new ByteArrayInputStream(events.getBytes(StandardCharsets.UTF_8)),null,null,null,false);local.remove();
         InputStream body=response.getData();AllInTrackedResponse.WriteCompletion completion=(AllInTrackedResponse.WriteCompletion)body;completion.onWriteStart();while(body.read()!=-1) {} completion.onWriteComplete(delivered);
         check(ctx.affinitySemantic.get()==expected,"native anthropic confirmation");body.close();ctx.close();
     }

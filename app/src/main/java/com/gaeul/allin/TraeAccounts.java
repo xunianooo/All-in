@@ -42,7 +42,9 @@ public final class TraeAccounts {
             JSONObject pending=copy(expected); pending.put("refreshState","pending");
             // The durable intent must be committed before any refresh bytes can be sent.
             store.replace(id,expected,pending);
-            if(retired) throw new IllegalStateException("retired");
+            // Retired here means the exchange never started: nothing was sent, so put the record back.
+            // Left pending it reads as outcome_unknown for good, with no request to blame.
+            if(retired) { undoLocal(id,store,pending,expected,fingerprint); throw new IllegalStateException("retired"); }
             JSONObject next;
             try {
                 next=refresher.refresh(copy(expected),network,request);
@@ -51,7 +53,9 @@ public final class TraeAccounts {
                 boolean unsent=e instanceof TraeAuth.Failure && (((TraeAuth.Failure)e).code.equals("network_error") || ((TraeAuth.Failure)e).code.startsWith("outbound_"));
                 boolean relogin=e instanceof TraeAuth.Failure && ((TraeAuth.Failure)e).code.equals("requires_relogin");
                 if(!unsent) synchronized(this) { quarantine.put(id,fingerprint); }
-                if(!retired && (unsent || relogin)) {
+                // A failure that never left this device is undone even while retiring: the rollback
+                // writes nothing outward, and a stranded "pending" would block the account for good.
+                if(unsent || relogin) {
                     JSONObject marked=copy(expected);
                     if(relogin) marked.put("refreshState","requires_relogin");
                     try { store.replace(id,pending,marked); if(relogin) synchronized(this) { quarantine.remove(id); } }
@@ -70,5 +74,10 @@ public final class TraeAccounts {
                 throw e;
             }
         }
+    }
+    /** Nothing left this device: undo the local pending mark, and fail closed if it cannot be undone. */
+    private void undoLocal(String id, Store store, JSONObject pending, JSONObject expected, String fingerprint) {
+        try { store.replace(id,pending,copy(expected)); }
+        catch(Exception failed) { synchronized(this) { quarantine.put(id,fingerprint); } }
     }
 }

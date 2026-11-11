@@ -31,7 +31,7 @@ public final class RaccoonCatalogHttpTest {
         final FakeConnection[] captured=new FakeConnection[1];
         gateway.setVendorConnectionsForTests(url -> { try { captured[0]=new FakeConnection(url,status,body);return captured[0]; } catch(Exception e) { throw new IOException(e); } });
         String oldModels=p.getJSONArray("models").toString(), oldMeta=p.getJSONObject("modelMeta").toString();
-        NanoHTTPD.Response response=gateway.serve(RoutingSetupOfflineTest.request("127.0.0.1","/api/auth/raccoon/sync-models","POST","{}","fixture-auth"));
+        NanoHTTPD.Response response=gateway.serve(RoutingSetupOfflineTest.request("127.0.0.1","/api/auth/raccoon/sync-models","POST","{}",null));
         String responseBody=ResponsesGatewayOfflineTest.read(response.getData());
         check(captured[0]!=null,"vendor hook used: "+responseBody);
         check(captured[0].getURL().toString().equals("https://xiaohuanxiong.com/api/web/llm/v2/model_catalog"),"url");

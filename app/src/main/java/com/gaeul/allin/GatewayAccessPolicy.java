@@ -11,6 +11,7 @@ final class GatewayAccessPolicy {
         path = canonical(path);
         return "/v1/chat/completions".equals(path) || "/v1/messages".equals(path)
                 || "/v1/responses".equals(path) || "/v1/models".equals(path)
+                || "/v1/images/generations".equals(path)
                 || "/backend-api/codex/responses".equals(path)
                 || "/backend-api/codex/responses/compact".equals(path)
                 || "/backend-api/codex/models".equals(path);

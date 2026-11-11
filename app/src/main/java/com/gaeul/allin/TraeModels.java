@@ -11,6 +11,7 @@ import org.json.JSONObject;
 public final class TraeModels {
     private static final String[] FUNCTIONS={"chat_v3","solo_work_lite","solo_agent","solo_agent_lite","solo_coder"};
     private static final int LIMIT=512;
+    private static final String MAX_SUFFIX="-max";
     private TraeModels() {}
     private static void check(JSONObject r) throws Exception {
         JSONObject e=r.optJSONObject("error"); if(e==null)e=r;
@@ -72,6 +73,8 @@ public final class TraeModels {
         if(a!=null)for(int i=0;i<Math.min(a.length(),LIMIT);i++) { Object v=a.opt(i); if(v instanceof String && (v.equals("light")||v.equals("medium")||v.equals("high")||v.equals("extra_high")||v.equals("max")))return true; }
         return false;
     }
+    private static JSONObject maxDetail(JSONObject model) { JSONArray a=model.optJSONArray("model_detail_list"); if(a!=null)for(int i=0;i<Math.min(a.length(),LIMIT);i++){JSONObject d=a.optJSONObject(i);if(d!=null&&d.optString("model_name").endsWith("__max"))return d;}return null; }
+    private static int window(JSONObject model,String key) { JSONObject w=model.optJSONObject("context_window_tokens"); return w==null?0:positiveInt(w.opt(key)); }
     private static final class Entry { final String fn; final JSONObject model; Entry(String fn,JSONObject model){this.fn=fn;this.model=model;} }
     public static JSONObject parse(JSONObject batch) throws Exception { return parse(batch,0); }
     private static JSONObject parse(JSONObject batch,long catalogObservedAt) throws Exception {
@@ -95,6 +98,19 @@ public final class TraeModels {
         }
         JSONArray models=new JSONArray(); JSONObject meta=new JSONObject();
         for(Map.Entry<String,Entry> e:selected.entrySet()){Entry v=e.getValue();models.put(e.getKey());meta.put(e.getKey(),metadata(v.model,v.fn,detail(v.model,"__dev"),catalogObservedAt));}
+        for(Map.Entry<String,Entry> base:selected.entrySet()) {
+            String id=base.getKey(), alias=id+MAX_SUFFIX; if(selected.containsKey(alias))continue;
+            ArrayList<Entry> siblings=new ArrayList<>(); siblings.add(base.getValue());
+            for(String fn:FUNCTIONS) for(int g=0;g<Math.min(groups.length(),LIMIT);g++) { JSONObject group=groups.optJSONObject(g); if(group==null||!fn.equals(group.optString("function")))continue; JSONArray list=group.optJSONArray("config_info_list"); if(list==null)continue; for(int i=0;i<Math.min(list.length(),LIMIT);i++){JSONObject candidate=list.optJSONObject(i);if(candidate!=null&&id.equals(candidate.optString("config_name"))&&valid(candidate))siblings.add(new Entry(fn,candidate));} }
+            Entry maxEntry=null; JSONObject maxDetail=null; for(Entry sibling:siblings){JSONObject d=maxDetail(sibling.model);if(d!=null){maxEntry=sibling;maxDetail=d;break;}}
+            if(maxEntry==null)continue;
+            ArrayList<Entry> windowOrder=new ArrayList<>(); windowOrder.add(maxEntry); for(Entry sibling:siblings)if(sibling!=maxEntry)windowOrder.add(sibling);
+            int maxWindow=0,devWindow=0; for(Entry sibling:windowOrder){if(maxWindow==0)maxWindow=window(sibling.model,"max");if(devWindow==0)devWindow=window(sibling.model,"dev");}
+            if(maxWindow<=devWindow)continue;
+            JSONObject mm=metadata(base.getValue().model,base.getValue().fn,maxDetail,catalogObservedAt);
+            mm.put("function",maxEntry.fn).put("base",id).put("maxMode",true).put("contextWindow",maxWindow).put("maxSupported",true);
+            models.put(alias);meta.put(alias,mm);
+        }
         return new JSONObject().put("models",models).put("modelMeta",meta);
     }
 }

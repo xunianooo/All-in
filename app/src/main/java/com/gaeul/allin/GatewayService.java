@@ -112,6 +112,10 @@ public class GatewayService extends Service {
             o.put("pid", android.os.Process.myPid());
             GatewayServer server = s == null ? null : s.server;
             o.put("listenerAlive", server != null && server.isAlive());
+            GatewayServer.ListenPlan plan = server == null ? null : server.listenPlan();
+            o.put("listenAddress", plan == null ? "" : plan.host);
+            o.put("listenAction", plan == null ? "" : plan.action);
+            o.put("listenNote", plan == null ? "" : plan.note);
             o.put("foreground", s != null && s.foreground);
             o.put("typedForeground", TYPED_FOREGROUND_OK);
             o.put("foregroundTypeMask", FOREGROUND_TYPE_MASK);
@@ -240,6 +244,27 @@ public class GatewayService extends Service {
         startEngine();
     }
 
+    /** 网关固定端口：server.port 不参与 bind（换端口会让已按 3425 配好的客户端全部失联）。 */
+    static final int GATEWAY_PORT = 3425;
+
+    /**
+     * 按磁盘配置折算出的监听计划创建网关。
+     *
+     * 只有配置显式 server.loopbackOnly=true 才 bind 127.0.0.1；旧配置里的 127.0.0.1 与损坏配置各有
+     * 明确处理：前者保留历史通配监听（不因升级静默切断既有局域网），后者 fail-closed 到回环。两者都
+     * 在日志与 /api/status 的 listenAction 里留下可操作提示。
+     */
+    static GatewayServer createGatewayServer(Context context) {
+        GatewayServer.ListenPlan plan = GatewayServer.planListen(
+                context == null ? null : new java.io.File(context.getFilesDir(), "config.json"), GATEWAY_PORT);
+        if (plan.loopback() && !plan.actionRequired() && plan.loopbackOnlyRequested)
+            Log.i("Magpie", "网关仅监听 127.0.0.1（配置 server.loopbackOnly 生效）");
+        if (plan.actionRequired())
+            Log.w("Magpie", "监听端点需要处理[" + plan.action + "]：" + plan.note
+                    + "；实际监听 " + plan.host + ":" + plan.port);
+        return new GatewayServer(context, plan);
+    }
+
     private void startEngine() {
         synchronized (ENGINE_SERIAL) {
             if (disposed || !isGatewayEnabled(this)) return;
@@ -263,7 +288,7 @@ public class GatewayService extends Service {
             GatewayServer candidate = null;
             boolean published = false;
             try {
-                candidate = new GatewayServer(this, 3425);
+                candidate = createGatewayServer(this);
                 if (disposed || !isGatewayEnabled(this)) return;
                 candidate.start();
                 if (!candidate.isAlive()) throw new IllegalStateException("listener not alive");
@@ -452,6 +477,12 @@ public class GatewayService extends Service {
     static BackupCoordinator.Backend backupBackend(final Context context) {
         final Context app = context.getApplicationContext();
         return new BackupCoordinator.Backend() {
+            /**
+             * Reports an absent durable configuration instead of inventing one: the running
+             * server throws "config missing" and the file reader throws when the file is gone, so
+             * a restore over a configuration that does not exist is refused during the preview,
+             * before the gateway is stopped (see BackupCoordinator's class comment).
+             */
             public byte[] readConfig() throws Exception {
                 synchronized (ENGINE_SERIAL) {
                     if (PENDING_STOPS.get() != 0) throw new IllegalStateException("gateway stopping");
@@ -459,6 +490,19 @@ public class GatewayService extends Service {
                     GatewayServer own = s == null ? null : s.server;
                     return own != null ? own.backupDurableConfig() : BackupFiles.readFile(
                             new java.io.File(app.getFilesDir(), "config.json"), EncryptedConfigBackup.MAX_CONFIG_BYTES);
+                }
+            }
+            /**
+             * Preserve an unparseable config.json before a restore replaces it. The durable bytes
+             * are re-read and matched against the CAS anchor, then written to a content-addressed
+             * rescue copy (the same name the recovery state already uses) and verified by reading
+             * it back. Any failure aborts the restore before the gateway is stopped.
+             */
+            public String preserveDamagedConfig(byte[] hash, byte[] damaged) throws Exception {
+                synchronized (ENGINE_SERIAL) {
+                    if (PENDING_STOPS.get() != 0) throw new IllegalStateException("gateway stopping");
+                    return BackupRestoreTransaction.preserveDamaged(
+                            new java.io.File(app.getFilesDir(), "config.json"), hash, damaged);
                 }
             }
             public void restoreIfUnchanged(byte[] hash, byte[] replacement, byte[] rollback) throws Exception {
@@ -491,7 +535,7 @@ public class GatewayService extends Service {
                         public void restart() throws Exception {
                             if (!enabled) return;
                             if (owner.disposed || current != owner || !isGatewayEnabled(app)) throw new IllegalStateException("gateway lifecycle changed");
-                            GatewayServer candidate = new GatewayServer(owner, 3425);
+                            GatewayServer candidate = createGatewayServer(owner);
                             boolean published = false;
                             synchronized (owner.lifecycle) { owner.server = candidate; }
                             try {

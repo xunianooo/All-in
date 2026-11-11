@@ -42,6 +42,11 @@ final class IngressBody {
 
     /** limit is an already selected byte limit; clamp it again to the absolute cap. */
     static Result read(InputStream in, Map<String, String> headers, String method, int limit) {
+        return read(in, headers, method, limit, null);
+    }
+    static Result read(InputStream in, Map<String, String> headers, String method, int limit, OutboundLimiter.Cancellation cancellation) {
+        if (cancellation != null && cancellation.isCancelled())
+            return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, 0);
         int bound = limit > 0 ? Math.min(limit, MAX_LIMIT) : DEFAULT_LIMIT;
         String cl = null, te = null, ce = null;
         boolean hasCl = false, hasTe = false, hasCe = false;
@@ -89,7 +94,11 @@ final class IngressBody {
             ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(length, 8192));
             byte[] buffer = new byte[8192];
             while (count < length) {
+                if (cancellation != null && cancellation.isCancelled())
+                    return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, count);
                 int n = in.read(buffer, 0, (int) Math.min(buffer.length, length - count));
+                if (cancellation != null && cancellation.isCancelled())
+                    return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, count);
                 if (n < 0) return fail(400, "Incomplete request body", Classification.INCOMPLETE, count);
                 if (n == 0) return fail(400, "Unable to read request body", Classification.IO_ERROR, count);
                 out.write(buffer, 0, n); count += n;
@@ -104,6 +113,8 @@ final class IngressBody {
         } catch (SocketTimeoutException e) {
             return fail(408, "Request body read timed out", Classification.TIMEOUT, count);
         } catch (IOException e) {
+            if (cancellation != null && cancellation.isCancelled())
+                return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, count);
             return fail(400, "Unable to read request body", Classification.IO_ERROR, count);
         }
     }

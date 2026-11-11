@@ -37,8 +37,10 @@ public class AntigravityClient {
         JSONObject req = new JSONObject();
         JSONArray contents = new JSONArray();
         StringBuilder system = new StringBuilder();
+        boolean claude = model != null && model.toLowerCase().contains("claude");
 
         JSONArray msgs = payload.optJSONArray("messages");
+        java.util.HashMap<String, String> toolNamesById = new java.util.HashMap<>();
         if (msgs != null) {
             for (int i = 0; i < msgs.length(); i++) {
                 JSONObject m = msgs.optJSONObject(i);
@@ -53,29 +55,32 @@ public class AntigravityClient {
                     continue;
                 }
                 if ("tool".equals(role) || "function".equals(role)) {
-                    JSONObject part = new JSONObject();
                     JSONObject fr = new JSONObject();
+                    String id = safeToolId(m.optString("tool_call_id", ""));
                     String name = m.optString("name", "");
-                    if (name.isEmpty()) name = "tool";
+                    if (name.isEmpty()) name = toolNamesById.get(id);
+                    if (name == null || name.isEmpty()) name = "tool";
                     fr.put("name", name);
-                    String id = m.optString("tool_call_id", "");
                     if (!id.isEmpty()) fr.put("id", id);
-                    JSONObject resp = new JSONObject();
-                    resp.put("result", textOf(m.opt("content")));
-                    fr.put("response", resp);
+                    JSONObject response = new JSONObject();
+                    response.put("result", textOf(m.opt("content")));
+                    fr.put("response", response);
+                    JSONObject part = new JSONObject();
                     part.put("functionResponse", fr);
-                    appendTurn(contents, "user", part);
+                    appendTurn(contents, "user", part, true);
+                    appendToolImages(contents, m.opt("content"));
                     continue;
                 }
                 boolean assistant = "assistant".equals(role) || "model".equals(role);
-                String text = textOf(m.opt("content"));
-                if (!text.isEmpty()) {
-                    JSONObject part = new JSONObject();
-                    part.put("text", text);
-                    appendTurn(contents, assistant ? "model" : "user", part);
-                }
+                appendContentParts(contents, assistant ? "model" : "user", m.opt("content"),
+                        assistant ? m.optJSONObject("extra_content") : null, claude);
                 JSONArray calls = m.optJSONArray("tool_calls");
                 if (calls != null) {
+                    boolean signed = false;
+                    for (int j = 0; j < calls.length(); j++) {
+                        JSONObject call = calls.optJSONObject(j);
+                        if (call != null && !googleThoughtSignature(call.optJSONObject("extra_content")).isEmpty()) signed = true;
+                    }
                     for (int j = 0; j < calls.length(); j++) {
                         JSONObject c = calls.optJSONObject(j);
                         if (c == null) continue;
@@ -83,7 +88,8 @@ public class AntigravityClient {
                         if (fn == null) continue;
                         JSONObject part = new JSONObject();
                         JSONObject fc = new JSONObject();
-                        fc.put("name", fn.optString("name", "tool"));
+                        String callName = fn.optString("name", "tool");
+                        fc.put("name", callName);
                         String args = fn.optString("arguments", "");
                         JSONObject parsed = null;
                         if (!args.trim().isEmpty()) {
@@ -93,14 +99,30 @@ public class AntigravityClient {
                             }
                         }
                         fc.put("args", parsed == null ? new JSONObject() : parsed);
-                        String id = c.optString("id", "");
-                        if (!id.isEmpty()) fc.put("id", id);
+                        String id = safeToolId(c.optString("id", ""));
+                        if (!id.isEmpty()) {
+                            fc.put("id", id);
+                            toolNamesById.put(id, callName);
+                        }
                         part.put("functionCall", fc);
-                        appendTurn(contents, "model", part);
+                        // Magpie sends an Antigravity Claude the skip marker on every call,
+                        // whatever signature the client kept from an earlier turn.
+                        if (claude) {
+                            part.put("thoughtSignature", SKIP_SIGNATURE);
+                        } else {
+                            String signature = googleThoughtSignature(c.optJSONObject("extra_content"));
+                            if (!signature.isEmpty()) part.put("thoughtSignature", signature);
+                            else if (!signed) part.put("thoughtSignature", SKIP_SIGNATURE);
+                        }
+                        appendTurn(contents, "model", part, false);
                     }
                 }
             }
         }
+
+        // Google reads a function call turn with an unanswered call as broken for the
+        // whole conversation, and turns away a turn mixing functionResponse with text.
+        contents = pairFunctionTurns(contents, claude);
 
         // Gemini 不接受以 model 结尾的历史
         if (contents.length() > 0) {
@@ -108,7 +130,7 @@ public class AntigravityClient {
             if (last != null && "model".equals(last.optString("role", ""))) {
                 JSONObject part = new JSONObject();
                 part.put("text", "Continue.");
-                appendTurn(contents, "user", part);
+                appendTurn(contents, "user", part, false);
             }
         }
         if (contents.length() > 0) {
@@ -142,11 +164,18 @@ public class AntigravityClient {
             req.put("systemInstruction", si);
         }
 
-        boolean claude = model != null && model.toLowerCase().contains("claude");
-
         // 工具声明
         JSONArray tools = payload.optJSONArray("tools");
-        String toolChoice = payload.optString("tool_choice", "");
+        Object rawToolChoice = payload.opt("tool_choice");
+        String toolChoice = rawToolChoice instanceof String ? (String) rawToolChoice : "";
+        String namedTool = "";
+        if (rawToolChoice instanceof JSONObject) {
+            JSONObject choice = (JSONObject) rawToolChoice;
+            JSONObject function = choice.optJSONObject("function");
+            if ("function".equals(choice.optString("type", "")) && function != null) {
+                namedTool = function.optString("name", "");
+            }
+        }
         if (tools != null && tools.length() > 0 && !"none".equals(toolChoice)) {
             JSONArray decls = new JSONArray();
             for (int i = 0; i < tools.length(); i++) {
@@ -178,10 +207,10 @@ public class AntigravityClient {
                 String mode = "AUTO";
                 if ("required".equals(toolChoice)) {
                     mode = "ANY";
-                } else if (toolChoice.startsWith("name:")) {
+                } else if (toolChoice.startsWith("name:") || !namedTool.isEmpty()) {
                     mode = "ANY";
                     JSONArray allowed = new JSONArray();
-                    allowed.put(toolChoice.substring(5));
+                    allowed.put(!namedTool.isEmpty() ? namedTool : toolChoice.substring(5));
                     fcCfg.put("allowedFunctionNames", allowed);
                 } else if (claude) {
                     mode = "VALIDATED";
@@ -207,34 +236,74 @@ public class AntigravityClient {
             gen.put("stopSequences", s);
         }
 
-        // 只有客户端明确要思考时才带 thinkingConfig，避免 Gemini 把 token 全烧在思考上
+        // Match Magpie's normalized effort names and provider budget policy.
         String effort = payload.optString("reasoning_effort", "");
-        boolean wantThink = !effort.isEmpty() || payload.optBoolean("thinking", false)
-                || (payload.optJSONObject("reasoning") != null);
+        JSONObject reasoning = payload.optJSONObject("reasoning");
+        if (effort.isEmpty() && reasoning != null) effort = reasoning.optString("effort", "");
+        JSONObject thinking = payload.optJSONObject("thinking");
+        boolean explicitThink = payload.optBoolean("thinking", false)
+                || (thinking != null && (thinking.optBoolean("enabled", false)
+                || "enabled".equalsIgnoreCase(thinking.optString("type", ""))));
+        String lower = model == null ? "" : model.toLowerCase();
+        String bareModel = lower.startsWith("models/") ? lower.substring(7) : lower;
+        // Magpie sends gpt-oss no thinkingConfig at all.
+        boolean gptOss = bareModel.startsWith("gpt-oss");
+        boolean claudeThinkingModel = claude && lower.contains("thinking");
+        boolean wantThink = !gptOss && (!effort.isEmpty() || explicitThink || claudeThinkingModel);
         if (wantThink) {
             JSONObject tc = new JSONObject();
             tc.put("includeThoughts", true);
-            String lower = model == null ? "" : model.toLowerCase();
-            boolean gemini3 = lower.contains("gemini-3") || lower.contains("gemini-pro-agent");
-            if (gemini3 && !claude) {
-                String level = "high";
-                if ("low".equals(effort) || "minimal".equals(effort)) level = "low";
-                else if ("medium".equals(effort)) level = "medium";
-                tc.put("thinkingLevel", level);
+            int geminiGeneration = geminiGeneration(lower);
+            boolean geminiThinkingModel = geminiGeneration >= 3 || lower.contains("gemini-pro-agent");
+            if (geminiThinkingModel && !claude) {
+                String normalized = normalizeEffort(effort);
+                if (!normalized.isEmpty()) {
+                    String level = "high";
+                    String raw = effort == null ? "" : effort.trim().toLowerCase();
+                    if ("minimal".equals(raw)) {
+                        // Magpie asks for a level only for an id that names one; otherwise
+                        // minimal goes as high, the lowest level every variant takes.
+                        level = "high";
+                    } else if ("low".equals(normalized)) level = "low";
+                    else if ("medium".equals(normalized)) {
+                        level = geminiGeneration == 3 && !lower.contains("flash") ? "high" : "medium";
+                    }
+                    tc.put("thinkingLevel", level);
+                }
             } else if (claude) {
-                int budget = 4096;
-                if ("low".equals(effort) || "minimal".equals(effort)) budget = 2048;
-                else if ("high".equals(effort)) budget = 8192;
-                if (maxTokens > 0 && budget >= maxTokens) budget = Math.max(1024, maxTokens - 1);
-                tc.put("thinkingBudget", budget);
-                if (maxTokens <= 0) gen.put("maxOutputTokens", budget + 32000);
+                if (!lower.contains("thinking")) {
+                    // Magpie omits thinkingConfig for Claude variants without thinking support.
+                    wantThink = false;
+                } else {
+                    String normalized = normalizeEffort(effort);
+                    int budget = "low".equals(normalized) ? 4096
+                            : "medium".equals(normalized) ? 10000
+                            : "high".equals(normalized) ? 24000
+                            : ("xhigh".equals(normalized) || "max".equals(normalized)) ? 32000 : 10000;
+                    if (maxTokens > 0 && budget >= maxTokens) {
+                        budget = maxTokens - 1;
+                        if (budget < 1024) wantThink = false;
+                    }
+                    if (wantThink) {
+                        tc.put("thinkingBudget", budget);
+                        if (maxTokens <= 0) gen.put("maxOutputTokens", budget + 32000);
+                    }
+                }
             }
-            gen.put("thinkingConfig", tc);
+            if (wantThink) gen.put("thinkingConfig", tc);
         }
 
         JSONObject fmt = payload.optJSONObject("response_format");
-        if (fmt != null && "json_object".equals(fmt.optString("type", ""))) {
-            gen.put("responseMimeType", "application/json");
+        if (fmt != null) {
+            String fmtType = fmt.optString("type", "");
+            if ("json_object".equals(fmtType) || "json_schema".equals(fmtType)) {
+                gen.put("responseMimeType", "application/json");
+            }
+            // Magpie forwards the client's schema so the model answers in that shape.
+            JSONObject declared = fmt.optJSONObject("json_schema");
+            JSONObject schema = declared == null ? null
+                    : declared.optJSONObject("schema") != null ? declared.optJSONObject("schema") : declared;
+            if (schema != null) gen.put("responseJsonSchema", schema);
         }
         if (gen.length() > 0) req.put("generationConfig", gen);
 
@@ -284,10 +353,83 @@ public class AntigravityClient {
     }
 
     /** 合并连续同角色 turn（Gemini 要求 user/model 交替） */
-    private static void appendTurn(JSONArray contents, String role, JSONObject part) {
+    private static final String SKIP_SIGNATURE = "skip_thought_signature_validator";
+    private static final String INTERRUPTED_TOOL_NOTE =
+            "[The result of this tool call is unavailable: the turn was interrupted.]";
+
+    private static boolean hasResponse(JSONArray parts) {
+        if (parts == null) return false;
+        for (int i = 0; i < parts.length(); i++) {
+            JSONObject p = parts.optJSONObject(i);
+            if (p != null && p.has("functionResponse")) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Answers a model turn's calls that no result ever came back for, and keeps a
+     * tool result turn apart from what the user said next: Google turns away a
+     * history whose call count differs from its response count, and a user turn
+     * mixing a functionResponse with text.
+     */
+    private static JSONArray pairFunctionTurns(JSONArray contents, boolean claude) {
+        java.util.HashSet<String> answeredIds = new java.util.HashSet<String>();
+        java.util.HashSet<String> answeredNames = new java.util.HashSet<String>();
+        for (int i = 0; i < contents.length(); i++) {
+            JSONObject turn = contents.optJSONObject(i);
+            JSONArray parts = turn == null ? null : turn.optJSONArray("parts");
+            for (int j = 0; parts != null && j < parts.length(); j++) {
+                JSONObject p = parts.optJSONObject(j);
+                JSONObject fr = p == null ? null : p.optJSONObject("functionResponse");
+                if (fr == null) continue;
+                String id = fr.optString("id", "");
+                if (!id.isEmpty()) answeredIds.add(id);
+                else answeredNames.add(fr.optString("name", ""));
+            }
+        }
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < contents.length(); i++) {
+            JSONObject turn = contents.optJSONObject(i);
+            if (turn == null) continue;
+            out.put(turn);
+            if (!"model".equals(turn.optString("role", ""))) continue;
+            JSONArray parts = turn.optJSONArray("parts");
+            JSONArray synth = null;
+            for (int j = 0; parts != null && j < parts.length(); j++) {
+                JSONObject p = parts.optJSONObject(j);
+                JSONObject fc = p == null ? null : p.optJSONObject("functionCall");
+                if (fc == null) continue;
+                String id = fc.optString("id", "");
+                String name = fc.optString("name", "tool");
+                if (id.isEmpty() ? answeredNames.contains(name) : answeredIds.contains(id)) continue;
+                if (synth == null) synth = new JSONArray();
+                JSONObject response = new JSONObject().put("name", name)
+                        .put("response", new JSONObject().put("result", INTERRUPTED_TOOL_NOTE));
+                if (!id.isEmpty()) response.put("id", id);
+                synth.put(new JSONObject().put("functionResponse", response));
+            }
+            if (synth == null) continue;
+            JSONObject next = i + 1 < contents.length() ? contents.optJSONObject(i + 1) : null;
+            JSONArray nextParts = next == null ? null : next.optJSONArray("parts");
+            if (next != null && "user".equals(next.optString("role", ""))
+                    && (claude || hasResponse(nextParts))) {
+                JSONArray merged = new JSONArray();
+                for (int k = 0; k < synth.length(); k++) merged.put(synth.opt(k));
+                for (int k = 0; nextParts != null && k < nextParts.length(); k++) merged.put(nextParts.opt(k));
+                next.put("parts", merged);
+            } else {
+                out.put(new JSONObject().put("role", "user").put("parts", synth));
+            }
+        }
+        return out;
+    }
+
+    /** 合并连续同角色 turn（Gemini 要求 user/model 交替；工具应答与普通文本不混一个 user turn） */
+    private static void appendTurn(JSONArray contents, String role, JSONObject part, boolean followsResponse) {
         if (contents.length() > 0) {
             JSONObject last = contents.optJSONObject(contents.length() - 1);
-            if (last != null && role.equals(last.optString("role", ""))) {
+            if (last != null && role.equals(last.optString("role", ""))
+                    && (!"user".equals(role) || hasResponse(last.optJSONArray("parts")) == followsResponse)) {
                 JSONArray parts = last.optJSONArray("parts");
                 if (parts == null) {
                     parts = new JSONArray();
@@ -348,6 +490,128 @@ public class AntigravityClient {
         return out;
     }
 
+    private static String googleThoughtSignature(JSONObject extraContent) {
+        JSONObject google = extraContent == null ? null : extraContent.optJSONObject("google");
+        return google == null ? "" : google.optString("thought_signature", "");
+    }
+
+    private static String openAiFinishReason(String finishReason) {
+        if ("MAX_TOKENS".equals(finishReason)) return "length";
+        if ("STOP".equals(finishReason) || "FINISH_REASON_UNSPECIFIED".equals(finishReason)
+                || "OTHER".equals(finishReason) || "MALFORMED_FUNCTION_CALL".equals(finishReason)
+                || "UNEXPECTED_TOOL_CALL".equals(finishReason)) return "stop";
+        return "content_filter";
+    }
+
+    private static int geminiGeneration(String model) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?:^|/)gemini-(\\d+)").matcher(model);
+        return m.find() ? Integer.parseInt(m.group(1)) : 0;
+    }
+
+    private static String normalizeEffort(String effort) {
+        String value = effort == null ? "" : effort.trim().toLowerCase();
+        if ("none".equals(value) || "minimal".equals(value)) return "low";
+        if ("low".equals(value) || "medium".equals(value) || "high".equals(value)
+                || "max".equals(value) || "xhigh".equals(value)) return value;
+        return "";
+    }
+
+    private static String safeToolId(String id) {
+        return id == null ? "" : id.replaceAll("[^a-zA-Z0-9_-]", "_");
+    }
+
+    private static JSONObject googleExtraContent(String signature) {
+        return new JSONObject().put("google", new JSONObject().put("thought_signature", signature));
+    }
+
+    private static String imageUrl(JSONObject block) {
+        Object image = block.opt("image_url");
+        if (image instanceof String) return (String) image;
+        if (image instanceof JSONObject) return ((JSONObject) image).optString("url", "");
+        String type = block.optString("type", "");
+        return "image".equals(type) || "input_image".equals(type) ? block.optString("url", "") : "";
+    }
+
+    private static void appendContentParts(JSONArray contents, String role, Object content,
+                                           JSONObject extraContent, boolean claude) {
+        if (content instanceof JSONArray) {
+            JSONArray blocks = (JSONArray) content;
+            for (int i = 0; i < blocks.length(); i++) {
+                Object item = blocks.opt(i);
+                if (!(item instanceof JSONObject)) continue;
+                JSONObject block = (JSONObject) item;
+                String url = imageUrl(block);
+                if (!url.isEmpty()) {
+                    JSONObject part = imagePart(url);
+                    if (part != null) appendTurn(contents, role, part, false);
+                } else {
+                    String text = block.optString("text", "");
+                    // Magpie keeps Google's text signature on Gemini only; an Antigravity
+                    // Claude gets none of its own thinking signatures back.
+                    String signature = "model".equals(role) && !claude
+                            ? googleThoughtSignature(block.optJSONObject("extra_content")) : "";
+                    if (!text.isEmpty() || !signature.isEmpty()) {
+                        JSONObject part = new JSONObject();
+                        part.put("text", text);
+                        if (!signature.isEmpty()) part.put("thoughtSignature", signature);
+                        appendTurn(contents, role, part, false);
+                    }
+                }
+            }
+            return;
+        }
+        String text = textOf(content);
+        String signature = claude ? "" : googleThoughtSignature(extraContent);
+        if (!text.isEmpty() || !signature.isEmpty()) {
+            JSONObject part = new JSONObject();
+            part.put("text", text);
+            if (!signature.isEmpty()) part.put("thoughtSignature", signature);
+            appendTurn(contents, role, part, false);
+        }
+    }
+
+    private static void appendToolImages(JSONArray contents, Object content) {
+        if (!(content instanceof JSONArray)) return;
+        JSONArray blocks = (JSONArray) content;
+        for (int i = 0; i < blocks.length(); i++) {
+            JSONObject block = blocks.optJSONObject(i);
+            if (block == null) continue;
+            String url = imageUrl(block);
+            if (!url.isEmpty()) {
+                JSONObject part = imagePart(url);
+                // A tool's images follow its response in the same turn, as Magpie sends them.
+                if (part != null) appendTurn(contents, "user", part, true);
+            }
+        }
+    }
+
+    private static JSONObject imagePart(String value) {
+        try {
+            JSONObject part = new JSONObject();
+            if (value.startsWith("data:")) {
+                int comma = value.indexOf(',');
+                if (comma < 0) return null;
+                String meta = value.substring(5, comma);
+                int semi = meta.indexOf(';');
+                String mime = semi >= 0 ? meta.substring(0, semi) : meta;
+                String data = value.substring(comma + 1);
+                if (meta.contains(";base64")) {
+                    part.put("inlineData", new JSONObject().put("mimeType", mime).put("data", data));
+                } else {
+                    byte[] decoded = java.net.URLDecoder.decode(data.replace("+", "%2B"), "UTF-8")
+                            .getBytes(StandardCharsets.UTF_8);
+                    part.put("inlineData", new JSONObject().put("mimeType", mime)
+                            .put("data", android.util.Base64.encodeToString(decoded, android.util.Base64.NO_WRAP)));
+                }
+            } else {
+                part.put("fileData", new JSONObject().put("mimeType", "image/*").put("fileUri", value));
+            }
+            return part;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private static String textOf(Object content) {
         if (content == null) return "";
         if (content instanceof String) return (String) content;
@@ -382,14 +646,19 @@ public class AntigravityClient {
     public static class Decoded {
         public String text = "";
         public String reasoning = "";
+        public String thoughtSignature = "";
         public String finishReason = "";
         public int promptTokens;
         public int outputTokens;
         public int thoughtTokens;
         public int cachedTokens;
         public String providerError = "";
+        public boolean complete;
         public String modelVersion = "";
         public JSONArray toolCalls = new JSONArray();   // [{id,name,arguments}]
+        /** 上游回了一张图：OpenAI 的 message.content 只有字符串，装不下它 */
+        public boolean sawImage;
+        public String imageMime = "";
     }
 
     /**
@@ -409,6 +678,8 @@ public class AntigravityClient {
                     String line;
                     boolean started = false;
                     boolean stopped = false;
+                    boolean sawFinishReason = false;
+                    boolean sawProviderError = false;
                     boolean saidSomething = false;
                     int toolIndex = -1;
                     int promptTokens = 0, outputTokens = 0, thoughtTokens = 0, cachedTokens = 0;
@@ -422,14 +693,27 @@ public class AntigravityClient {
                         } catch (Exception ignored) {
                             continue;
                         }
-                        if (ev.has("error")) {
+                        if (ev.has("error") || "error".equals(ev.optString("type", ""))
+                                || "response.failed".equals(ev.optString("type", ""))) {
+                            sawProviderError = true;
                             JSONObject err = ev.optJSONObject("error");
-                            String msg = err == null ? data : err.optString("message", data);
+                            Object rawError = ev.opt("error");
+                            String msg = err != null ? err.optString("message", err.optString("type", data))
+                                    : rawError instanceof String ? (String) rawError : data;
                             pos.write(wrapError(msg).getBytes(StandardCharsets.UTF_8));
                             pos.flush();
                             continue;
                         }
                         JSONObject resp = ev.optJSONObject("response");
+                        if (resp != null && resp.has("error")) {
+                            sawProviderError = true;
+                            JSONObject err = resp.optJSONObject("error");
+                            String msg = err == null ? resp.optString("error", data)
+                                    : err.optString("message", err.optString("type", data));
+                            pos.write(wrapError(msg).getBytes(StandardCharsets.UTF_8));
+                            pos.flush();
+                            continue;
+                        }
                         if (resp == null) resp = ev;
                         JSONObject usage = resp.optJSONObject("usageMetadata");
                         if (usage != null) {
@@ -462,16 +746,25 @@ public class AntigravityClient {
                                         if (id.isEmpty()) id = "call_" + randomHex(6);
                                         JSONObject args = fc.optJSONObject("args");
                                         String argStr = args == null ? "{}" : args.toString();
-                                        pos.write(wrapToolCall(toolIndex, id, name, argStr, model, chunkId)
+                                        pos.write(wrapToolCall(toolIndex, id, name, argStr, p.optString("thoughtSignature", ""), model, chunkId)
                                                 .getBytes(StandardCharsets.UTF_8));
                                         pos.flush();
                                         saidSomething = true;
                                         continue;
                                     }
+                                    // Magpie gives a picture the model drew its own event (codeAssistDecoder's
+                                    // inlineData case); a thought's draft images stay with its reasoning. An
+                                    // OpenAI chunk has only text to put it in, so saying so beats losing it.
+                                    if (hasOutputImage(p)) {
+                                        pos.write(wrapError(imageOutputError(p)).getBytes(StandardCharsets.UTF_8));
+                                        pos.flush();
+                                        return;
+                                    }
                                     String t = p.optString("text", "");
-                                    if (t.isEmpty()) continue;
+                                    String signature = p.optString("thoughtSignature", "");
+                                    if (t.isEmpty() && signature.isEmpty()) continue;
                                     boolean thought = p.optBoolean("thought", false);
-                                    pos.write(wrapDelta(thought ? "reasoning_content" : "content", t, model, chunkId)
+                                    pos.write(wrapDelta(thought ? "reasoning_content" : "content", t, signature, model, chunkId)
                                             .getBytes(StandardCharsets.UTF_8));
                                     pos.flush();
                                     saidSomething = true;
@@ -480,9 +773,8 @@ public class AntigravityClient {
                             String fr = cand.optString("finishReason", "");
                             if (!fr.isEmpty() && !stopped) {
                                 stopped = true;
-                                String stop = "stop";
-                                if ("MAX_TOKENS".equals(fr)) stop = "length";
-                                else if ("SAFETY".equals(fr) || "RECITATION".equals(fr) || "PROHIBITED_CONTENT".equals(fr)) stop = "content_filter";
+                                sawFinishReason = true;
+                                String stop = openAiFinishReason(fr);
                                 if (toolIndex >= 0 && "stop".equals(stop)) stop = "tool_calls";
                                 pos.write(wrapFinish(stop, promptTokens, cachedTokens, outputTokens, thoughtTokens, model, chunkId)
                                         .getBytes(StandardCharsets.UTF_8));
@@ -490,14 +782,15 @@ public class AntigravityClient {
                             }
                         }
                     }
-                    if (!stopped) {
-                        pos.write(wrapFinish(toolIndex >= 0 ? "tool_calls" : "stop",
-                                promptTokens, cachedTokens, outputTokens, thoughtTokens, model, chunkId)
+                    if (!sawFinishReason && !sawProviderError) {
+                        pos.write(wrapError("Antigravity stream ended before a finishReason was received")
                                 .getBytes(StandardCharsets.UTF_8));
                         pos.flush();
+                        return;
                     }
+                    if (sawProviderError) return;
                     if (!saidSomething) {
-                        pos.write(wrapDelta("content", "", model, chunkId).getBytes(StandardCharsets.UTF_8));
+                        pos.write(wrapDelta("content", "", "", model, chunkId).getBytes(StandardCharsets.UTF_8));
                         pos.flush();
                     }
                     pos.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
@@ -516,6 +809,7 @@ public class AntigravityClient {
     /** 非流式：把整条 SSE 收成 OpenAI chat.completion */
     public static JSONObject toOpenAiCompletion(InputStream upstream, String model) throws Exception {
         Decoded d = decodeAll(upstream);
+        if (!d.providerError.isEmpty()) throw new java.io.IOException(d.providerError);
         JSONObject out = new JSONObject();
         out.put("id", "chatcmpl-ag-" + System.currentTimeMillis());
         out.put("object", "chat.completion");
@@ -529,6 +823,7 @@ public class AntigravityClient {
         msg.put("content", d.text);
         if (!d.reasoning.isEmpty()) msg.put("reasoning_content", d.reasoning);
         if (d.toolCalls.length() > 0) msg.put("tool_calls", d.toolCalls);
+        if (!d.thoughtSignature.isEmpty()) msg.put("extra_content", googleExtraContent(d.thoughtSignature));
         c0.put("message", msg);
         String stop = d.finishReason.isEmpty() ? (d.toolCalls.length() > 0 ? "tool_calls" : "stop") : d.finishReason;
         c0.put("finish_reason", stop);
@@ -558,12 +853,22 @@ public class AntigravityClient {
             } catch (Exception ignored) {
                 continue;
             }
-            if (ev.has("error")) {
+            if (ev.has("error") || "error".equals(ev.optString("type", ""))
+                    || "response.failed".equals(ev.optString("type", ""))) {
+                Object rawError = ev.opt("error");
                 JSONObject err = ev.optJSONObject("error");
-                d.providerError = err == null ? data : err.optString("message", data);
+                if (err != null) d.providerError = err.optString("message", err.optString("type", data));
+                else if (rawError instanceof String) d.providerError = (String) rawError;
+                else d.providerError = data;
                 continue;
             }
             JSONObject resp = ev.optJSONObject("response");
+            if (resp != null && resp.has("error")) {
+                JSONObject err = resp.optJSONObject("error");
+                d.providerError = err == null ? resp.optString("error", data)
+                        : err.optString("message", err.optString("type", data));
+                continue;
+            }
             if (resp == null) resp = ev;
             String mv = resp.optString("modelVersion", "");
             if (!mv.isEmpty()) d.modelVersion = mv;
@@ -597,9 +902,18 @@ public class AntigravityClient {
                             JSONObject args = fc.optJSONObject("args");
                             fn.put("arguments", args == null ? "{}" : args.toString());
                             call.put("function", fn);
+                            String signature = p.optString("thoughtSignature", "");
+                            if (!signature.isEmpty()) call.put("extra_content", googleExtraContent(signature));
                             d.toolCalls.put(call);
                             continue;
                         }
+                        if (hasOutputImage(p)) {
+                            d.sawImage = true;
+                            if (d.imageMime.isEmpty()) d.imageMime = inlineMime(p);
+                            continue;
+                        }
+                        String signature = p.optString("thoughtSignature", "");
+                        if (!signature.isEmpty()) d.thoughtSignature = signature;
                         String t = p.optString("text", "");
                         if (t.isEmpty()) continue;
                         if (p.optBoolean("thought", false)) think.append(t);
@@ -607,18 +921,22 @@ public class AntigravityClient {
                     }
                 }
                 String fr = cand.optString("finishReason", "");
-                if (!fr.isEmpty()) {
-                    if ("MAX_TOKENS".equals(fr)) d.finishReason = "length";
-                    else if ("SAFETY".equals(fr) || "RECITATION".equals(fr) || "PROHIBITED_CONTENT".equals(fr)) d.finishReason = "content_filter";
-                    else d.finishReason = "stop";
-                }
+                if (!fr.isEmpty()) d.finishReason = openAiFinishReason(fr);
             }
         }
         br.close();
         upstream.close();
+        if (!d.providerError.isEmpty()) throw new java.io.IOException(d.providerError);
+        // A reply holding a picture is not one OpenAI's message carries: told as the failure it is,
+        // rather than handed over with the picture gone and finish_reason "stop".
+        if (d.sawImage) throw new java.io.IOException(imageOutputError(d.imageMime));
+        if (d.finishReason.isEmpty()) {
+            throw new java.io.IOException("Antigravity stream ended before a finishReason was received");
+        }
+        d.complete = true;
         d.text = text.toString();
         d.reasoning = think.toString();
-        if (d.toolCalls.length() > 0) d.finishReason = "tool_calls";
+        if (d.toolCalls.length() > 0 && "stop".equals(d.finishReason)) d.finishReason = "tool_calls";
         return d;
     }
 
@@ -636,18 +954,19 @@ public class AntigravityClient {
         return "data: " + o.toString() + "\n\n";
     }
 
-    private static String wrapDelta(String field, String text, String model, String id) {
+    private static String wrapDelta(String field, String text, String signature, String model, String id) {
         JSONObject o = chunkSkeleton(model, id);
         JSONObject delta = new JSONObject();
         try {
             delta.put(field, text);
+            if (!signature.isEmpty()) delta.put("extra_content", googleExtraContent(signature));
             o.put("choices", choices(delta, null));
         } catch (Exception ignored) {
         }
         return "data: " + o.toString() + "\n\n";
     }
 
-    private static String wrapToolCall(int index, String callId, String name, String args, String model, String id) {
+    private static String wrapToolCall(int index, String callId, String name, String args, String signature, String model, String id) {
         JSONObject o = chunkSkeleton(model, id);
         try {
             JSONObject call = new JSONObject();
@@ -658,6 +977,7 @@ public class AntigravityClient {
             fn.put("name", name);
             fn.put("arguments", args);
             call.put("function", fn);
+            if (!signature.isEmpty()) call.put("extra_content", googleExtraContent(signature));
             JSONArray calls = new JSONArray();
             calls.put(call);
             JSONObject delta = new JSONObject();
@@ -718,6 +1038,60 @@ public class AntigravityClient {
         }
         arr.put(c);
         return arr;
+    }
+
+    /**
+     * A picture the reply carried, as Magpie's codeAssistDecoder tells it (an inlineData part
+     * with data). Its drafts, marked a thought, are the reasoning's and are not one.
+     */
+    private static boolean hasOutputImage(JSONObject part) {
+        if (part == null || part.optBoolean("thought", false)) return false;
+        JSONObject inline = part.optJSONObject("inlineData");
+        return inline != null && !inline.optString("data", "").isEmpty();
+    }
+
+    private static String inlineMime(JSONObject part) {
+        JSONObject inline = part == null ? null : part.optJSONObject("inlineData");
+        return inline == null ? "" : inline.optString("mimeType", "");
+    }
+
+    /**
+     * An OpenAI chat reply carries text, reasoning and calls, and no picture: Magpie hands one back
+     * to a Gemini client as inline data, which this bridge has nowhere to put. Said out loud, so a
+     * reply holding one is not delivered with the picture silently gone.
+     */
+    private static String imageOutputError(JSONObject part) {
+        return imageOutputError(inlineMime(part));
+    }
+
+    /** An inline image's type is the upstream's word, and only a well-formed media type is repeated. */
+    private static String imageOutputError(String mimeType) {
+        String type = safeImageType(mimeType);
+        return (type.isEmpty()
+                ? "Antigravity returned an image in its reply"
+                : "Antigravity returned an image (" + type + ") in its reply")
+                + "; an OpenAI chat reply carries text only, so the picture would be lost";
+    }
+
+    /** The longest media type repeated in an error: a reply's own type is not trusted with more. */
+    private static final int MAX_IMAGE_TYPE = 64;
+
+    /**
+     * An upstream's image type as it may be said back: the image/ prefix and a bounded RFC token
+     * after it, or "" for anything else — a type carries no newline, no quote and no other
+     * client's words into this bridge's error, however long the upstream makes it.
+     */
+    private static String safeImageType(String mimeType) {
+        String type = mimeType == null ? "" : mimeType.trim();
+        if (type.length() <= 6 || type.length() > MAX_IMAGE_TYPE) return "";
+        if (!type.regionMatches(true, 0, "image/", 0, 6)) return "";
+        for (int i = 6; i < type.length(); i++) {
+            char c = type.charAt(i);
+            boolean token = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || "!#$&^_.+-".indexOf(c) >= 0;
+            if (!token) return "";
+        }
+        return type;
     }
 
     /** Antigravity 那个假 429 想对客户端说清楚：不是额度问题 */

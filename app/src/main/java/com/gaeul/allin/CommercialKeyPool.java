@@ -29,21 +29,33 @@ public final class CommercialKeyPool {
     }
     public static final class Budget {
         private final Clock clock;
-        private final long deadline;
+        private long deadline;
+        private final long durationMs;
         private final int maxAttempts;
+        private boolean started;
         private int attempts;
         public Budget(Clock clock) { this(clock, 8, 60000); }
         public Budget(Clock clock, int maxAttempts, long durationMs) {
+            this(clock, maxAttempts, durationMs, false);
+        }
+        private Budget(Clock clock, int maxAttempts, long durationMs, boolean deferred) {
             if (clock == null || maxAttempts < 0 || durationMs < 0) throw new IllegalArgumentException();
-            this.clock = clock; this.maxAttempts = maxAttempts;
-            this.deadline = add(clock.now(), durationMs);
+            this.clock = clock; this.maxAttempts = maxAttempts; this.durationMs = durationMs;
+            this.started = !deferred;
+            this.deadline = deferred ? Long.MAX_VALUE : add(clock.now(), durationMs);
+        }
+        /** Affinity/upload admission is charged to the total deadline, not the replay window.
+         * The first candidate starts the window; its queue/read/stream is never cancelled by it. */
+        public static Budget deferred(Clock clock, int maxAttempts, long durationMs) {
+            return new Budget(clock, maxAttempts, durationMs, true);
         }
         public synchronized boolean tryStart() {
+            if (!started) { deadline = add(clock.now(), durationMs); started = true; }
             if (attempts >= maxAttempts || clock.now() >= deadline) return false;
             attempts++; return true;
         }
         public synchronized int attempts() { return attempts; }
-        public long deadline() { return deadline; }
+        public synchronized long deadline() { return deadline; }
     }
     private static final class RestKey {
         final Scope scope; final String provider, credential, model;

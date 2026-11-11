@@ -131,6 +131,14 @@ public class AntigravityAuth {
         public java.net.Socket socket;
         public String statusLine = "";
         public java.util.Map<String, String> headers = new java.util.LinkedHashMap<String, String>();
+        /** 出这个响应的 base，诊断用（不含凭据）。 */
+        public String base = "";
+        /** 拿到这个响应时请求已经写到哪一步；Resp 一旦返回，上游一定收到过请求。 */
+        public SendStage stage = SendStage.NOT_CONNECTED;
+        /** 注入的链路；真实 socket 时与 socket 同时存在，关闭走这里。 */
+        Link link;
+        /** 该请求的取消信号，响应体读取阶段也认它。 */
+        Cancellation cancel;
 
         public String text() {
             try {
@@ -142,7 +150,9 @@ public class AntigravityAuth {
 
         public void close() {
             try { if (body != null) body.close(); } catch (Throwable ignored) {}
+            try { if (link != null) link.close(); } catch (Throwable ignored) {}
             try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
+            link = null;
         }
     }
 
@@ -254,45 +264,192 @@ public class AntigravityAuth {
         }
     }
 
-    /** 发出一个 HTTPS 请求，返回状态与（尚未读完的）响应流 */
-    public static Resp request(String urlStr, String method, String bearer, String accept,
-                               String contentType, byte[] body, int connectMs, int readMs) throws Exception {
-        // A logical request and all handshake retries keep the same policy snapshot.
-        NetworkPolicy.Snapshot policy = NetworkPolicy.capture();
-        java.net.URL u = new java.net.URL(urlStr);
-        if (!"https".equalsIgnoreCase(u.getProtocol())) throw new java.io.IOException("HTTPS required");
-        String host = u.getHost();
-        int port = u.getPort() > 0 ? u.getPort() : 443;
-        String path = u.getPath();
-        if (path == null || path.isEmpty()) path = "/";
-        if (u.getQuery() != null) path = path + "?" + u.getQuery();
+    // ------------------------------------------------------------ 出站结果分类
+    //
+    // 手写 socket 客户端没法靠异常类型区分「一个字节都没发出去」和「写了之后连接被掐」。
+    // 这两件事对上层完全不同：前者换 base / 换候选重发是安全的，后者上游可能已经执行
+    // 甚至计费，重放就是重复请求。所以这里把阶段显式记下来，异常统一升级成 SendFailure。
+    //
+    // 判定一律保守：只要进入写阶段就按「可能已执行」处理，哪怕计数显示 0 字节 ——
+    // write() 抛异常时内核缓冲区里可能已经有数据，客户端无法证明对端没收到。
+    // 唯一可以证明「没执行」的情况是链路根本没建起来（NOT_CONNECTED），
+    // 而 NOT_CONNECTED 之所以能当证据，是因为本文件的真实链路（SOCKET_TRANSPORT）在
+    // 返回 Link 之前只发 DNS / TCP / 代理 CONNECT / TLS 握手的字节，一个请求字节都不发：
+    //  - refresh_token 只在请求体里，握手阶段的 SNI、证书校验、代理 CONNECT 都带不到它；
+    //  - 代理 CONNECT 里的 authority 只是目标主机名，重复一次 CONNECT 也无副作用；
+    //  - 握手重试（HANDSHAKE_TRIES）只重放握手，不重放请求。
+    // 所以「链路没建起来」=「token 端点没收到过这次交换」，这是可证明的，不是猜的。
+    // 反过来说，write() 一旦被调用过（writeAttempted），就无法证明对端没收到。
 
-        // 这台机到 Google 的 TLS 握手会被随机 reset（实测成功率约五成），
-        // 所以连接建立阶段要重试。此时一个字节都还没发，重试是安全的。
-        java.net.Socket plain = null;
-        Exception lastErr = null;
-        Resp r = new Resp();
-        try {
+    public enum SendStage {
+        /** 链路没建起来（DNS / TCP / 代理 / TLS 握手）：一个请求字节都没写。 */
+        NOT_CONNECTED,
+        /** 已经开始往链路写请求；只写出去一部分也算。 */
+        WRITING,
+        /** 请求整体写完，正在等状态行。 */
+        WRITTEN,
+        /** 在读状态行 / 响应头，还没有可用的状态码。 */
+        READING_STATUS,
+        /** 已经拿到状态和头，在读响应体。 */
+        READING_BODY,
+        /** 没有传输层证据（本地参数错误、来源不明的异常）：既不能证明没发，也不能证明发了。 */
+        UNKNOWN
+    }
+
+    /** 传输层失败：是 IOException，老调用点的 catch(Exception) 语义不变。 */
+    public static class SendFailure extends java.io.IOException {
+        public final SendStage stage;
+        /** 已确认交给 socket 的请求字节数（不包含可能只进了内核缓冲的部分）。 */
+        public final long bytesWritten;
+        public final long bytesTotal;
+        public final boolean cancelled;
+        public final String base;
+        public final int attempt;
+        /**
+         * 是否真的把请求字节交给过链路（即 OutputStream.write 被调用过）。
+         *
+         * 这是「没发出去」唯一可信的证据：只有从没调用过 write，才能断定请求字节
+         * 一个都没进内核；一旦 write 被调用过，无论它抛出什么，都不能断言对端没收到
+         * （TCP 缓冲、TLS 分片、写一半被 reset 都可能已经送到）。
+         */
+        public final boolean writeAttempted;
+
+        SendFailure(SendStage stage, long bytesWritten, long bytesTotal, boolean cancelled,
+                    String base, int attempt, String message, Throwable cause) {
+            // 老签名的推断规则保持原样：进了写阶段就当可能已发送（保守、向后兼容）。
+            this(stage, bytesWritten, bytesTotal, cancelled, base, attempt, message, cause,
+                    stage != null && stage != SendStage.NOT_CONNECTED && stage != SendStage.UNKNOWN);
+        }
+
+        SendFailure(SendStage stage, long bytesWritten, long bytesTotal, boolean cancelled,
+                    String base, int attempt, String message, Throwable cause, boolean writeAttempted) {
+            super(message, cause);
+            this.stage = stage == null ? SendStage.NOT_CONNECTED : stage;
+            this.bytesWritten = bytesWritten;
+            this.bytesTotal = bytesTotal;
+            this.cancelled = cancelled;
+            this.base = base == null ? "" : base;
+            this.attempt = attempt;
+            this.writeAttempted = writeAttempted;
+        }
+
+        /** 保守判定（旧语义，保留兼容）：只要进入了写阶段，就认为上游可能已经执行。 */
+        public boolean handedOff() { return stage != SendStage.NOT_CONNECTED; }
+
+        /**
+         * 证据判定：只有「链路没建起来」且「从没调用过 write」才能证明请求没发出去。
+         *
+         * 两条都必须成立：NOT_CONNECTED 只说明建链失败；如果某个 transport 在这之前
+         * 已经把字节交给了流（writeAttempted），那也已经是「可能已发送」。
+         */
+        public boolean provablyNotSent() {
+            return stage == SendStage.NOT_CONNECTED && !writeAttempted;
+        }
+
+        /** 与之互补：不是可证明未发送，就按可能已发送处理（包括 UNKNOWN）。 */
+        public boolean maybeSent() { return !provablyNotSent(); }
+
+        /** 只有「可证明未发送且没被取消」才允许换 base / 换候选重发。 */
+        public boolean mayTryAnotherBase() { return !cancelled && provablyNotSent(); }
+
+        /** 脱敏诊断，不含 bearer / 请求体。 */
+        public String diagnostic() {
+            StringBuilder sb = new StringBuilder();
+            if (cancelled) sb.append("Antigravity request cancelled");
+            else if (provablyNotSent()) sb.append("Antigravity request was never sent");
+            else sb.append("Antigravity request may already have been executed");
+            sb.append(" (stage=").append(stage.name())
+              .append(", bytes=").append(bytesWritten).append('/').append(bytesTotal);
+            if (!base.isEmpty()) sb.append(", base=").append(hostOf(base));
+            sb.append(", attempt=").append(attempt).append(')');
+            String message = getMessage();
+            if (message != null && !message.isEmpty()) sb.append(": ").append(message);
+            return sb.toString();
+        }
+    }
+
+    /** 取消信号：网关的 RequestContext 可以适配过来，测试可以自己造。 */
+    public interface Cancellation {
+        boolean isCancelled();
+        /** 取消发生时用来打断阻塞中的读写；允许重复注册，允许立即执行。 */
+        void onAbort(Runnable hook);
+
+        Cancellation NONE = new Cancellation() {
+            @Override public boolean isCancelled() { return false; }
+            @Override public void onAbort(Runnable hook) { }
+        };
+    }
+
+    /** 把网关的请求生命周期适配成取消信号；deadline 超时和客户端断开都算取消。 */
+    public static Cancellation cancellation(final RequestContext context) {
+        if (context == null) return Cancellation.NONE;
+        return new Cancellation() {
+            @Override public boolean isCancelled() { return context.isCancelled(); }
+            @Override public void onAbort(Runnable hook) { context.onClose(hook); }
+        };
+    }
+
+    /** 一条已经建好的双向字节链路。 */
+    public interface Link extends java.io.Closeable {
+        InputStream in() throws java.io.IOException;
+        OutputStream out() throws java.io.IOException;
+    }
+
+    /**
+     * 可注入的传输层。
+     *
+     * 契约（上层的「可证明未发送」判定完全依赖它）：
+     * open() 抛出的任何异常都必须发生在请求字节写出之前 —— 建链阶段只允许有
+     * DNS / TCP / 代理 CONNECT / TLS 握手的字节。真实实现（SOCKET_TRANSPORT）满足这一点：
+     * 它只 connect 隧道、做 TLS 握手，请求行和请求体是在拿到 Link 之后才写的。
+     * 一旦某个实现在 open() 里就写了请求字节，那它就没有「可证明未发送」这种结论。
+     */
+    public interface Transport {
+        Link open(String url, String host, int port, int connectMs, int readMs) throws java.io.IOException;
+    }
+
+    /** 真实链路：自己开 SSLSocket 并钉死 HTTP/1.1（见文件顶部注释）。 */
+    static final class SocketLink implements Link {
+        final java.net.Socket socket;
+        private final InputStream in;
+        private final OutputStream out;
+
+        SocketLink(java.net.Socket socket, int readMs) throws java.io.IOException {
+            this.socket = socket;
+            socket.setSoTimeout(readMs);
+            this.in = new java.io.BufferedInputStream(socket.getInputStream(), 16384);
+            this.out = socket.getOutputStream();
+        }
+
+        @Override public InputStream in() { return in; }
+        @Override public OutputStream out() { return out; }
+        @Override public void close() {
+            try { socket.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    public static final Transport SOCKET_TRANSPORT = new Transport() {
+        @Override public Link open(String url, String host, int port, int connectMs, int readMs)
+                throws java.io.IOException {
+            // 一个逻辑请求和它的握手重试共用同一份网络策略快照。
+            NetworkPolicy.Snapshot policy = NetworkPolicy.capture();
+            java.net.Socket plain = null;
+            Exception lastErr = null;
             for (int attempt = 1; attempt <= HANDSHAKE_TRIES; attempt++) {
                 try {
                     plain = policy.connectTunnel(host, port, connectMs, readMs);
-            // 关键：不设 ALPN。Conscrypt 默认不送 ALPN，服务端按 HTTP/1.1 处理；
-            // 一旦协商到 h2，cloudcode-pa 会直接 reset（实测）。
+                    // 关键：不设 ALPN。Conscrypt 默认不送 ALPN，服务端按 HTTP/1.1 处理；
+                    // 一旦协商到 h2，cloudcode-pa 会直接 reset（实测）。
                     javax.net.ssl.SSLSocketFactory sf =
                             javax.net.ssl.SSLContext.getDefault().getSocketFactory();
                     java.net.Socket s = sf.createSocket(plain, host, port, true);
                     enableHostVerification((javax.net.ssl.SSLSocket) s);
                     ((javax.net.ssl.SSLSocket) s).startHandshake();
-                    s.setSoTimeout(readMs);
-                    r.socket = s;
-                    lastErr = null;
-                    break;
+                    return new SocketLink(s, readMs);
                 } catch (Exception he) {
                     lastErr = he;
-                    try { if (plain != null) plain.close(); } catch (Throwable ignored) {}
-                    try { if (r.socket != null) r.socket.close(); } catch (Throwable ignored) {}
+                    try { if (plain != null) plain.close(); } catch (Throwable ignored) { }
                     plain = null;
-                    r.socket = null;
                     if (attempt < HANDSHAKE_TRIES) {
                         try {
                             Thread.sleep(200L * attempt);
@@ -301,37 +458,156 @@ public class AntigravityAuth {
                     }
                 }
             }
-            if (lastErr != null) throw lastErr;
-            java.net.Socket s = r.socket;
+            if (lastErr instanceof java.io.IOException) throw (java.io.IOException) lastErr;
+            throw new java.io.IOException(String.valueOf(lastErr));
+        }
+    };
 
-            StringBuilder h = new StringBuilder(512);
-            h.append(method).append(' ').append(path).append(" HTTP/1.1\r\n");
-            h.append("Host: ").append(host).append("\r\n");
-            h.append("User-Agent: ").append(USER_AGENT).append("\r\n");
-            if (accept != null) h.append("Accept: ").append(accept).append("\r\n");
-            if (contentType != null) h.append("Content-Type: ").append(contentType).append("\r\n");
-            if (bearer != null && !bearer.isEmpty()) h.append("Authorization: Bearer ").append(bearer).append("\r\n");
-            if (body != null) h.append("Content-Length: ").append(body.length).append("\r\n");
-            h.append("Connection: close\r\n\r\n");
-            OutputStream os = s.getOutputStream();
-            os.write(h.toString().getBytes(StandardCharsets.UTF_8));
-            if (body != null) os.write(body);
+    /** 一次发送走到了哪一步的记账本，异常统一由它转成 SendFailure。 */
+    static final class Trace {
+        SendStage stage = SendStage.NOT_CONNECTED;
+        long written;
+        long total;
+        String base = "";
+        int attempt = 1;
+        /** 请求字节是否真的交给过流（write() 被调用过）；区分「可证明未发送」的唯一依据。 */
+        boolean writeAttempted;
+
+        void write(OutputStream os, byte[] data, Cancellation cancel) throws java.io.IOException {
+            if (data == null || data.length == 0) return;
+            int offset = 0;
+            while (offset < data.length) {
+                if (cancel.isCancelled()) throw new java.io.IOException("request cancelled while writing");
+                int length = Math.min(65536, data.length - offset);
+                // 先记账再写：write() 一旦被调用，就没法再证明对端没收到。
+                writeAttempted = true;
+                os.write(data, offset, length);
+                offset += length;
+                // 只有 write() 正常返回的字节才算「已交给 socket」；半截的那段记成未知，
+                // 由 handedOff() 的保守规则覆盖。
+                written += length;
+            }
+        }
+
+        SendFailure failure(Exception cause, boolean cancelled) {
+            if (cause instanceof SendFailure) return (SendFailure) cause;
+            String message = cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+            return new SendFailure(stage, written, total, cancelled, base, attempt, message, cause,
+                    writeAttempted);
+        }
+    }
+
+    /** 响应体读取阶段的取消包装：取消后立刻失败，并且明确标记 handedOff。 */
+    static final class CancelBody extends java.io.FilterInputStream {
+        private final Cancellation cancel;
+        private final Trace trace;
+
+        CancelBody(InputStream in, Cancellation cancel, Trace trace) {
+            super(in);
+            this.cancel = cancel;
+            this.trace = trace;
+        }
+
+        private void check() throws java.io.IOException {
+            if (cancel.isCancelled()) {
+                trace.stage = SendStage.READING_BODY;
+                throw trace.failure(new java.io.IOException("request cancelled while reading response"), true);
+            }
+        }
+
+        @Override public int read() throws java.io.IOException {
+            check();
+            return super.read();
+        }
+
+        @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+            check();
+            return super.read(b, off, len);
+        }
+    }
+
+    /** 发出一个 HTTPS 请求，返回状态与（尚未读完的）响应流 */
+    public static Resp request(String urlStr, String method, String bearer, String accept,
+                               String contentType, byte[] body, int connectMs, int readMs) throws Exception {
+        return request(urlStr, method, bearer, accept, contentType, body, connectMs, readMs,
+                SOCKET_TRANSPORT, Cancellation.NONE, 1);
+    }
+
+    /**
+     * 可注入 transport、可取消的版本。
+     *
+     * 失败一律以 SendFailure 抛出，调用方据 handedOff() 决定能不能换端点/换候选重发；
+     * 被打断（客户端断开、deadline）也走 SendFailure 并带 cancelled=true。
+     */
+    public static Resp request(String urlStr, String method, String bearer, String accept,
+                               String contentType, byte[] body, int connectMs, int readMs,
+                               Transport transport, Cancellation cancellation, int attempt) throws Exception {
+        java.net.URL u = new java.net.URL(urlStr);
+        if (!"https".equalsIgnoreCase(u.getProtocol())) throw new java.io.IOException("HTTPS required");
+        String host = u.getHost();
+        int port = u.getPort() > 0 ? u.getPort() : 443;
+        String path = u.getPath();
+        if (path == null || path.isEmpty()) path = "/";
+        if (u.getQuery() != null) path = path + "?" + u.getQuery();
+
+        StringBuilder h = new StringBuilder(512);
+        h.append(method).append(' ').append(path).append(" HTTP/1.1\r\n");
+        h.append("Host: ").append(host).append("\r\n");
+        h.append("User-Agent: ").append(USER_AGENT).append("\r\n");
+        if (accept != null) h.append("Accept: ").append(accept).append("\r\n");
+        if (contentType != null) h.append("Content-Type: ").append(contentType).append("\r\n");
+        if (bearer != null && !bearer.isEmpty()) h.append("Authorization: Bearer ").append(bearer).append("\r\n");
+        if (body != null) h.append("Content-Length: ").append(body.length).append("\r\n");
+        h.append("Connection: close\r\n\r\n");
+        byte[] headBytes = h.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] bodyBytes = body == null ? new byte[0] : body;
+
+        final Cancellation cancel = cancellation == null ? Cancellation.NONE : cancellation;
+        final Trace trace = new Trace();
+        trace.base = urlStr;
+        trace.attempt = attempt;
+        trace.total = (long) headBytes.length + bodyBytes.length;
+
+        Link link = null;
+        try {
+            if (cancel.isCancelled()) throw new java.io.IOException("request cancelled before connect");
+            link = transport.open(urlStr, host, port, connectMs, readMs);
+            if (link == null) throw new java.io.IOException("transport returned no connection");
+            final Link opened = link;
+            cancel.onAbort(new Runnable() {
+                @Override public void run() {
+                    try { opened.close(); } catch (Throwable ignored) { }
+                }
+            });
+            OutputStream os = link.out();
+            if (os == null) throw new java.io.IOException("transport returned no output stream");
+            if (cancel.isCancelled()) throw new java.io.IOException("request cancelled before write");
+            trace.stage = SendStage.WRITING;
+            trace.write(os, headBytes, cancel);
+            trace.write(os, bodyBytes, cancel);
             os.flush();
+            trace.stage = SendStage.WRITTEN;
 
-            InputStream in = new java.io.BufferedInputStream(s.getInputStream(), 16384);
+            InputStream in = link.in();
+            if (in == null) throw new java.io.IOException("transport returned no input stream");
+            // 还没读到状态行之前都算 WRITTEN：请求已经整段写出去，结果未知。
             String line = readLine(in);
-            r.statusLine = line == null ? "" : line;
-            if (line != null) {
-                String[] parts = line.split(" ");
-                if (parts.length >= 2) {
-                    try {
-                        r.status = Integer.parseInt(parts[1]);
-                    } catch (Exception ignored) {
-                    }
+            if (line == null) throw new java.io.IOException("connection closed before the status line");
+            Resp r = new Resp();
+            r.base = urlStr;
+            r.statusLine = line;
+            String[] parts = line.split(" ");
+            if (parts.length >= 2) {
+                try {
+                    r.status = Integer.parseInt(parts[1]);
+                } catch (Exception ignored) {
                 }
             }
+            if (r.status == 0) throw new java.io.IOException("unreadable status line: " + line);
+            trace.stage = SendStage.READING_STATUS;
             while ((line = readLine(in)) != null) {
                 if (line.isEmpty()) break;
+                if (cancel.isCancelled()) throw new java.io.IOException("request cancelled while reading headers");
                 int c = line.indexOf(':');
                 if (c > 0) {
                     r.headers.put(line.substring(0, c).trim().toLowerCase(java.util.Locale.ROOT),
@@ -351,12 +627,244 @@ public class AntigravityAuth {
                 } catch (Throwable ignored) {
                 }
             }
-            r.body = decoded;
+            trace.stage = SendStage.READING_BODY;
+            r.stage = SendStage.READING_BODY;
+            r.body = cancel == Cancellation.NONE ? decoded : new CancelBody(decoded, cancel, trace);
+            r.link = link;
+            r.cancel = cancel;
+            if (link instanceof SocketLink) r.socket = ((SocketLink) link).socket;
+            link = null; // 关闭责任交给 Resp
             return r;
         } catch (Exception e) {
-            try { plain.close(); } catch (Throwable ignored) {}
-            try { if (r.socket != null) r.socket.close(); } catch (Throwable ignored) {}
-            throw e;
+            if (link != null) {
+                try { link.close(); } catch (Throwable ignored) { }
+            }
+            throw trace.failure(e, cancel.isCancelled());
+        }
+    }
+
+    // ------------------------------------------------------- 刷新 token 交换的结果分类
+    //
+    // 刷新交换和聊天请求一样是「可能产生上游副作用的写操作」：Google 的 refresh_token 可能
+    // 轮换，一旦轮换被消费而本地没存住，重放旧值就是重放废凭据。所以这里也不再靠异常类型
+    // 判断，而是拿同一份 Trace 记账得出两种互斥结论：可证明未发送 / 可能已发送。
+
+    /**
+     * 一次 refresh_token 交换的结果。
+     *
+     * 两种结论互斥，没有中间地带：
+     *  - answered()：读到了状态行 —— 上游一定收到过这次交换（哪怕随后读响应体时断掉）；
+     *  - provablyNotSent()：链路没建起来，且从没调用过 write —— 请求字节一个都没进内核；
+     *  - 其余一律 maybeSent()：写完等响应被 reset、读状态行超时、写了一半 broken pipe、
+     *    来源不明的异常，全部按「可能已执行」处理。异常叫 IOException 不等于没发出去。
+     */
+    public static final class Exchange {
+        public final int status;
+        public final JSONObject body;
+        /** 非空 = 这次交换没拿到响应，结论由它的传输层证据决定。 */
+        public final SendFailure failure;
+
+        Exchange(int status, JSONObject body, SendFailure failure) {
+            this.status = status;
+            this.body = body == null ? new JSONObject() : body;
+            this.failure = failure;
+        }
+
+        static Exchange answered(int status, JSONObject body) { return new Exchange(status, body, null); }
+        static Exchange failed(SendFailure failure) { return new Exchange(0, new JSONObject(), failure); }
+
+        /** 没有传输层证据的失败：按「可能已发送」处理，绝不猜未发送。 */
+        static Exchange unclassified(Exception cause) {
+            String message;
+            if (cause == null) message = "refresh exchange failed";
+            else if (cause.getMessage() == null) message = cause.getClass().getSimpleName();
+            else message = cause.getMessage();
+            return new Exchange(0, new JSONObject(),
+                    new SendFailure(SendStage.UNKNOWN, 0, 0, false, TOKEN_URL, 1, message, cause, false));
+        }
+
+        public boolean answered() { return failure == null; }
+
+        public boolean provablyNotSent() { return failure != null && failure.provablyNotSent(); }
+
+        /** 与之互补：只要不能证明没发出去，就按可能已发送处理。 */
+        public boolean maybeSent() { return !provablyNotSent(); }
+
+        /** 脱敏诊断，不含 refresh token / client_secret。 */
+        public String diagnostic() {
+            if (answered()) {
+                return "Antigravity token endpoint answered HTTP " + status + " (" + hostOf(TOKEN_URL) + ")";
+            }
+            return failure.diagnostic();
+        }
+    }
+
+    /**
+     * 一次 refresh_token 交换。唯一的出站地址是 TOKEN_URL，没有第二个 base，所以这里
+     * 不做端点轮换：一次逻辑交换只建一次链路、最多写一次请求，结论全部来自 Trace 记账。
+     *
+     * @param transport 可注入的传输层；null = 真实 SSLSocket 通路
+     * @param cancel    可注入的取消信号；null = 不取消
+     */
+    static Exchange exchangeRefresh(String refresh, Transport transport, Cancellation cancel) {
+        Transport wire = transport == null ? SOCKET_TRANSPORT : transport;
+        Cancellation stop = cancel == null ? Cancellation.NONE : cancel;
+        try {
+            String form = "grant_type=refresh_token"
+                    + "&refresh_token=" + enc(refresh)
+                    + "&client_id=" + enc(CLIENT_ID)
+                    + "&client_secret=" + enc(CLIENT_SECRET);
+            Resp r = request(TOKEN_URL, "POST", null, "application/json",
+                    "application/x-www-form-urlencoded", form.getBytes(StandardCharsets.UTF_8),
+                    20000, 60000, wire, stop, 1);
+            try {
+                int status = r.status;
+                String text;
+                try {
+                    // 不走 Resp.text()：它把读失败吞成空串，会把「读到一半断了」伪装成「响应为空」。
+                    text = readAll(r.body);
+                } catch (Exception readFailure) {
+                    // 状态行都读到了，请求肯定发出去过；这里只能报「已发送、响应不可用」。
+                    SendFailure known = readFailure instanceof SendFailure
+                            ? (SendFailure) readFailure
+                            : new SendFailure(SendStage.READING_BODY, 0, 0, stop.isCancelled(),
+                                    TOKEN_URL, 1, "token response could not be read", readFailure, true);
+                    return Exchange.failed(known);
+                }
+                JSONObject parsed;
+                try { parsed = new JSONObject(text); } catch (Exception notJson) { parsed = new JSONObject(); }
+                return Exchange.answered(status, parsed);
+            } finally {
+                r.close();
+            }
+        } catch (SendFailure failure) {
+            return Exchange.failed(failure);
+        } catch (Exception noEvidence) {
+            // 没有任何传输层记账的失败（构造表单、URL 之类）：不猜「没发」，按可能已发送处理。
+            return Exchange.unclassified(noEvidence);
+        }
+    }
+
+    /**
+     * 网关集成判定：这次刷新失败是否「可证明没发出去」，因此可以安全重试 / 释放刷新围栏。
+     *
+     * 只认本文件产出的证据（TypedAuthException / SendFailure）。其他任何异常都返回 false，
+     * 也就是按「可能已发送」处理 —— 不允许外来异常冒充「未发送」。
+     */
+    public static boolean provablyNotSent(Throwable failure) {
+        return provablyNotSent(failure, 0);
+    }
+
+    private static boolean provablyNotSent(Throwable failure, int depth) {
+        if (failure == null || depth > 8) return false;
+        if (failure instanceof TypedAuthException) return ((TypedAuthException) failure).provablyNotSent;
+        if (failure instanceof SendFailure) return ((SendFailure) failure).provablyNotSent();
+        Throwable cause = failure.getCause();
+        return cause != null && cause != failure && provablyNotSent(cause, depth + 1);
+    }
+
+    /** 网关错误体 / 日志用的脱敏诊断；不含 refresh token、bearer、请求体。 */
+    public static String sendDiagnostic(Throwable failure) {
+        if (failure == null) return "";
+        if (failure instanceof TypedAuthException) return ((TypedAuthException) failure).diagnostic();
+        if (failure instanceof SendFailure) return ((SendFailure) failure).diagnostic();
+        String message = failure.getMessage();
+        return message == null ? failure.getClass().getSimpleName() : message;
+    }
+
+    /** 一次「按候选 base 依次尝试、但绝不重放已写出请求」的结果。 */
+    public static final class Dispatch {
+        public Resp resp;
+        public SendFailure failure;
+        public String usedBase = "";
+        /** 请求字节真正交给链路的次数：这就是会不会重复执行的唯一度量。 */
+        public int sendCount;
+        /** 尝试建链路的次数（含没写出任何字节的失败）。 */
+        public int openCount;
+        public boolean cancelled;
+
+        public boolean ok() { return resp != null; }
+
+        /** 是否可能已经被上游执行过（诊断/账本用）。 */
+        public boolean handedOff() { return resp != null || (failure != null && failure.handedOff()); }
+
+        /** 脱敏诊断文本，可直接进错误体或日志。 */
+        public String diagnostic() {
+            if (resp != null) return "Antigravity upstream answered from " + hostOf(usedBase)
+                    + " after " + openCount + " attempt(s)";
+            if (failure == null) {
+                return cancelled ? "Antigravity 请求在发出前已取消，没有触达任何端点" : "Antigravity request was not sent";
+            }
+            StringBuilder sb = new StringBuilder(failure.diagnostic());
+            if (failure.cancelled) {
+                sb.append("; 请求已取消，没有重发");
+            } else if (failure.handedOff()) {
+                sb.append("; 请求可能已被上游执行，为避免重复执行没有换端点重发");
+            } else {
+                sb.append("; 未写出任何请求字节，换端点重发是安全的");
+            }
+            return sb.toString();
+        }
+    }
+
+    /**
+     * 依次尝试 base（同一条逻辑请求的备用出站端点）。
+     *
+     * 规则：
+     *  - 只有「链路没建起来」（NOT_CONNECTED）才换下一个 base；
+     *  - 一旦写出过任何字节，无论异常看起来多像网络抖动，都停在这里，结果是「执行未知」；
+     *  - 取消后不再尝试任何 base。
+     */
+    public static Dispatch dispatch(String[] bases, String pathSuffix, String bearer, byte[] body,
+                                    int connectMs, int readMs, Transport transport, Cancellation cancel) {
+        Dispatch outcome = new Dispatch();
+        if (bases == null || bases.length == 0) return outcome;
+        final Cancellation cancellation = cancel == null ? Cancellation.NONE : cancel;
+        for (int i = 0; i < bases.length; i++) {
+            if (cancellation.isCancelled()) {
+                outcome.cancelled = true;
+                break;
+            }
+            String base = bases[i];
+            outcome.openCount++;
+            try {
+                String url = base.replaceAll("/+$", "") + (pathSuffix == null ? "" : pathSuffix);
+                outcome.resp = request(url, "POST", bearer, "text/event-stream", "application/json",
+                        body, connectMs, readMs, transport, cancellation, outcome.openCount);
+                outcome.usedBase = base;
+                outcome.sendCount++;
+                return outcome;
+            } catch (SendFailure failure) {
+                outcome.failure = failure;
+                if (failure.handedOff()) outcome.sendCount++;
+                if (failure.cancelled) {
+                    outcome.cancelled = true;
+                    break;
+                }
+                if (!failure.mayTryAnotherBase()) break;
+            } catch (Exception other) {
+                // 连 URL 都建不出来这类本地错误：一个字节都没写，可以换下一个 base。
+                outcome.failure = new SendFailure(SendStage.NOT_CONNECTED, 0, 0, cancellation.isCancelled(),
+                        base, outcome.openCount, other.getMessage(), other);
+                if (outcome.failure.cancelled) {
+                    outcome.cancelled = true;
+                    break;
+                }
+            }
+        }
+        return outcome;
+    }
+
+    /** 只取 host，避免诊断里带出完整 URL / 查询串。 */
+    static String hostOf(String url) {
+        if (url == null) return "";
+        try {
+            return new java.net.URL(url).getHost();
+        } catch (Exception e) {
+            int scheme = url.indexOf("://");
+            String rest = scheme < 0 ? url : url.substring(scheme + 3);
+            int slash = rest.indexOf('/');
+            return slash < 0 ? rest : rest.substring(0, slash);
         }
     }
 
@@ -988,42 +1496,106 @@ public class AntigravityAuth {
         public final int status;
         public final boolean needsSignIn;
         public final long retryAfterMs;
+        /** 这次交换走到的传输阶段；UNKNOWN 表示没有传输层证据。 */
+        public final SendStage stage;
+        /** 可证明请求一个字节都没发出去 —— 唯一可信的「未发送」结论。 */
+        public final boolean provablyNotSent;
+        public final long bytesWritten;
+        public final long bytesTotal;
+
+        /** 兼容旧签名：没有传输层证据，所以按「可能已发送」处理（保守方向）。 */
         TypedAuthException(int status, boolean needsSignIn) {
+            this(status, needsSignIn, SendStage.UNKNOWN, 0, 0, false);
+        }
+
+        /** 传输层失败：结论直接抄 SendFailure 的证据，这里不做二次猜测。 */
+        TypedAuthException(int status, boolean needsSignIn, SendFailure failure) {
+            this(status, needsSignIn,
+                    failure == null ? SendStage.UNKNOWN : failure.stage,
+                    failure == null ? 0 : failure.bytesWritten,
+                    failure == null ? 0 : failure.bytesTotal,
+                    failure != null && failure.provablyNotSent());
+        }
+
+        private TypedAuthException(int status, boolean needsSignIn, SendStage stage,
+                                   long bytesWritten, long bytesTotal, boolean provablyNotSent) {
             super("Antigravity token refresh failed (HTTP " + status + ")");
             this.status = status; this.needsSignIn = needsSignIn; this.retryAfterMs = 0L;
+            this.stage = stage == null ? SendStage.UNKNOWN : stage;
+            this.bytesWritten = bytesWritten;
+            this.bytesTotal = bytesTotal;
+            this.provablyNotSent = provablyNotSent;
+        }
+
+        /** 与 provablyNotSent 互补：不是可证明未发送，就按可能已发送处理。 */
+        public boolean maybeSent() { return !provablyNotSent; }
+
+        /** 网关据此决定「释放刷新围栏、允许重试」还是「保留为结果未知」。 */
+        public boolean retryIsSafe() { return provablyNotSent; }
+
+        /** 脱敏诊断：阶段 + 字节数 + 目标主机 + 状态码，不含刷新凭据。 */
+        public String diagnostic() {
+            return (provablyNotSent
+                    ? "Antigravity token exchange was never sent"
+                    : "Antigravity token exchange may already have been executed")
+                    + " (stage=" + stage.name() + ", bytes=" + bytesWritten + "/" + bytesTotal
+                    + ", host=" + hostOf(TOKEN_URL) + ", http=" + status + ")";
         }
     }
     static final class CandidateResponse {
         final int status;
         final JSONObject body;
-        CandidateResponse(int status, JSONObject body) { this.status = status; this.body = body; }
+        /** 非空 = 这次交换没拿到响应；失败按传输层证据分类，不再统一压成「HTTP 0」。 */
+        final SendFailure failure;
+        CandidateResponse(int status, JSONObject body) { this(status, body, null); }
+        CandidateResponse(int status, JSONObject body, SendFailure failure) {
+            this.status = status; this.body = body; this.failure = failure;
+        }
+        static CandidateResponse failed(SendFailure failure) {
+            return new CandidateResponse(0, new JSONObject(), failure);
+        }
     }
     interface CandidateTransport { CandidateResponse exchange(String refresh) throws Exception; }
-    private static CandidateResponse exchangeCandidate(String refresh) throws Exception {
-        String form = "grant_type=refresh_token" + "&refresh_token=" + enc(refresh)
-                + "&client_id=" + enc(CLIENT_ID) + "&client_secret=" + enc(CLIENT_SECRET);
-        Resp r = request(TOKEN_URL, "POST", null, "application/json",
-                "application/x-www-form-urlencoded", form.getBytes(StandardCharsets.UTF_8), 20000, 60000);
-        try {
-            JSONObject body;
-            try { body = new JSONObject(r.text()); } catch (Exception ignored) { body = new JSONObject(); }
-            return new CandidateResponse(r.status, body);
-        } finally { r.close(); }
+
+    /** 真实交换：走同一个可审计的 exchangeRefresh，失败时把传输层证据一起带回去。 */
+    private static CandidateResponse exchangeCandidate(String refresh) {
+        Exchange out = exchangeRefresh(refresh, SOCKET_TRANSPORT, Cancellation.NONE);
+        return out.answered()
+                ? new CandidateResponse(out.status, out.body)
+                : CandidateResponse.failed(out.failure);
     }
+
     public static JSONObject refreshCandidate(JSONObject account) throws Exception {
         return refreshCandidate(account, AntigravityAuth::exchangeCandidate);
     }
+
+    /**
+     * 候选刷新。旧的注入缝（CandidateTransport）原样保留：
+     * 返回 CandidateResponse 就是「拿到响应」，抛异常就是「没有传输层证据」——
+     * 后者一律按可能已发送处理，绝不因为异常叫 IOException 就猜没发出去。
+     */
     static JSONObject refreshCandidate(JSONObject account, CandidateTransport transport) throws Exception {
         if (account == null) throw new TypedAuthException(0, false);
         JSONObject copy;
         synchronized (account) { copy = new JSONObject(account.toString()); }
         String refresh = copy.optString("refresh", "");
         if (refresh.isEmpty()) throw new TypedAuthException(0, true);
-        CandidateResponse response;
-        try { response = transport.exchange(refresh); }
-        catch (Exception e) { throw new TypedAuthException(0, false); }
-        int status = response == null ? 0 : response.status;
-        JSONObject body = response == null || response.body == null ? new JSONObject() : response.body;
+        CandidateTransport seam = transport == null ? AntigravityAuth::exchangeCandidate : transport;
+        Exchange out;
+        try {
+            CandidateResponse response = seam.exchange(refresh);
+            if (response == null) throw new IllegalStateException("candidate transport returned no response");
+            out = response.failure != null
+                    ? Exchange.failed(response.failure)
+                    : Exchange.answered(response.status, response.body);
+        } catch (SendFailure failure) {
+            out = Exchange.failed(failure);
+        } catch (Exception noEvidence) {
+            out = Exchange.unclassified(noEvidence);
+        }
+        if (!out.answered()) throw new TypedAuthException(0, false, out.failure);
+        int status = out.status;
+        JSONObject body = out.body;
         String access = body.optString("access_token", "");
         if (status < 200 || status >= 300 || access.isEmpty()) {
             boolean signIn = status == 401 || (status == 400 && "invalid_grant".equals(body.optString("error", "")));
@@ -1037,33 +1609,40 @@ public class AntigravityAuth {
         return copy;
     }
 
-    /** 刷 access_token（Google refresh token 不轮换，不用写回 refresh） */
+    /** 刷 access_token（Google refresh token 通常不轮换，只有上游给了新值才写回） */
     public static boolean refresh(JSONObject acc) {
         if (acc == null) return false;
         synchronized (acc) { return refreshLocked(acc); }
     }
     private static boolean refreshLocked(JSONObject acc) {
+        String refresh = acc.optString("refresh", "");
+        if (refresh.isEmpty()) return false;
+        // 与 refreshCandidate 走同一条可审计通路：失败时能说清是「没发出去」还是「可能已发出」。
+        return applyRefresh(acc, exchangeRefresh(refresh, SOCKET_TRANSPORT, Cancellation.NONE));
+    }
+
+    /**
+     * 把一次成功交换写回账号。字段与旧 refresh() 的写回完全一致：
+     * access / token 同步、expires = now + expires_in、上游给了新 refresh 才覆盖。
+     * 失败或响应不完整一律返回 false，且账号一个字段都不动。
+     */
+    static boolean applyRefresh(JSONObject acc, Exchange out) {
+        if (acc == null || out == null || !out.answered()) return false;
+        // 与旧 postForm 的判定完全一致（只把 >=400 当失败），不额外收紧也不放宽。
+        if (out.status < 200 || out.status >= 400) return false;
+        String access = out.body.optString("access_token", "");
+        if (access.isEmpty()) return false;
+        long expiresIn = out.body.optLong("expires_in", 3600);
         try {
-            String refresh = acc.optString("refresh", "");
-            if (refresh.isEmpty()) return false;
-            String form = "grant_type=refresh_token"
-                    + "&refresh_token=" + enc(refresh)
-                    + "&client_id=" + enc(CLIENT_ID)
-                    + "&client_secret=" + enc(CLIENT_SECRET);
-            JSONObject tok = postForm(TOKEN_URL, form);
-            String access = tok.optString("access_token", "");
-            if (access.isEmpty()) return false;
-            long expiresIn = tok.optLong("expires_in", 3600);
             acc.put("access", access);
             acc.put("token", access);
             acc.put("expires", System.currentTimeMillis() + expiresIn * 1000L);
-            if (tok.has("refresh_token") && !tok.optString("refresh_token", "").isEmpty()) {
-                acc.put("refresh", tok.optString("refresh_token"));
-            }
-            return true;
-        } catch (Throwable e) {
+            String rotated = out.body.optString("refresh_token", "");
+            if (!rotated.isEmpty()) acc.put("refresh", rotated);
+        } catch (Exception e) {
             return false;
         }
+        return true;
     }
 
     /** 保证 access 至少还有 3 分钟，必要时刷新；失败抛异常 */
@@ -1075,11 +1654,33 @@ public class AntigravityAuth {
         long expires = acc.optLong("expires", 0L);
         boolean stale = access.isEmpty() || (expires > 0 && expires - System.currentTimeMillis() < 3 * 60 * 1000L);
         if (stale) {
-            if (!refresh(acc)) throw new Exception("Antigravity 账号已掉线：refresh_token 刷新失败，请重新登录");
+            String refresh = acc.optString("refresh", "");
+            if (refresh.isEmpty()) throw refreshFailure(null);
+            Exchange out = exchangeRefresh(refresh, SOCKET_TRANSPORT, Cancellation.NONE);
+            // 刷新失败不再一律说「已掉线」：没发出去的请求没有消费任何凭据。
+            if (!applyRefresh(acc, out)) throw refreshFailure(out);
             access = acc.optString("access", "");
         }
         if (access.isEmpty()) throw new Exception("Antigravity 账号没有可用的 access_token");
         return access;
+    }
+
+    /**
+     * 刷新失败的说法必须与证据一致：
+     *  - 可证明没发出去 → 凭据没被消费，网络恢复后直接重试，不要求重新登录；
+     *  - 可能已发送 → 结果未知、一次性凭据可能已经没了，只能重新登录；
+     *  - 拿到了响应但被拒 → 沿用旧文案（兼容旧行为）。
+     */
+    private static Exception refreshFailure(Exchange out) {
+        if (out != null && !out.answered()) {
+            if (out.provablyNotSent()) {
+                return new Exception("Antigravity 刷新请求没有发出去（" + out.diagnostic()
+                        + "），账号凭据未被消费，网络恢复后可直接重试");
+            }
+            return new Exception("Antigravity 账号已掉线：refresh 结果未知（请求可能已被上游处理；"
+                    + out.diagnostic() + "），请重新登录");
+        }
+        return new Exception("Antigravity 账号已掉线：refresh_token 刷新失败，请重新登录");
     }
 
     /** 账号没有项目时补一次 loadCodeAssist + onboardUser */
@@ -1106,7 +1707,7 @@ public class AntigravityAuth {
         try {
             String text = r.text();
             if (r.status < 200 || r.status >= 400) {
-                throw new Exception("Code Assist " + r.status + ": " + shortErr(text));
+                throw codeAssistRefused(r.status, text);
             }
             if (text.trim().isEmpty()) return new JSONObject();
             try {
@@ -1119,6 +1720,43 @@ public class AntigravityAuth {
         } finally {
             r.close();
         }
+    }
+
+    /**
+     * Code Assist 的非 2xx 应答：状态码与消息分开携带。
+     *
+     * 对齐 upstream yetone/magpie internal/provider/google.go 的 codeAssistError：
+     * 调用方（tier 拒绝分类、日志）按状态码判断，不再去猜错误串里有没有 "400"
+     * —— 猜字符串会让「正文里恰好出现 400」的 429 / 403 / 5xx 被误判成 tier 被拒。
+     */
+    public static final class CodeAssistException extends Exception {
+        private final int status;
+
+        CodeAssistException(int status, String message) {
+            super(message);
+            this.status = status;
+        }
+
+        /** HTTP 状态码（Code Assist 应答的那个）。 */
+        public int status() {
+            return status;
+        }
+    }
+
+    /** 造一条 Code Assist 非 2xx 应答的异常；消息格式与旧版逐字一致，日志不变。 */
+    static CodeAssistException codeAssistRefused(int status, String text) {
+        return new CodeAssistException(status, "Code Assist " + status + ": " + shortErr(text));
+    }
+
+    /**
+     * err 携带的 Code Assist 状态码，0 表示它不是 Code Assist 的应答。
+     * 对齐上游 codeAssistStatus：只认结构化状态，沿 cause 链找（上游用 errors.As）。
+     */
+    static int codeAssistStatus(Throwable err) {
+        for (Throwable t = err; t != null; t = t.getCause()) {
+            if (t instanceof CodeAssistException) return ((CodeAssistException) t).status();
+        }
+        return 0;
     }
 
     private static JSONObject postForm(String url, String form) throws Exception {
@@ -1248,7 +1886,32 @@ public class AntigravityAuth {
         return true;
     }
 
+    /**
+     * 这次失败是否说明「Google 拒了这个 tier」，该记进 TIER_REFUSED（24 小时）。
+     *
+     * 对齐上游 fetchAvailableModels：只有 400（INVALID_ARGUMENT，即 g1-pro-tier 这档
+     * 账号其实没有）算 tier 被拒；429（额度 / 假 429）、401 / 403、404、5xx 一律不算。
+     * 旧实现用 String.valueOf(e.getMessage()).contains("400") 判断，429 正文里出现
+     * 「retry after 400 seconds」这类字样就会把账号的高档位错误静音一整天。
+     */
+    static boolean marksTierRefused(String tier, Throwable err) {
+        return tier != null && !tier.isEmpty()
+                && codeAssistStatus(err) == HttpURLConnection.HTTP_BAD_REQUEST;
+    }
+
+    /** fetchAvailableModels 的一次 Code Assist POST；生产走 postJson，测试可注入。 */
+    interface ModelsPost {
+        JSONObject post(String url, String access, JSONObject body) throws Exception;
+    }
+
+    private static final ModelsPost POST_MODELS = (url, access, body) -> postJson(url, access, body, USER_AGENT);
+
     public static JSONArray fetchModels(JSONObject acc, String access, String project) throws Exception {
+        return fetchModels(acc, access, project, null);
+    }
+
+    static JSONArray fetchModels(JSONObject acc, String access, String project, ModelsPost post) throws Exception {
+        ModelsPost seam = post == null ? POST_MODELS : post;
         JSONObject body = new JSONObject();
         body.put("project", project);
         String paid = acc.optString("paidTier", "");
@@ -1276,12 +1939,12 @@ public class AntigravityAuth {
                 b.put("entitlement", ent);
             }
             try {
-                res = postJson(chatBase + "/v1internal:fetchAvailableModels", access, b, USER_AGENT);
+                res = seam.post(chatBase + "/v1internal:fetchAvailableModels", access, b);
                 if (!t.isEmpty()) acc.put("tier", t);
                 break;
             } catch (Exception e) {
                 lastErr = e;
-                if (!t.isEmpty() && String.valueOf(e.getMessage()).contains("400")) {
+                if (marksTierRefused(t, e)) {
                     TIER_REFUSED.put(accKey + "\u0000" + t, System.currentTimeMillis());
                 }
             }

@@ -636,11 +636,22 @@ public class MainActivity extends Activity {
         public void startStream(final String reqId, final String method,
                                 final String pathAndQuery, final String body) {
             if (reqId == null || !bridgeAllowed()) return;
+            final BridgeRequestValidator.Request request;
+            try {
+                // 流式入口同样会拼请求行，必须先过与 doRequest 相同的校验。
+                request = BridgeRequestValidator.validate(method, pathAndQuery);
+            } catch (IllegalArgumentException rejected) {
+                evalJs(webView, "window.__allInStreamEnd && window.__allInStreamEnd("
+                        + org.json.JSONObject.quote(reqId) + ",400,"
+                        + org.json.JSONObject.quote("bridge request rejected: "
+                                + rejected.getMessage()) + ")");
+                return;
+            }
             new Thread(new Runnable() {
                 @Override
                 public void run() {
                     final WebView view = webView;
-                    LocalBridge.stream(method, pathAndQuery, body, 180000,
+                    LocalBridge.stream(request.method, request.pathAndQuery, body, 180000,
                             new LocalBridge.StreamCallback() {
                                 @Override
                                 public boolean onLine(String line) {
@@ -713,12 +724,32 @@ public class MainActivity extends Activity {
             }).start();
         }
 
+        /** 请求行被校验器拒绝时回给面板的固定结构；此时不会建立 socket，也不会碰网关。 */
+        private String bridgeRejected(String reason) {
+            try {
+                org.json.JSONObject ret = new org.json.JSONObject();
+                ret.put("status", 400);
+                ret.put("body", "");
+                ret.put("error", "bridge request rejected: " + reason);
+                return ret.toString();
+            } catch (Exception ignored) {
+                return "{\"status\":400,\"body\":\"\",\"error\":\"bridge request rejected\"}";
+            }
+        }
+
         private String doRequest(String method, String pathAndQuery, String body) {
+            final BridgeRequestValidator.Request request;
+            try {
+                // 面板可控的 method/path 在拼请求行之前必须过校验：拦住 CRLF、控制字符、
+                // 绝对 URI 与异常长度，避免把注入内容写进发往本机网关的请求行。
+                request = BridgeRequestValidator.validate(method, pathAndQuery);
+            } catch (IllegalArgumentException rejected) {
+                return bridgeRejected(rejected.getMessage());
+            }
             java.net.Socket socket = null;
             try {
-                String m = (method == null || method.isEmpty()) ? "GET" : method.toUpperCase();
-                String path = (pathAndQuery == null || pathAndQuery.isEmpty()) ? "/" : pathAndQuery;
-                if (path.charAt(0) != '/') path = "/" + path;
+                String m = request.method;
+                String path = request.pathAndQuery;
                 byte[] payload = (body == null) ? new byte[0] : body.getBytes("UTF-8");
 
                 socket = new java.net.Socket();

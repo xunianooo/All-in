@@ -37,6 +37,17 @@ public final class NativeAnthropicStreamOfflineTest {
         for (String bad : new String[]{"", START, START + e("message_stop", ""), START + block(0,"{\"type\":\"text\",\"text\":\"\"}") + END, e("message_start", ",\"message\":{\"content\":[{}]}")}) {
             String result = read(stream(bad,null)); check(result.contains("event: error") && !result.contains("event: message_stop"), "invalid stream fails");
         }
+        for(String reason:new String[]{"unknown","","Model_Context_Window_Exceeded","model_context_window_exceeded "}) {
+            String badReason=START+e("message_delta",",\"delta\":{\"stop_reason\":\""+reason+"\"}")+e("message_stop","");
+            String result=read(stream(badReason,null));
+            check(result.contains("event: error")&&!result.contains("event: message_stop"),"invalid terminal reason rejected");
+        }
+        String paused=START+e("message_delta",",\"delta\":{\"stop_reason\":\"pause_turn\"}")+e("message_stop","");
+        check(read(stream(paused,null)).equals(paused),"native pause_turn preserved");
+        String window=START+e("message_delta",",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"}")+e("message_stop","");
+        check(read(stream(window,null)).equals(window),"native context window reason preserved");
+        String openWindow=START+block(0,"{\"type\":\"text\",\"text\":\"\"}")+e("message_delta",",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"}")+e("message_stop","");
+        check(read(stream(openWindow,null)).contains("event: error"),"context window reason with open block");
         PrivacyMasker.Session s = new PrivacyMasker.Session(); s.placeholderToReal.put("{{MASK_X}}", "restored");
         String masked = START + block(0,"{\"type\":\"text\",\"text\":\"\"}") + delta(0,"{\"type\":\"text_delta\",\"text\":\"{{MASK_\",\"extra\":1}") + delta(0,"{\"type\":\"text_delta\",\"text\":\"X}}\"}") + stop(0) + END;
         String restored = read(stream(masked,s)); check(restored.contains("restored") && restored.contains("\"extra\":1") && !restored.contains("event: error"), "split placeholder");

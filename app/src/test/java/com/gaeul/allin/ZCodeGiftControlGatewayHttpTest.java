@@ -20,6 +20,8 @@ public final class ZCodeGiftControlGatewayHttpTest {
         public JSONObject summary(String jwt, String device) throws Exception {
             observedJwt = jwt; summaries.incrementAndGet();
             if (mode.equals("summary-fail")) return new JSONObject().put("ok", false).put("error", "fixture unavailable");
+            // 余额读自己被限流（HTTP 429 / 3002）：这一条挡的是读余额，不是领取。
+            if (mode.equals("summary-limit")) return new JSONObject().put("ok", false).put("status", 429).put("businessCode", 3002).put("retryAfterMs", 47000);
             if (mode.equals("unknown")) return new JSONObject().put("ok", true).put("claimable", new JSONArray())
                     .put("buckets", new JSONArray().put(new JSONObject().put("remaining", -1).put("capabilities", new JSONArray().put("model:glm-5.3-flash"))));
             return new JSONObject().put("ok", true)
@@ -72,13 +74,30 @@ public final class ZCodeGiftControlGatewayHttpTest {
             Reply first=request(g.getListeningPort(),panel,null);
             check(first.status==200 && first.body.optBoolean("ok") && first.body.optBoolean("complete") && fake.summaries.get()==1 && fake.observedJwt.equals("first"),"panel summary first account");
             Reply second=request(g.getListeningPort(),panel,null); check(second.body.optBoolean("ok") && fake.summaries.get()==1,"panel cached summary");
+            Reply refreshed=request(g.getListeningPort(),panel+"?refresh=1",null);
+            check(refreshed.body.optBoolean("ok") && fake.summaries.get()==2 && fake.claims.get()==0,"HTTP refresh bypasses cache without claim");
             Reply claim=request(g.getListeningPort(),panel+"?action=claim&planId=one",null);
-            check(claim.status==200 && claim.body.optBoolean("ok") && claim.body.optJSONObject("gift").optBoolean("complete") && fake.claims.get()==1 && fake.summaries.get()==2,"successful claim refreshes cache");
-            request(g.getListeningPort(),panel,null); check(fake.summaries.get()==2,"fresh summary shared");
+            check(claim.status==200 && claim.body.optBoolean("ok") && claim.body.optJSONObject("gift").optBoolean("complete") && fake.claims.get()==1 && fake.summaries.get()==3,"successful claim refreshes cache");
+            request(g.getListeningPort(),panel,null); check(fake.summaries.get()==3,"fresh summary shared");
             fake.mode="limit"; Reply limited=request(g.getListeningPort(),panel+"?action=claim&planId=one",null);
             check(limited.status==200 && !limited.body.optBoolean("ok") && limited.body.optInt("status")==429 && "47".equals(limited.retry),"limited claim response");
             int before=fake.claims.get(); Reply held=request(g.getListeningPort(),panel+"?action=claim&planId=one",null);
             check(held.status==200 && held.body.optInt("status")==429 && "47".equals(held.retry) && fake.claims.get()==before,"held claim no upstream");
+            // 上游 rateWait 只被 claimDaily 读，giftOf / startPlan 照旧读余额：一次被限的
+            // 领取不该让面板读不到余额。反过来，余额读自己被限流时挡住的才是余额读。
+            int limitedSummaries=fake.summaries.get(), heldClaims=fake.claims.get();
+            Reply readWhileClaimHeld=request(g.getListeningPort(),panel+"?refresh=1",null);
+            check(readWhileClaimHeld.status==200 && readWhileClaimHeld.body.optBoolean("ok") && readWhileClaimHeld.body.optBoolean("complete")
+                    && fake.summaries.get()==limitedSummaries+1 && fake.claims.get()==heldClaims,"claim limit still lets the balance be read");
+            Reply claimAfterRead=request(g.getListeningPort(),panel+"?action=claim&planId=one",null);
+            check(claimAfterRead.status==200 && claimAfterRead.body.optInt("status")==429 && "47".equals(claimAfterRead.retry)
+                    && fake.claims.get()==heldClaims,"balance read keeps the claim hold");
+            fake.mode="summary-limit";
+            Reply limitedRead=request(g.getListeningPort(),panel+"?refresh=1",null);
+            check(limitedRead.status==200 && !limitedRead.body.optBoolean("ok") && limitedRead.body.optInt("status")==429
+                    && "47".equals(limitedRead.retry) && fake.summaries.get()==limitedSummaries+2,"balance limit reported to the caller");
+            Reply heldRead=request(g.getListeningPort(),panel+"?refresh=1",null);
+            check(heldRead.body.optInt("status")==429 && "47".equals(heldRead.retry) && fake.summaries.get()==limitedSummaries+2,"balance limit holds the next balance read");
             now[0]+=47000; fake.mode="partial";
             Reply batch=request(g.getListeningPort(),panel+"?action=claimall",null);
             check(batch.status==200 && !batch.body.optBoolean("ok") && !batch.body.optBoolean("complete") && batch.body.getJSONArray("claimed").length()==1

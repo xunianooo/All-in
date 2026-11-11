@@ -4,6 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -23,17 +24,75 @@ final class ZCodeAnthropic {
 
     private ZCodeAnthropic() {}
 
-    private static final int DEFAULT_MAX_TOKENS = 4096;
+    private static final int DEFAULT_MAX_TOKENS = 16384;
 
     // ===================== OpenAI → Anthropic =====================
 
     static JSONObject toAnthropic(JSONObject openai) throws Exception {
+        return toAnthropic(openai, false);
+    }
+
+    static JSONObject toAnthropic(JSONObject openai, boolean autoThinking) throws Exception {
+        return toAnthropic(openai, autoThinking, AnthropicReasoningPolicy.Provider.ZCODE);
+    }
+
+    static JSONObject toAnthropic(JSONObject openai, boolean autoThinking,
+                                  AnthropicReasoningPolicy.Provider reasoningProvider) throws Exception {
+        return toAnthropic(openai, autoThinking, reasoningProvider, null);
+    }
+
+    static JSONObject toAnthropic(JSONObject openai, boolean autoThinking,
+                                  AnthropicReasoningPolicy.Provider reasoningProvider,
+                                  AnthropicReasoningPolicy.ModelCapabilities capabilities) throws Exception {
+        return toAnthropic(openai, autoThinking, reasoningProvider, capabilities, 0, 0);
+    }
+
+    static JSONObject toAnthropic(JSONObject openai, boolean autoThinking,
+                                  AnthropicReasoningPolicy.Provider reasoningProvider,
+                                  AnthropicReasoningPolicy.ModelCapabilities capabilities,
+                                  int catalogOutputDefault, int guardOutputCap) throws Exception {
+        return convert(openai, autoThinking, reasoningProvider, capabilities,
+                catalogOutputDefault, guardOutputCap, true);
+    }
+
+    /**
+     * Chat → Anthropic 结构投影，供其他厂商的 Claude 端点使用（WorkBuddy 国内原生 Messages）。
+     * 这里不套用 ZCode/MiniMax 的推理策略：客户端的 reasoning_effort 由调用方按自己的厂商语义处理，
+     * Claude 模型名也不是 ZCode 的插件 variant，套用会得到错误预算或误拒。
+     */
+    static JSONObject toAnthropicStructural(JSONObject openai) throws Exception {
+        return toAnthropicStructural(openai, 0);
+    }
+
+    /**
+     * catalogOutputDefault is the model's own output limit from the vendor catalog; when the client
+     * names none, that (not the 16384 translation fallback) is what the request asks for, as the
+     * vendor's own client does.
+     */
+    static JSONObject toAnthropicStructural(JSONObject openai, int catalogOutputDefault) throws Exception {
+        return convert(openai, false, AnthropicReasoningPolicy.Provider.ZCODE, null, catalogOutputDefault, 0, false);
+    }
+
+    private static JSONObject convert(JSONObject openai, boolean autoThinking,
+                                  AnthropicReasoningPolicy.Provider reasoningProvider,
+                                  AnthropicReasoningPolicy.ModelCapabilities capabilities,
+                                  int catalogOutputDefault, int guardOutputCap,
+                                  boolean applyReasoningPolicy) throws Exception {
         JSONObject out = new JSONObject();
         out.put("model", openai.optString("model", ""));
+        AnthropicReasoningPolicy.Provider provider = reasoningProvider == null
+                ? AnthropicReasoningPolicy.Provider.ZCODE : reasoningProvider;
 
         int maxTokens = openai.optInt("max_completion_tokens", 0);
-        if (maxTokens <= 0) maxTokens = openai.optInt("max_tokens", 0);
-        out.put("max_tokens", maxTokens > 0 ? maxTokens : DEFAULT_MAX_TOKENS);
+        int legacyMaxTokens = openai.optInt("max_tokens", 0);
+        if (maxTokens <= 0) maxTokens = legacyMaxTokens;
+        else if (legacyMaxTokens > 0) maxTokens = Math.min(maxTokens, legacyMaxTokens);
+        int effectiveLimit = AnthropicReasoningPolicy.effectiveOutputLimit(
+                provider, openai.optString("model", ""), maxTokens, catalogOutputDefault, guardOutputCap);
+        // A limit from the client, the catalog or Guard is final; only the translation fallback
+        // may be raised so that a reasoning budget keeps room for the answer.
+        boolean outputLimitKnown = effectiveLimit > 0;
+        out.put("max_tokens", effectiveLimit > 0 ? effectiveLimit : DEFAULT_MAX_TOKENS);
 
         if (openai.has("temperature")) out.put("temperature", openai.optDouble("temperature"));
         if (openai.has("top_p")) out.put("top_p", openai.optDouble("top_p"));
@@ -211,17 +270,18 @@ final class ZCodeAnthropic {
             if (!"none".equals(choice.optString("type"))) choice.put("disable_parallel_tool_use", true);
         }
 
-        // 推理强度：OpenAI 的 reasoning_effort → Anthropic 的 thinking 预算
-        String effort = openai.optString("reasoning_effort", "");
-        if (!effort.isEmpty() && !"none".equals(effort) && out.optInt("max_tokens", DEFAULT_MAX_TOKENS) > 1024) {
-            int budget = "low".equals(effort) ? 2048 : "medium".equals(effort) ? 8192 : 16384;
-            int mt = out.optInt("max_tokens", DEFAULT_MAX_TOKENS);
-            if (budget >= mt) budget = Math.max(1024, mt - 512);
-            JSONObject thinking = new JSONObject();
-            thinking.put("type", "enabled");
-            thinking.put("budget_tokens", budget);
-            out.put("thinking", thinking);
+        if (applyReasoningPolicy) {
+            // Preserve explicit Anthropic controls; policy validates them against the final output cap.
+            AnthropicReasoningPolicy.apply(openai, out, provider, capabilities, outputLimitKnown, guardOutputCap);
+            if (autoThinking && !openai.has("reasoning_effort") && !openai.has("thinking")) {
+                AnthropicReasoningPolicy.ModelCapabilities effectiveCapabilities = capabilities;
+                if (provider == AnthropicReasoningPolicy.Provider.MINIMAX && effectiveCapabilities == null)
+                    effectiveCapabilities = AnthropicReasoningPolicy.ModelCapabilities.miniMax(
+                            Collections.<String>emptySet(), false, false);
+                AnthropicReasoningPolicy.applyAutomatic(openai, out, provider, effectiveCapabilities);
+            }
         }
+        AnthropicReasoningPolicy.validateOutputCompatibility(out);
         return out;
     }
 
@@ -264,7 +324,61 @@ final class ZCodeAnthropic {
 
     // ===================== Anthropic → OpenAI =====================
 
+    /** Upstream stopped because the model context window was exhausted, not because the answer ended. */
+    private static final String STOP_CONTEXT_WINDOW = "model_context_window_exceeded";
+    /** Upstream paused a long-running turn (server-side tool loop); Chat has no equivalent. */
+    private static final String STOP_PAUSE_TURN = "pause_turn";
+
+    /**
+     * A paused turn has no Chat projection at all, so the Chat conversion must fail loudly rather than
+     * pick a lossy answer. stop would call an unfinished turn complete (silent success) and, when the
+     * paused message also carries tool_use blocks, would place tool_calls beside a stop finish - the
+     * client cannot then tell whether to run those tools or treat the answer as final. tool_calls is
+     * just as false: the upstream never asked for those tools to run, it asked to continue the turn.
+     */
+    static final String PAUSE_TURN_UNSUPPORTED =
+            "Anthropic stop_reason pause_turn cannot be represented in a Chat completion; use the native Messages endpoint";
+
+    /**
+     * Native Messages clients get the upstream stop_reason verbatim (see NativeAnthropicStream), so the
+     * only job here is to prove the value is a stop reason Anthropic defines. The Chat projection losses
+     * are decided in finishReason and must not be applied to the native stream: pause_turn stays
+     * pause_turn there, even though the Chat projection refuses it.
+     */
+    static void validateStopReason(JSONObject message) {
+        Object reason = message == null ? null : message.opt("stop_reason");
+        if (!(reason instanceof String)) throw new IllegalArgumentException("Invalid or missing Anthropic stop_reason");
+        if (!isAnthropicStopReason((String) reason))
+            throw new IllegalArgumentException("Invalid or missing Anthropic stop_reason: " + reason);
+    }
+
+    private static boolean isAnthropicStopReason(String stop) {
+        return "end_turn".equals(stop) || "stop_sequence".equals(stop) || "refusal".equals(stop)
+                || "max_tokens".equals(stop) || "tool_use".equals(stop)
+                || STOP_CONTEXT_WINDOW.equals(stop) || STOP_PAUSE_TURN.equals(stop);
+    }
+
+    private static String finishReason(String stop) {
+        if ("end_turn".equals(stop) || "stop_sequence".equals(stop)) return "stop";
+        if ("refusal".equals(stop)) return "content_filter";
+        if ("max_tokens".equals(stop)) return "length";
+        if ("tool_use".equals(stop)) return "tool_calls";
+        // Chat has no "context window exhausted" finish reason. It is a truncation of the answer, so
+        // length is the honest projection: claiming stop would hide that the turn was cut off.
+        if (STOP_CONTEXT_WINDOW.equals(stop)) return "length";
+        // A paused turn is neither a completed answer nor a completed tool request: the model stopped
+        // mid turn and the upstream expects the same turn to be continued. Chat cannot express a pause,
+        // so both available answers would be fabricated (stop = silent success, tool_calls = tools the
+        // upstream never asked for). Fail explicitly and leave the choice to the caller.
+        if (STOP_PAUSE_TURN.equals(stop)) throw new IllegalArgumentException(PAUSE_TURN_UNSUPPORTED);
+        throw new IllegalArgumentException("Invalid or missing Anthropic stop_reason: " + stop);
+    }
+
     static JSONObject toOpenAI(JSONObject msg, String requestedModel) {
+        // Resolved before anything is built: a stop reason Chat cannot represent must abort the whole
+        // conversion (the callers turn the throw into an error response) instead of surfacing a
+        // well-formed looking 200 whose body only carries an "error" field.
+        String finish = finishReason(msg.isNull("stop_reason") ? "" : msg.optString("stop_reason", ""));
         JSONObject out = new JSONObject();
         try {
             out.put("id", msg.optString("id", "chatcmpl-" + System.currentTimeMillis()));
@@ -303,12 +417,6 @@ final class ZCodeAnthropic {
             message.put("content", text.length() == 0 && toolCalls.length() > 0 ? JSONObject.NULL : text.toString());
             if (reasoning.length() > 0) message.put("reasoning_content", reasoning.toString());
             if (toolCalls.length() > 0) message.put("tool_calls", toolCalls);
-
-            String stopReason = msg.optString("stop_reason", "end_turn");
-            String finish;
-            if ("max_tokens".equals(stopReason)) finish = "length";
-            else if ("tool_use".equals(stopReason)) finish = "tool_calls";
-            else finish = "stop";
 
             JSONArray choices = new JSONArray();
             JSONObject ch = new JSONObject();
@@ -369,8 +477,13 @@ final class ZCodeAnthropic {
         private final List<Integer> openToolBlocks = new ArrayList<Integer>();
         private final JSONObject usage = new JSONObject();
         private boolean started;
+        private final boolean thinkingOnlyTruncationCompat;
+        private boolean hasThinking, hasText, hasToolOrRefusal;
 
-        StreamState(String model) {
+        StreamState(String model) { this(model, false); }
+
+        StreamState(String model, boolean thinkingOnlyTruncationCompat) {
+            this.thinkingOnlyTruncationCompat = thinkingOnlyTruncationCompat;
             this.id = "chatcmpl-" + System.currentTimeMillis();
             this.model = model;
             this.created = System.currentTimeMillis() / 1000L;
@@ -379,6 +492,18 @@ final class ZCodeAnthropic {
         /** 一条 Anthropic 事件 → 一到多条 OpenAI data 行（不含 "data: " 前缀与空行） */
         List<String> onEvent(String eventName, JSONObject data) {
             List<String> outs = new ArrayList<String>();
+            String eventType = data == null ? "" : data.optString("type", eventName);
+            JSONObject stopDelta = data == null ? null : data.optJSONObject("delta");
+            String finish = null;
+            String rawStop = null;
+            // Deliberately resolved before the event is processed and outside the catch below: a stop
+            // reason Chat cannot represent (pause_turn) aborts the stream here, so no finish chunk is
+            // ever emitted for it and the SSE layer reports the failure instead of a fake completion.
+            if ("message_delta".equals(eventType) && stopDelta != null
+                    && stopDelta.has("stop_reason") && !stopDelta.isNull("stop_reason")) {
+                rawStop = stopDelta.optString("stop_reason", "");
+                finish = finishReason(rawStop);
+            }
             try {
                 String type = data == null ? "" : data.optString("type", eventName);
                 if ("message_start".equals(type) && data != null) {
@@ -414,6 +539,11 @@ final class ZCodeAnthropic {
 
                 if ("content_block_start".equals(type)) {
                     JSONObject block = data.optJSONObject("content_block");
+                    if (block != null) {
+                        String kind = block.optString("type", "");
+                        if ("text".equals(kind)) hasText |= !block.optString("text", "").isEmpty();
+                        else if (!"thinking".equals(kind)) hasToolOrRefusal = true;
+                    }
                     if (block != null && "tool_use".equals(block.optString("type"))) {
                         toolIndex++;
                         openToolBlocks.add(Integer.valueOf(data.optInt("index", 0)));
@@ -444,10 +574,15 @@ final class ZCodeAnthropic {
                     if (d == null) return outs;
                     String dt = d.optString("type");
                     if ("text_delta".equals(dt)) {
-                        outs.add(deltaChunk("content", d.optString("text", "")));
+                        String text = d.optString("text", "");
+                        if (!text.isEmpty()) hasText = true;
+                        outs.add(deltaChunk("content", text));
                     } else if ("thinking_delta".equals(dt)) {
-                        outs.add(deltaChunk("reasoning_content", d.optString("thinking", "")));
+                        String thinking = d.optString("thinking", "");
+                        if (!thinking.isEmpty()) hasThinking = true;
+                        outs.add(deltaChunk("reasoning_content", thinking));
                     } else if ("input_json_delta".equals(dt)) {
+                        hasToolOrRefusal = true;
                         JSONObject chunk = base();
                         JSONArray choices = new JSONArray();
                         JSONObject ch = new JSONObject();
@@ -468,12 +603,27 @@ final class ZCodeAnthropic {
                         choices.put(ch);
                         chunk.put("choices", choices);
                         outs.add(chunk.toString());
+                    } else if (!"signature_delta".equals(dt)) {
+                        hasToolOrRefusal = true;
                     }
                 } else if ("message_delta".equals(type)) {
                     JSONObject d = data.optJSONObject("delta");
-                    String stop = d == null ? "" : d.optString("stop_reason", "");
-                    String finish = "max_tokens".equals(stop) ? "length"
-                            : "tool_use".equals(stop) ? "tool_calls" : "stop";
+                    if (finish == null) {
+                        if (usage.length() > 0) {
+                            JSONObject chunk = base();
+                            chunk.put("choices", new JSONArray());
+                            chunk.put("usage", openAIUsage(usage));
+                            outs.add(chunk.toString());
+                        }
+                        return outs;
+                    }
+                    // The thinking-only compat guess is only defensible for a real max_tokens cut: a
+                    // context-window overflow must stay visible as length instead of being masked to stop.
+                    if (thinkingOnlyTruncationCompat && "max_tokens".equals(rawStop)
+                            && hasThinking && !hasText && !hasToolOrRefusal) {
+                        outs.add(deltaChunk("content", ThinkingTruncationStream.NOTICE));
+                        finish = "stop";
+                    }
                     JSONObject chunk = base();
                     JSONArray choices = new JSONArray();
                     JSONObject ch = new JSONObject();

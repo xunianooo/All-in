@@ -43,7 +43,16 @@ public class ZCodeAuth {
     // 的请求体转换，所以这里必须用 OpenAI 兼容地址，否则上游会返回 404。
     public static final String ZAI_BASE = "https://api.z.ai/api/coding/paas/v4";
     public static final String BIGMODEL_BASE = "https://open.bigmodel.cn/api/coding/paas/v4";
-    public static final String APP_VERSION = "3.16.3";
+    /**
+     * 向 ZCode 自称的客户端版本：登录换 Key、取余额、领取、能力同步都带上它，ZCode 也按它放行。
+     *
+     * 上游 packages/zcode 的 APP_VERSION 是 3.17.2，并在注释里记了实测：marketing feed
+     * 对更老的版本返回空（#678）；Start Plan 余额 "judges capability by the real
+     * app_version"；/billing/claim 在 3.16.3 的 header 下让六个账号全返 1004
+     * (not eligible)，同一晚换成 3.17.2 的 header 后其中四个 code 0 领取成功。
+     * 所以这个号跟着上游走，不自行挑版本。
+     */
+    public static final String APP_VERSION = "3.17.2";
     public static final String UA = "ZCode/" + APP_VERSION;
 
     /** 一个进行中的登录流程 */
@@ -103,6 +112,25 @@ public class ZCodeAuth {
         public boolean isRateLimited() { return status == 429 || businessCode == 3002; }
     }
 
+    /**
+     * 领取要 ZCode 自己客户端的阿里云 captcha 证明（X-Aliyun-Captcha-Verify-Param），
+     * 本应用造不出来：配置说校验开着时一个请求都不发，交给 ZCode 客户端领。
+     *
+     * 对齐上游 claimDaily 的 captcha 分支（它给的是 outcome "captcha"，不发 claim）。
+     */
+    public static final class CaptchaRequiredException extends Exception {
+        CaptchaRequiredException(String message) { super(message); }
+    }
+
+    /**
+     * 领取前的「要不要验证码」读不出来：不知道就等于不能发。
+     *
+     * 上游把这种情形算 failed（unknown），从不当成「没有校验」。
+     */
+    public static final class ClaimUnknownException extends Exception {
+        ClaimUnknownException(String message) { super(message); }
+    }
+
     static long parseRetryAfter(String value, long now) {
         if (value == null || value.trim().isEmpty()) return 0;
         String v = value.trim();
@@ -126,6 +154,25 @@ public class ZCodeAuth {
     /** Z.ai 系接口统一返回 {code,msg,data}，code 为 0 或 200 是成功 */
     private static JSONObject call(String method, String url, String auth, JSONObject body,
                                    String device, int timeoutMs) throws Exception {
+        return call(method, url, auth, body, device, timeoutMs, null);
+    }
+
+    /** extra 是这个请求要额外带的头（marketing 通道的版本/平台/语言头），按给定顺序补上 */
+    private static JSONObject call(String method, String url, String auth, JSONObject body,
+                                   String device, int timeoutMs, Map<String,String> extra) throws Exception {
+        JSONObject envelope = callEnvelope(method, url, auth, body, device, timeoutMs, extra);
+        JSONObject data = envelope.optJSONObject("data");
+        return data == null ? new JSONObject() : data;
+    }
+
+    /**
+     * 同一个请求，返回整包 {code,msg,data}。
+     *
+     * 只有 marketing/touch 用它：data 是数组或标量时说明这份 feed 读不懂，不能当成
+     * 「没有可领」，而 call() 交给其他调用方的契约是 data 对象本身。
+     */
+    private static JSONObject callEnvelope(String method, String url, String auth, JSONObject body,
+                                           String device, int timeoutMs, Map<String,String> extra) throws Exception {
         String host = "";
         try {
             host = new URL(url).getHost();
@@ -144,6 +191,13 @@ public class ZCodeAuth {
         if (url.startsWith(ZCODE + "/")) {
             conn.setRequestProperty("X-Device-Mid", device == null || device.isEmpty()
                     ? UUID.randomUUID().toString() : device);
+        }
+        if (extra != null) {
+            for (Map.Entry<String,String> header : extra.entrySet()) {
+                if (header.getKey() != null && header.getValue() != null) {
+                    conn.setRequestProperty(header.getKey(), header.getValue());
+                }
+            }
         }
 
         if (body != null && !"GET".equals(method)) {
@@ -182,15 +236,25 @@ public class ZCodeAuth {
         }
         if (env == null) throw new Exception("上游返回的不是 JSON");
         JSONObject data = env.optJSONObject("data");
-        // Only an explicitly successful preview can mean "nothing to claim".
-        // Keep other shared call sites' response contracts unchanged.
-        if ((GIFT_BASE + "/billing/preview").equals(url)) {
+        // Only an explicitly successful answer can mean "nothing to claim" — for the
+        // old preview and for the feed that replaced it. A reply without the success
+        // marker is unread, and unread is never none. Keep other shared call sites'
+        // response contracts unchanged.
+        if ((GIFT_BASE + "/billing/preview").equals(url) || url.startsWith(TOUCH + "?")) {
             if (!"0".equals(bizCode) && !"200".equals(bizCode))
                 throw new GiftDataException("gift 可领取计划响应缺少成功标志");
             if (data == null && env.has("data") && !env.isNull("data"))
                 throw new GiftDataException("gift 可领取计划数据不完整");
         }
-        return data == null ? new JSONObject() : data;
+        // 领取和它的验证码配置也只认显式的成功标志：一个没有 code 的 200 既不是
+        // 「领到了」也不是「不用验证码」，是读不懂（上游把这两种都算 unknown，
+        // 从不把没读懂的回复当成成功）。
+        if ((GIFT_BASE + "/billing/claim").equals(url) || url.startsWith(CLIENT_CONFIGS + "?")) {
+            if (!"0".equals(bizCode) && !"200".equals(bizCode))
+                throw new ServiceException(code, businessCode,
+                        parseRetryAfter(conn.getHeaderField("Retry-After"), System.currentTimeMillis()));
+        }
+        return env;
     }
 
     /**
@@ -437,81 +501,454 @@ public class ZCodeAuth {
         return j.startsWith("Bearer ") ? j : "Bearer " + j;
     }
 
-    /** 今天有没有可领取的额度包（preview） */
+    /** 旧的可领取列表（billing/preview）。v3.17 客户端已不再读它，只留给兼容调用方。 */
     public static JSONObject giftPreview(String jwt, String device) throws Exception {
         return call("GET", GIFT_BASE + "/billing/preview", giftAuth(jwt), null, device, 20000);
     }
 
-    /** 各 gift 包剩多少（balances[].remaining_units / total_units） */
+    /**
+     * 各 gift 包剩多少（balances[].remaining_units / total_units）。
+     *
+     * app_version 不能省：上游每次取余额都是 billing/balance?app_version=APP_VERSION，
+     * 注释写明 Start Plan 余额 "judges capability by the real app_version"；不带它
+     * 等于让上游按一个读不出能力的版本回答，能力标签可能为空，gift 路由就会以为
+     * 这个号没有可花的额度。
+     */
     public static JSONObject giftBalance(String jwt, String device) throws Exception {
-        return call("GET", GIFT_BASE + "/billing/balance", giftAuth(jwt), null, device, 20000);
+        return call("GET", GIFT_BASE + "/billing/balance?app_version=" + APP_VERSION,
+                giftAuth(jwt), null, device, 20000);
     }
 
-    /** 领取某个额度包；plan_id 来自 preview 的 data.plans[].plan_id */
+    /**
+     * 领取某个额度包；plan_id 来自 marketing/touch 里的 claim_zcode_plan 动作。
+     *
+     * 领取同样按客户端版本放行：上游 claimOne 带 UA、X-Device-Mid 和整组
+     * marketingHeaders，这里也带版本/平台/语言三个头。
+     *
+     * 发之前先问 client/configs 要不要验证码（上游 claimDaily 的 claimNeedsCaptcha）：
+     * 说开着、或者读不懂，这里一个请求都不发——没有 App 的 captcha 证明，
+     * 发出去只会换一个 3007。读不懂是 unknown，不是「不用校验」。
+     */
     public static JSONObject giftClaim(String jwt, String device, String planId) throws Exception {
+        Boolean guarded;
+        try {
+            guarded = giftClaimNeedsCaptcha(giftClientConfigs(jwt, device));
+        } catch (Exception unread) {
+            throw new ClaimUnknownException("读不到 ZCode 的领取校验配置，未发送领取请求");
+        }
+        if (guarded == null) throw new ClaimUnknownException("ZCode 的领取校验配置读不懂，未发送领取请求");
+        if (guarded.booleanValue()) throw new CaptchaRequiredException("ZCode 的领取要它自己客户端的验证码，请在 ZCode 客户端里领取");
         JSONObject body = new JSONObject();
         body.put("plan_id", planId);
-        return call("POST", GIFT_BASE + "/billing/claim", giftAuth(jwt), body, device, 20000);
+        return call("POST", GIFT_BASE + "/billing/claim", giftAuth(jwt), body, device, 20000, marketingHeaders());
+    }
+
+    // ===================== 领取前的验证码配置：client/configs =====================
+    //
+    // 上游 clientConfigs 读 /api/v1/client/configs?app_version=…&platform=…：读通了留
+    // 10 分钟，读失败不留也不吞（抛给调用方当未知）。claimNeedsCaptcha 只看
+    // data.configs.captcha：缺省=不校验；不是对象=未知；否则 enabled !== false。
+
+    static final String CLIENT_CONFIGS = ZCODE + "/api/v1/client/configs";
+    private static final long CLIENT_CONFIGS_TTL_MS = 10 * 60_000L;
+    private static volatile JSONObject clientConfigsCached;
+    private static volatile long clientConfigsAt;
+
+    static String clientConfigsUrl() {
+        return CLIENT_CONFIGS + "?app_version=" + APP_VERSION + "&platform=" + ZCodeGift.platform();
+    }
+
+    /** 读 ZCode 给这个客户端版本的配置；读失败不缓存，也不当成「没有配置」。 */
+    public static JSONObject giftClientConfigs(String jwt, String device) throws Exception {
+        JSONObject cached = clientConfigsCached;
+        long at = clientConfigsAt;
+        long now = System.currentTimeMillis();
+        if (cached != null && now >= at && now - at < CLIENT_CONFIGS_TTL_MS) return cached;
+        JSONObject read = call("GET", clientConfigsUrl(), null, null, device, 20000);
+        clientConfigsCached = read;
+        clientConfigsAt = now;
+        return read;
+    }
+
+    /** 只给测试：让下一次读真的去问上游。 */
+    static void resetGiftClientConfigsCache() { clientConfigsCached = null; clientConfigsAt = 0; }
+
+    /** 上游 claimNeedsCaptcha：true=要校验，false=不校验，null=读不懂（未知）。 */
+    static Boolean giftClaimNeedsCaptcha(JSONObject configs) {
+        JSONObject cfg = configs == null ? null : configs.optJSONObject("configs");
+        if (cfg == null || !cfg.has("captcha") || cfg.isNull("captcha")) return Boolean.FALSE;
+        Object captcha = cfg.opt("captcha");
+        if (!(captcha instanceof JSONObject)) return null;
+        return Boolean.valueOf(((JSONObject) captcha).optBoolean("enabled", true));
+    }
+
+    // ===================== 可领取计划：marketing/touch =====================
+    //
+    // v3.17 客户端把老的 billing/preview 轮询换成 marketing/touch 这一个 feed
+    // （上游 toClaim 的注释、README 的 The daily claim 一节都是这么写的），而且
+    // 横幅型计划（ZCODE WEEKEND BUILD 那一类）只在 feed 里、从不进 preview
+    // （#503）：只读 preview 会把它漏掉，所以可领取计划必须读 feed。
+    // 每个 claim_zcode_plan 动作就是一个可领取计划，名字在同一条 banner 的
+    // zcode_plan.name 上（feed 里放哪儿不固定，所以按整棵 deliveries 找）。
+
+    private static final String TOUCH = ZCODE + "/api/v1/marketing/touch";
+    private static final String CLAIM_ACTION = "claim_zcode_plan";
+    private static final java.util.concurrent.atomic.AtomicInteger TOUCH_SEQ =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /** feed 和领取都按客户端版本/平台/语言放行（上游 marketingHeaders） */
+    private static Map<String,String> marketingHeaders() {
+        Map<String,String> headers = new LinkedHashMap<String,String>();
+        headers.put("X-ZCode-App-Version", APP_VERSION);
+        headers.put("X-Platform", ZCodeGift.platform());
+        headers.put("X-Client-Language", clientLanguage());
+        return headers;
+    }
+
+    /** marketing/touch 只认 ZCode 的两种界面语言：zh-CN / en-US */
+    private static String clientLanguage() {
+        String language = "";
+        try {
+            java.util.Locale l = java.util.Locale.getDefault();
+            language = l == null ? "" : l.getLanguage();
+        } catch (Exception ignored) { }
+        return language != null && language.toLowerCase(java.util.Locale.US).startsWith("zh") ? "zh-CN" : "en-US";
+    }
+
+    /**
+     * GET marketing/touch：seq 是 ZCode 客户端进程内的 feed 请求序号（bootRequestSeq
+     * 的等价物，只供服务端日志定位、不改变投放），每次问都自增后带上。
+     */
+    public static JSONObject giftTouch(String jwt, String device) throws Exception {
+        int seq = TOUCH_SEQ.getAndIncrement();
+        if (seq < 0) { TOUCH_SEQ.set(0); seq = 0; }
+        return callEnvelope("GET", TOUCH + "?seq=" + seq, giftAuth(jwt), null, device, 20000, marketingHeaders());
+    }
+
+    /**
+     * feed 里每个 delivery 的 claim_zcode_plan 动作 = 一个可领取计划。
+     * 空数组表示 feed 读懂了但没有可领的；null 表示读不懂（未知，不能当成没有）。
+     *
+     * 按上游 touchPlans 走整条 delivery（它的注释写明理由是「按钮被挪进 banner 里也还认」），
+     * 一条 delivery 的 plan_id 与名字成对取，跨 delivery 不混。名字取这条 delivery 里第一个
+     * zcode_plan.name，取不到就用 plan_id 本身（上游 first(names[0] ?? "", id)）；
+     * 同一个 plan_id 只留一次（上游 toClaim 的 add）。真正决定「要不要发领取」的是用户
+     * 点的那一下和 captcha 门，扫描面只决定列出哪些计划。
+     */
+    static JSONArray touchPlans(JSONObject envelope) {
+        if (envelope == null) return new JSONArray();
+        JSONObject data = envelope.optJSONObject("data");
+        // data 不是对象（数组/标量）：这不是「没有可领」，是读不懂
+        if (data == null && envelope.has("data") && !envelope.isNull("data")) return null;
+        if (data == null) return new JSONArray();
+        if (!data.has("deliveries") || data.isNull("deliveries")) return new JSONArray();
+        JSONArray deliveries = data.optJSONArray("deliveries");
+        if (deliveries == null) return null;
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < deliveries.length(); i++) {
+            JSONObject delivery = deliveries.optJSONObject(i);
+            if (delivery == null) continue;
+            java.util.List<String> ids = new java.util.ArrayList<String>();
+            java.util.List<String> names = new java.util.ArrayList<String>();
+            java.util.List<Long> ends = new java.util.ArrayList<Long>();
+            collectClaimActions(delivery, 0, ids);
+            collectPlanNames(delivery, 0, names, ends);
+            for (int k = 0; k < ids.size(); k++) {
+                String id = ids.get(k);
+                if (id == null || id.isEmpty() || containsPlan(out, id)) continue;
+                try {
+                    JSONObject plan = new JSONObject().put("planId", id);
+                    plan.put("name", names.isEmpty() ? id : names.get(0));
+                    Long end = ends.isEmpty() ? null : ends.get(0);
+                    if (end != null && end.longValue() > 0) plan.put("endsAt", end.longValue());
+                    out.put(plan);
+                } catch (Exception ignored) { }
+            }
+        }
+        return out;
+    }
+
+    private static boolean containsPlan(JSONArray plans, String id) {
+        for (int i = 0; i < plans.length(); i++) {
+            JSONObject known = plans.optJSONObject(i);
+            if (known != null && id.equals(known.optString("planId", ""))) return true;
+        }
+        return false;
+    }
+
+    /** 一条 delivery 里找 claim_zcode_plan 的 args.plan_id，位置不限（上游 walk 同口径） */
+    private static void collectClaimActions(Object node, int depth, java.util.List<String> ids) {
+        if (node == null || depth > 12) return;
+        if (node instanceof JSONArray) {
+            JSONArray arr = (JSONArray) node;
+            for (int i = 0; i < arr.length(); i++) collectClaimActions(arr.opt(i), depth + 1, ids);
+            return;
+        }
+        if (!(node instanceof JSONObject)) return;
+        JSONObject obj = (JSONObject) node;
+        if (CLAIM_ACTION.equals(obj.optString("type", ""))) {
+            JSONObject args = obj.optJSONObject("args");
+            String id = args == null ? "" : args.optString("plan_id", "").trim();
+            if (!id.isEmpty()) ids.add(id);
+        }
+        java.util.Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) collectClaimActions(obj.opt(keys.next()), depth + 1, ids);
+    }
+
+    /** 同一条 delivery 里找 zcode_plan.name / ends_at */
+    private static void collectPlanNames(Object node, int depth, java.util.List<String> names,
+                                         java.util.List<Long> ends) {
+        if (node == null || depth > 12) return;
+        if (node instanceof JSONArray) {
+            JSONArray arr = (JSONArray) node;
+            for (int i = 0; i < arr.length(); i++) collectPlanNames(arr.opt(i), depth + 1, names, ends);
+            return;
+        }
+        if (!(node instanceof JSONObject)) return;
+        JSONObject obj = (JSONObject) node;
+        JSONObject plan = obj.optJSONObject("zcode_plan");
+        if (plan != null) {
+            String name = plan.optString("name", "");
+            if (name != null && !name.trim().isEmpty()) names.add(name);
+            ends.add(plan.optLong("ends_at", 0));
+        }
+        java.util.Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) collectPlanNames(obj.opt(keys.next()), depth + 1, names, ends);
     }
 
     private static final class GiftDataException extends Exception {
         GiftDataException(String message) { super(message); }
     }
 
-    /** 汇总：今天可领几个、各包还剩多少、合计剩余单位 */
+    // ===================== gift 余额：有效计划 + 模型能力 =====================
+    //
+    // 对齐上游 startPlan / giftOf 的判定（只有它能说明「现在能花什么」）：
+    //   · 一个计划算数要 status == active、已经开始了（starts_at 不在未来）、没结束（ends_at）；
+    //   · 余额包要属于一个算数的计划：两边都有 user_plan_id 就比它，否则比 plan_id；
+    //   · 包自己过期（expires_at <= now）也算花完；
+    //   · 一个数都没有的包摆不出额度，跳过（不是「剩 0」）；
+    //   · 旧的余额可能没有 remaining_units，但给了 used/total —— 那时 spent 用 used >= total 判断，
+    //     剩余量按 total - used 算（上游 giftSpent 正是这么读的）；
+    //   · capabilities 里 model:x 才是模型，tool:y 这类不算，没有冒号的也当模型名。
+
+    /**
+     * 上游 num()：数字或数字字符串；其余是未知（null），不拿 0 冒充。
+     *
+     * 返回值保留小数：上游 giftSpent 判的是 `num(x.remaining_units) <= 0`，0.4 是没花完。
+     * 这里若先 long 截断，0.4 会变成 0 而被判成「已用完」—— 那是把「还剩一点」说成
+     * 「一点不剩」，正好会把这个号推去花付费 Plan。
+     */
+    static Double giftNum(JSONObject o, String key) {
+        if (o == null || key == null || !o.has(key) || o.isNull(key)) return null;
+        Object raw = o.opt(key);
+        double value;
+        if (raw instanceof Number) value = ((Number) raw).doubleValue();
+        else if (raw instanceof String) {
+            String text = ((String) raw).trim();
+            if (text.isEmpty()) return null;
+            try { value = Double.parseDouble(text); } catch (Exception ignored) { return null; }
+        } else return null;
+        if (!Double.isFinite(value)) return null;
+        return Double.valueOf(value);
+    }
+
+    /** 整数照旧给 Long（既有调用方 optLong 读得到），有小数就给 Double，不截断也不四舍五入。 */
+    static Object giftNumber(double value) {
+        if (value == Math.rint(value) && Math.abs(value) < 9.0e15) return Long.valueOf((long) value);
+        return Double.valueOf(value);
+    }
+
+    private static String giftStatus(JSONObject plan) {
+        return plan == null ? "" : plan.optString("status", "").trim().toLowerCase(java.util.Locale.US);
+    }
+
+    /** 上游 notStarted：starts_at 在未来、且状态不是 expired。 */
+    static boolean giftNotStarted(JSONObject plan, long now) {
+        Double at = giftNum(plan, "starts_at");
+        return at != null && at.doubleValue() > now && !"expired".equals(giftStatus(plan));
+    }
+
+    /** 上游 startPlan：这个计划现在算数（active、已开始、没结束）。 */
+    static boolean giftPlanLive(JSONObject plan, long now) {
+        if (plan == null || !"active".equals(giftStatus(plan))) return false;
+        Double end = giftNum(plan, "ends_at");
+        if (end != null && end.doubleValue() > 0 && end.doubleValue() <= now) return false;
+        return !giftNotStarted(plan, now);
+    }
+
+    /** 上游 same()：两个 user_plan_id 都有就比它，否则比 plan_id 字符串。 */
+    static boolean giftSamePlan(JSONObject bucket, JSONObject plan) {
+        if (bucket == null || plan == null) return false;
+        String mine = bucket.optString("user_plan_id", "");
+        String theirs = plan.optString("user_plan_id", "");
+        if (!mine.isEmpty() && !theirs.isEmpty()) return mine.equals(theirs);
+        return bucket.optString("plan_id", "").equals(plan.optString("plan_id", ""));
+    }
+
+    /** 上游 bucketModels：capabilities 里 "model:x" 取 x；没有冒号的当模型名；tool: 之类不算。 */
+    static JSONArray giftBucketModels(JSONObject bucket) {
+        JSONArray out = new JSONArray();
+        JSONArray caps = bucket == null ? null : bucket.optJSONArray("capabilities");
+        java.util.List<String> seen = new java.util.ArrayList<String>();
+        for (int i = 0; caps != null && i < caps.length(); i++) {
+            Object raw = caps.opt(i);
+            if (!(raw instanceof String)) continue;
+            String cap = ((String) raw).trim();
+            if (cap.isEmpty()) continue;
+            String model;
+            if (cap.startsWith("model:")) model = cap.substring(6).trim();
+            else if (cap.indexOf(':') < 0) model = cap;
+            else continue;
+            if (model.isEmpty()) continue;
+            boolean duplicate = false;
+            for (int k = 0; k < seen.size(); k++) if (seen.get(k).equalsIgnoreCase(model)) { duplicate = true; break; }
+            if (duplicate) continue;
+            seen.add(model);
+            out.put(model);
+        }
+        return out;
+    }
+
+    private static boolean modelsHas(JSONArray models, String model) {
+        for (int i = 0; i < models.length(); i++) if (model.equals(models.optString(i, ""))) return true;
+        return false;
+    }
+
+    /**
+     * 汇总：今天可领几个、各包还剩多少、能花哪些模型。
+     *
+     * 三条边界，都是「未知就明确未知」：
+     *
+     * <ul>
+     *   <li>可领列表（feed）和余额分开读：feed 读失败只让 {@code claimableKnown=false}，
+     *       余额照样报（上游 toClaim 失败只让 claimHint 为 null，卡片照样读余额）；</li>
+     *   <li>余额没答 {@code plans} 就是未知（{@code ok=false}），不是「没有计划」，更不是
+     *       零额度；计划列表明确为空才是「现在没有生效中的赠送」（{@code noLivePlan=true}）；</li>
+     *   <li>剩多少只报读得出的：remaining_units 缺失但有 total/used 就按 total-used；
+     *       只有一边的数算不出剩多少，那个包 {@code remaining=-1, remainderUnknown=true}，
+     *       合计整个不报（{@code remainingKnown=false}），绝不补 0。</li>
+     * </ul>
+     *
+     * {@code hasGift} 跟的是能不能花（{@code models} 非空），不是合计多少：算不出剩多少的包
+     * 不算花完（上游 giftSpent 如此），所以「未知余量」与「可路由」在这里是同一句话。
+     */
     public static JSONObject giftSummary(String jwt, String device) {
         JSONObject out = new JSONObject();
         try {
-            JSONObject prev = giftPreview(jwt, device);
-            JSONArray plans = prev.optJSONArray("plans");
-            // A successful preview may omit data entirely when there is nothing to
-            // claim. It says nothing about already-claimed gift balances.
-            if (plans == null && prev.length() == 0) plans = new JSONArray();
-            if (plans == null) throw new GiftDataException("gift 可领取计划数据不完整");
+            // 可领取计划和余额是两件事，各自读、各自判：feed 读失败只说明「可领列表未知」，
+            // 不能把已经读出来的余额一起判成未知（上游 toClaim 失败只是让 claimHint 为 null，
+            // 卡片照样读余额）。所以这里先读 feed，失败只记在 claimableKnown 上。
             JSONArray claimable = new JSONArray();
-            for (int i = 0; plans != null && i < plans.length(); i++) {
-                JSONObject p = plans.optJSONObject(i);
-                if (p == null) throw new GiftDataException("gift 计划数据不完整");
-                String st = p.optString("status", "");
-                if (!st.isEmpty() && !"active".equalsIgnoreCase(st)) continue;
-                JSONObject o = new JSONObject();
-                o.put("planId", p.optString("plan_id", ""));
-                o.put("name", p.optString("name", ""));
-                o.put("endsAt", p.optLong("ends_at", 0));
-                claimable.put(o);
+            String claimableError = "";
+            try {
+                JSONArray read = touchPlans(giftTouch(jwt, device));
+                if (read == null) claimableError = "gift 可领取计划数据不完整";
+                else claimable = read;
+            } catch (Exception feed) {
+                claimableError = feed instanceof ServiceException || feed instanceof GiftDataException
+                        ? feed.getMessage() : "gift 可领取计划读取失败";
             }
             out.put("claimable", claimable);
+            out.put("claimableKnown", claimableError.isEmpty());
+            if (!claimableError.isEmpty()) out.put("claimableError", claimableError);
 
             JSONObject bal = giftBalance(jwt, device);
             JSONArray buckets = bal.optJSONArray("balances");
             if (buckets == null) throw new GiftDataException("gift 余额数据不完整");
-            JSONArray live = new JSONArray();
-            long remaining = 0;
-            for (int i = 0; buckets != null && i < buckets.length(); i++) {
-                JSONObject b = buckets.optJSONObject(i);
-                if (b == null || !b.has("remaining_units") || b.isNull("remaining_units")) throw new GiftDataException("gift 余额数据不完整");
-                long rem = b.optLong("remaining_units", -1);
-                if (rem < 0) throw new GiftDataException("gift 余额数据不完整");
-                long total = b.optLong("total_units", 0);
-                long exp = b.optLong("expires_at", 0);
-                long now = System.currentTimeMillis() / 1000L;
-                if (exp > 0 && exp < now) continue;
+            // 计划是这份余额唯一能证明「这笔额度现在算数」的东西。余额没答 plans 就是没答，
+            // 不是「没有计划」，更不是「零额度」：上游 giftOf 在没有 live plan 时给的是
+            // NO_START，从不给一张零卡。所以这里按未知报，交给调用方显示未知，
+            // 也不让它被当成「确认没有赠送」而去花付费 Plan。
+            if (!bal.has("plans") || bal.isNull("plans") || bal.optJSONArray("plans") == null)
+                throw new GiftDataException("gift 计划数据不完整");
+            Double serverTime = giftNum(bal, "server_time");
+            long now = serverTime != null && serverTime.doubleValue() > 0
+                    ? (long) Math.floor(serverTime.doubleValue()) : System.currentTimeMillis() / 1000L;
+            JSONArray plans = bal.optJSONArray("plans");
+            JSONArray live = new JSONArray(), models = new JSONArray(), allModels = new JSONArray();
+            double remaining = 0;
+            int livePlans = 0;
+            boolean unknownRemainder = false;
+            for (int p = 0; p < plans.length(); p++) if (giftPlanLive(plans.optJSONObject(p), now)) livePlans++;
+            for (int i = 0; i < buckets.length(); i++) {
+                JSONObject bucket = buckets.optJSONObject(i);
+                if (bucket == null) throw new GiftDataException("gift 余额数据不完整");
+
+                // 计划是这份余额唯一能证明「这笔额度现在算数」的东西：没有它就不猜。
+                JSONObject owner = null;
+                for (int p = 0; plans != null && p < plans.length(); p++) {
+                    JSONObject plan = plans.optJSONObject(p);
+                    if (giftSamePlan(bucket, plan)) { owner = plan; break; }
+                }
+                if (owner == null || !giftPlanLive(owner, now)) continue;
+
+                Double expires = giftNum(bucket, "expires_at");
+                if (expires != null && expires.doubleValue() > 0 && expires.doubleValue() <= now) continue;
+
+                Double left = giftNum(bucket, "remaining_units");
+                Double total = giftNum(bucket, "total_units");
+                Double used = giftNum(bucket, "used_units");
+                if (left == null && total == null && used == null) continue;   // 一个数都没有：摆不出额度
+
+                boolean spent;
+                double leftOf = -1;
+                if (left != null) {
+                    // 上游 giftSpent：有 remaining_units 就只看它，<= 0 即花完；0.4 是没花完
+                    spent = left.doubleValue() <= 0;
+                    leftOf = spent ? 0 : left.doubleValue();
+                } else if (total != null && used != null) {
+                    spent = used.doubleValue() >= total.doubleValue();         // 旧余额：用 used/total 判断
+                    leftOf = Math.max(0, total.doubleValue() - used.doubleValue());
+                } else {
+                    spent = false;                                             // 只有一边的数：剩多少未知
+                }
+                boolean remainderUnknown = leftOf < 0;
+
+                // 上游 bucketModels：capabilities 不是数组时是空列表（这个包一个模型都说不出），
+                // 不是「读不懂」——整份余额照样读得完，只是这个包不参与路由。
+                JSONArray caps = bucket.optJSONArray("capabilities");
+                // 这个包到底有没有说过它覆盖哪些模型：missing 与「明确说了一个也没有」在
+                // 上游读出来都是空列表，但对要决定「要不要为它回落到付费 Plan」的一侧不是一回事，
+                // 所以如实地把这点记下来，行为不变、也不替它补模型。
+                boolean modelsStated = caps != null;
+                if (caps == null) caps = new JSONArray();
+                JSONArray bucketModels = giftBucketModels(bucket);
                 JSONObject o = new JSONObject();
-                o.put("planId", b.optString("plan_id", ""));
-                o.put("name", b.optString("show_name", b.optString("name", "")));
-                o.put("total", total);
-                o.put("used", b.optLong("used_units", 0));
-                o.put("remaining", rem);
-                o.put("expiresAt", exp);
-                JSONArray caps = b.optJSONArray("capabilities");
-                if (caps == null) throw new GiftDataException("gift 模型能力数据不完整");
+                o.put("planId", bucket.optString("plan_id", ""));
+                o.put("name", bucket.optString("show_name", bucket.optString("name", "")));
+                if (total != null) o.put("total", giftNumber(total.doubleValue()));
+                if (used != null) o.put("used", giftNumber(used.doubleValue()));
+                o.put("remaining", giftNumber(leftOf));
+                o.put("remainderUnknown", remainderUnknown);
+                o.put("spent", spent);
+                o.put("expiresAt", expires == null ? 0L : giftNumber(expires.doubleValue()));
                 o.put("capabilities", caps);
+                o.put("models", bucketModels);
+                o.put("modelsKnown", modelsStated);
                 live.put(o);
-                if (rem > 0) remaining += rem;
+
+                for (int k = 0; k < bucketModels.length(); k++) {
+                    String model = bucketModels.optString(k, "");
+                    if (model.isEmpty()) continue;
+                    if (!modelsHas(allModels, model)) allModels.put(model);
+                    // 花完的包仍然说得出它的模型名，但一个都花不到（上游 models / allModels 的区别）
+                    if (!spent && !modelsHas(models, model)) models.put(model);
+                }
+                if (leftOf > 0) remaining += leftOf;
+                if (remainderUnknown) unknownRemainder = true;
             }
             out.put("buckets", live);
-            out.put("remainingUnits", remaining);
-            out.put("hasGift", remaining > 0);
+            out.put("models", models);
+            out.put("allModels", allModels);
+            out.put("livePlans", livePlans);
+            out.put("noLivePlan", livePlans == 0);
+            out.put("plansKnown", true);
+            // 有一个生效中的包算不出剩多少，就不报合计：报 0 是拿未知冒充「已经用完」。
+            if (!unknownRemainder) out.put("remainingUnits", giftNumber(remaining));
+            out.put("remainingKnown", !unknownRemainder);
+            // 能不能花看模型：算不出剩多少的包不算花完（上游 giftSpent 就是这样读的），
+            // 所以这里不能因为合计是 0 就说这个号没有赠送 —— 那和路由自相矛盾。
+            out.put("hasGift", models.length() > 0);
             out.put("ok", true);
         } catch (Exception e) {
             try {

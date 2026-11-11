@@ -8,7 +8,8 @@ for(const p of ['workbuddy','raccoon']) assert(html.includes('onclick="triggerPl
 assert(html.includes('onclick="antigravityProbe()">高级探测并切换端点'));
 assert(html.includes("onclick=\"triggerPlatformLogin('workbuddy-ai')\""));
 const loomyCard=html.slice(html.lastIndexOf('<div class="card"',html.indexOf('data-provider-logo="loomy"')),html.indexOf('<!--',html.indexOf('data-provider-logo="loomy"')));
-assert(!/triggerPlatformLogin|syncUniversalModels|登录账号/.test(loomyCard));
+assert(!/triggerPlatformLogin|登录账号/.test(loomyCard));
+assert(loomyCard.includes("onclick=\"syncUniversalModels('loomy')\""));
 const staticClicks={};
 for(const p of cards){const logo=html.indexOf('data-provider-logo="'+p+'"'), start=html.lastIndexOf('<div class="card"',logo), end=html.indexOf('<!--',logo);const fragment=html.slice(start,end<0?undefined:end);const tag=fragment.match(new RegExp('<button\\b[^>]*id="endpoint-probe-button-'+p+'"[^>]*>'));assert(tag,p);const handler=tag[0].match(/onclick="([^"]+)"/);assert(handler,p);staticClicks[p]=handler[1];}
 const elements={};
@@ -55,7 +56,7 @@ async function testCommercialRender(){
     setTimeout:(fn,ms)=>{if(ms===0)queued.push(fn);return 1},clearTimeout:()=>{},
     fetch:async(url,options)=>{requests.push({url,options});if(pending)await new Promise(r=>pending.resolve=r);return {ok:true,json:async()=>response}},
     appConfig:{providers},dirtyKeysMap:new Map([['openai',['draft-key',{type:'structured'}]]]),
-    providerCounts:p=>({keys:p.keys.length}),providerLogo:()=>'',providerDraftConflicts:new Set(),providerUnknown:new Set(),commercialEditedIds:new Set(),providerDraftTokens:new Map(),providerToken:id=>'token-'+id,commercialKeysDirty:false,
+    providerCounts:p=>({keys:p.keys.length}),providerLogo:()=>'',providerDraftConflicts:new Set(),providerUnknown:new Set(),commercialEditedIds:new Set(['openai']),providerDraftTokens:new Map(),providerToken:id=>'token-'+id,commercialKeysDirty:false,
     flushCommercialRender:()=>flushes++,triggerPlatformLogin:()=>{throw Error('login')},syncUniversalModels:()=>{throw Error('sync')},saveConfig:()=>{throw Error('save')}});
   vm.runInContext(html.slice(html.indexOf('    function esc(s)'),html.indexOf('    function escHtml(s)')),ctx);
   vm.runInContext(html.slice(html.indexOf('    function jsAttr(v)'),html.indexOf('    /** 供应商卡片的统一清单')),ctx);

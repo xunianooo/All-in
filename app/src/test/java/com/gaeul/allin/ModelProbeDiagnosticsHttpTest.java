@@ -87,7 +87,7 @@ public final class ModelProbeDiagnosticsHttpTest {
         HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:"
                 + gateway.getListeningPort() + "/api/test-model").openConnection();
         c.setConnectTimeout(5000); c.setReadTimeout(10000); c.setRequestMethod("POST");
-        c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json");
+        c.setRequestProperty("X-All-In-Management", GatewayManagementCredential.get());c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json");
         try (OutputStream out = c.getOutputStream()) {
             out.write(new JSONObject().put("model", "probe-fixture/m").toString().getBytes(StandardCharsets.UTF_8));
         }

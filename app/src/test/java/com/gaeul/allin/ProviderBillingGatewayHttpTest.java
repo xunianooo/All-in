@@ -12,7 +12,9 @@ import java.nio.charset.StandardCharsets;
 public final class ProviderBillingGatewayHttpTest {
     static void check(boolean condition,String message) { if(!condition) throw new AssertionError(message); }
     static NanoHTTPD.IHTTPSession request(String ip,String method,String key,String id) {
-        NanoHTTPD.IHTTPSession base=RoutingSetupOfflineTest.request(ip,"/api/providers/billing",method,"",key);
+        // Management endpoints use the private management credential, not the inference key.
+        String credential = "fixture-auth".equals(key) ? GatewayManagementCredential.get() : key;
+        NanoHTTPD.IHTTPSession base=RoutingSetupOfflineTest.request(ip,"/api/providers/billing",method,"",credential);
         return (NanoHTTPD.IHTTPSession)Proxy.newProxyInstance(ProviderBillingGatewayHttpTest.class.getClassLoader(),new Class[]{NanoHTTPD.IHTTPSession.class},(p,m,a)-> {
             if(m.getName().equals("getParameters")) return Collections.singletonMap("provider",Collections.singletonList(id));
             return m.invoke(base,a);

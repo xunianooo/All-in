@@ -90,6 +90,7 @@ public final class ProtocolDiagnosticsHttpTest {
         HttpURLConnection conn = (HttpURLConnection) new URL("http://127.0.0.1:" + gateway.getListeningPort() + path).openConnection(java.net.Proxy.NO_PROXY);
         conn.setReadTimeout(12000); conn.setConnectTimeout(3000);
         conn.setRequestProperty("Authorization", "Bearer fixture-auth");
+        if (path.startsWith("/api/")) conn.setRequestProperty("X-All-In-Management", GatewayManagementCredential.get());
         if (body != null) {
             conn.setDoOutput(true); conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type", "application/json");
             try (OutputStream output = conn.getOutputStream()) { output.write(bytes(body)); }

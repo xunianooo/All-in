@@ -19,14 +19,14 @@ public final class IngressGatewayHttpTest {
   public void close(){stop();}
  }
  static String call(Gateway g,String headers,byte[] body,boolean half)throws Exception{
-  try(Socket s=new Socket("127.0.0.1",g.getListeningPort())) {s.setSoTimeout(3000);OutputStream o=s.getOutputStream();o.write(("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n"+headers+"\r\n").getBytes(StandardCharsets.US_ASCII));o.write(body);o.flush();if(half)s.shutdownOutput();ByteArrayOutputStream r=new ByteArrayOutputStream();byte[] b=new byte[4096];int n;while((n=s.getInputStream().read(b))!=-1)r.write(b,0,n);return r.toString("UTF-8");}
+  try(Socket s=new Socket("127.0.0.1",g.getListeningPort())) {s.setSoTimeout(3000);OutputStream o=s.getOutputStream();o.write(("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret\r\nConnection: keep-alive\r\n"+headers+"\r\n").getBytes(StandardCharsets.US_ASCII));o.write(body);o.flush();if(half)s.shutdownOutput();ByteArrayOutputStream r=new ByteArrayOutputStream();byte[] b=new byte[4096];int n;while((n=s.getInputStream().read(b))!=-1)r.write(b,0,n);return r.toString("UTF-8");}
  }
  static byte[] b(String x){return x.getBytes(StandardCharsets.UTF_8);}
  static void status(String response,int n){check(response.startsWith("HTTP/1.1 "+n+" "),"expected "+n+" "+response);check(response.toLowerCase().contains("connection: close"),"connection close "+response);}
  public static void main(String[] args)throws Exception {
   try(Gateway g=new Gateway(false,65536,"openai",1)){
    try(Socket auth=new Socket("127.0.0.1",g.getListeningPort())) {auth.setSoTimeout(1500);auth.getOutputStream().write(b("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nX-Fixture-Remote: 1\r\nConnection: close\r\nContent-Length: 50000\r\n\r\n"));auth.getOutputStream().flush();String line=new BufferedReader(new InputStreamReader(auth.getInputStream(),StandardCharsets.US_ASCII)).readLine();check(line.contains(" 401 "),"auth before body "+line);}
-   try(Socket empty=new Socket("127.0.0.1",g.getListeningPort())) {empty.setSoTimeout(1500);empty.getOutputStream().write(b("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));empty.getOutputStream().flush();String line=new BufferedReader(new InputStreamReader(empty.getInputStream(),StandardCharsets.US_ASCII)).readLine();check(line!=null && line.contains(" 400 "),"no body immediate "+line);}
+   try(Socket empty=new Socket("127.0.0.1",g.getListeningPort())) {empty.setSoTimeout(1500);empty.getOutputStream().write(b("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret\r\nConnection: close\r\n\r\n"));empty.getOutputStream().flush();String line=new BufferedReader(new InputStreamReader(empty.getInputStream(),StandardCharsets.US_ASCII)).readLine();check(line!=null && line.contains(" 400 "),"no body immediate "+line);}
    status(call(g,"Content-Length: 1\r\n",new byte[]{(byte)0xc3},false),400);
    status(call(g,"Content-Length: 8\r\n",b("{}"),true),400);
    status(call(g,"Content-Length: 8\r\n",b("{}"),false),408);

@@ -1,11 +1,14 @@
 package com.gaeul.allin;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -54,6 +57,21 @@ public final class TokenPersistenceGatewayOfflineTest {
         return lookup(new JSONObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8)), provider)
             .getJSONArray("accounts").getJSONObject(0);
     }
+    /**
+     * Removes one fixture's own temporary directory. Each fixture owns a directory created by
+     * {@code createTempDirectory}, so everything found here belongs to this scenario: besides the
+     * configuration it now also holds the write-ahead refresh fence and any interrupted atomic
+     * replacement, either of which would otherwise make the directory non-empty and fail cleanup.
+     * No live fence is ever deleted here because no real configuration directory is passed in.
+     */
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) return;
+        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) { Files.delete(root); return; }
+        try (DirectoryStream<Path> children = Files.newDirectoryStream(root)) {
+            for (Path child : children) deleteTree(child);
+        }
+        Files.delete(root);
+    }
     private static final class Fixture implements AutoCloseable {
         final Path dir = Files.createTempDirectory("allin-token-offline-");
         final File file = dir.resolve("config.json").toFile();
@@ -66,9 +84,7 @@ public final class TokenPersistenceGatewayOfflineTest {
             field(server, "configFile", file);
         }
         public void close() throws Exception {
-            Files.deleteIfExists(file.toPath());
-            Files.deleteIfExists(dir.resolve("missing"));
-            Files.deleteIfExists(dir);
+            deleteTree(dir);
         }
     }
     private static JSONObject ensure(GatewayServer s, String p, JSONObject a, String failed) throws Exception {

@@ -59,7 +59,17 @@ jobs:
           node tests/dashboard-q2.cjs
           node tests/dashboard-image-body.cjs
           node tests/dashboard-trae.cjs
+          node tests/dashboard-account-ops.cjs
+          node tests/dashboard-loomy-sync.cjs
+          node tests/dashboard-failover-save.cjs
+          node tests/dashboard-gateway-access.cjs
+          node tests/dashboard-listen-plan.cjs
+          node tests/dashboard-management-boundary.cjs
+          node tests/dashboard-minimax-pools.cjs
+          node tests/dashboard-workbuddy-harness.cjs
           node tests/trae-login-recovery.cjs
+          node scripts/beta-dashboard-xss.cjs
+          node tests/dashboard-legacy-key-migration.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |

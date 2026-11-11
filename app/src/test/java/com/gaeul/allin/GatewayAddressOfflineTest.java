@@ -50,6 +50,7 @@ public final class GatewayAddressOfflineTest {
             fixture.attach();
             int port = fixture.getListeningPort();
             HttpURLConnection conn = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/api/eta/import").openConnection();
+            conn.setRequestProperty("X-All-In-Management", GatewayManagementCredential.get());
             conn.setConnectTimeout(3000);
             conn.setReadTimeout(3000);
             check(conn.getResponseCode() == 200, "ETA import response");

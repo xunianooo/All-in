@@ -46,7 +46,7 @@ public final class QoderCatalogGatewayHttpTest {
             gateway.setQoderConnectionsForTests(url -> (HttpURLConnection)new URL("http://127.0.0.1:"+upstream.getAddress().getPort()+(url.contains("deviceToken/refresh")?"/refresh":"/models")).openConnection());
             proxy=new NanoHTTPD("127.0.0.1",0){public Response serve(IHTTPSession s){return gateway.serve(s);}};proxy.start(NanoHTTPD.SOCKET_READ_TIMEOUT,true);
         }
-        int sync() throws Exception {HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+proxy.getListeningPort()+"/api/auth/qoder_cn/sync-models").openConnection();c.setConnectTimeout(3000);c.setReadTimeout(10000);try{int status=c.getResponseCode(); if(status!=200){InputStream in=c.getErrorStream(); if(in!=null)System.err.println("sync status "+status+" "+new String(in.readAllBytes(),"UTF-8"));} return status;}finally{c.disconnect();}}
+        int sync() throws Exception {HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+proxy.getListeningPort()+"/api/auth/qoder_cn/sync-models").openConnection();c.setRequestProperty("X-All-In-Management", GatewayManagementCredential.get());c.setConnectTimeout(3000);c.setReadTimeout(10000);try{int status=c.getResponseCode(); if(status!=200){InputStream in=c.getErrorStream(); if(in!=null)System.err.println("sync status "+status+" "+new String(in.readAllBytes(),"UTF-8"));} return status;}finally{c.disconnect();}}
         JSONObject provider() throws Exception{return ResponsesGatewayOfflineTest.config(gateway).getJSONArray("providers").getJSONObject(0);}
         public void close(){proxy.stop();upstream.stop(0);}
     }

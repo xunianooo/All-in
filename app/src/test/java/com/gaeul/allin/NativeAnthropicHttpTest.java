@@ -85,7 +85,7 @@ public final class NativeAnthropicHttpTest {
     }
     static HttpURLConnection post(int port, String body) throws Exception {
         HttpURLConnection c = (HttpURLConnection)new URL("http://127.0.0.1:" + port + "/v1/messages").openConnection(); c.setConnectTimeout(10000); c.setReadTimeout(10000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("Accept-Encoding", new JSONObject(body).optBoolean("stream", false) ? "gzip" : "identity");
-        c.setRequestProperty("anthropic-version", "2023-06-01"); c.setRequestProperty("anthropic-beta", "fixture-thinking-2026");
+        c.setRequestProperty("Authorization", "Bearer magpie"); c.setRequestProperty("anthropic-version", "2023-06-01"); c.setRequestProperty("anthropic-beta", "fixture-thinking-2026");
         try (OutputStream o = c.getOutputStream()) { o.write(body.getBytes(StandardCharsets.UTF_8)); } return c;
     }
     static String read(InputStream in) throws Exception { return NativeAnthropicStreamOfflineTest.read(in); }
@@ -100,7 +100,7 @@ public final class NativeAnthropicHttpTest {
             socket.connect(new InetSocketAddress("127.0.0.1", port), 10000); socket.setSoTimeout(10000);
             byte[] b = body.getBytes(StandardCharsets.UTF_8);
             OutputStream out = socket.getOutputStream();
-            out.write(("POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + b.length + "\r\n\r\n").getBytes(StandardCharsets.UTF_8)); out.write(b); out.flush();
+            out.write(("POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer magpie\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + b.length + "\r\n\r\n").getBytes(StandardCharsets.UTF_8)); out.write(b); out.flush();
             InputStream in = socket.getInputStream(); ByteArrayOutputStream got = new ByteArrayOutputStream(); byte[] chunk = new byte[512];
             while (!got.toString("UTF-8").contains("thinking_delta")) { int n = in.read(chunk); check(n > 0, "cancel first frame"); got.write(chunk, 0, n); }
             socket.setSoLinger(true, 0);

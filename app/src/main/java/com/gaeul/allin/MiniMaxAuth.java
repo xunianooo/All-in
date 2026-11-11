@@ -775,10 +775,49 @@ public class MiniMaxAuth {
                         if (!(value instanceof Number)) throw new java.io.IOException("Invalid MiniMax model limit");
                         double n = ((Number)value).doubleValue();
                         if (Double.isNaN(n) || Double.isInfinite(n) || n <= 0 || n != Math.rint(n) || n > Integer.MAX_VALUE) throw new java.io.IOException("Invalid MiniMax model limit");
-                        copiedLimit.put(field, ((Number)value).longValue());
-                        meta.put("context".equals(field) ? "contextWindow" : "maxOutput", ((Number)value).longValue());
+                        long limitValue=((Number)value).longValue();
+                        if ("output".equals(field) && verifiedModelOutputLimit(id)>0)
+                            limitValue=verifiedModelOutputLimit(id);
+                        if ("context".equals(field) && verifiedModelContextLimit(id)>0)
+                            limitValue=verifiedModelContextLimit(id);
+                        copiedLimit.put(field, limitValue);
+                        meta.put("context".equals(field) ? "contextWindow" : "maxOutput", limitValue);
                     }
                     if (copiedLimit.length() > 0) meta.put("limit", copiedLimit);
+                }
+                int verifiedOutput=verifiedModelOutputLimit(id), verifiedContext=verifiedModelContextLimit(id);
+                if(verifiedOutput>0 || verifiedContext>0) {
+                    JSONObject limits=meta.optJSONObject("limit");
+                    if(limits==null) limits=new JSONObject();
+                    if(verifiedOutput>0) { meta.put("maxOutput",verifiedOutput); limits.put("output",verifiedOutput); }
+                    if(verifiedContext>0) { meta.put("contextWindow",verifiedContext); limits.put("context",verifiedContext); }
+                    meta.put("limit",limits);
+                }
+                JSONObject thinkingConfig = entry.optJSONObject("thinking_config");
+                Object rawThinkingConfig = entry.opt("thinking_config");
+                if (rawThinkingConfig != null && rawThinkingConfig != JSONObject.NULL && thinkingConfig == null)
+                    throw new java.io.IOException("Invalid MiniMax thinking configuration");
+                String mode = thinkingConfig == null ? "" : thinkingConfig.optString("mode", "").trim().toLowerCase(java.util.Locale.ROOT);
+                if ("switchable".equals(mode) || "forced_on".equals(mode) || "forced_off".equals(mode)) meta.put("thinkingMode", mode);
+                else if (!mode.isEmpty()) throw new java.io.IOException("Invalid MiniMax thinking mode");
+                else if (entry.opt("reasoning") instanceof Boolean)
+                    meta.put("thinkingMode", entry.optBoolean("reasoning") ? "on" : "off");
+                Object rawEfforts = null;
+                JSONObject thinking = entry.optJSONObject("thinking");
+                if (thinking != null && thinking.has("effortOptions")) rawEfforts = thinking.opt("effortOptions");
+                else if (thinking != null && thinking.has("effort_options")) rawEfforts = thinking.opt("effort_options");
+                else if (entry.has("effort_options")) rawEfforts = entry.opt("effort_options");
+                if (rawEfforts != null && rawEfforts != JSONObject.NULL) {
+                    if (!(rawEfforts instanceof JSONArray)) throw new java.io.IOException("Invalid MiniMax effort options");
+                    JSONArray effortValues = (JSONArray) rawEfforts, copiedEfforts = new JSONArray();
+                    for (int effortIndex = 0; effortIndex < effortValues.length(); effortIndex++) {
+                        Object effort = effortValues.opt(effortIndex);
+                        if (!(effort instanceof String)) throw new java.io.IOException("Invalid MiniMax effort option");
+                        String name = ((String) effort).trim();
+                        if (!name.isEmpty() && !"none".equalsIgnoreCase(name) && !"default".equalsIgnoreCase(name)
+                                && !containsIgnoreCase(copiedEfforts, name)) copiedEfforts.put(name);
+                    }
+                    meta.put("efforts", copiedEfforts);
                 }
                 if (!staged.has(id)) staged.put(id, meta);
             }
@@ -795,6 +834,28 @@ public class MiniMaxAuth {
         if (!found) throw new java.io.IOException("MiniMax provider missing");
         if (metaOut != null) for (String id : ids) metaOut.put(id, new JSONObject(staged.getJSONObject(id).toString()));
         return ids;
+    }
+
+    private static boolean containsIgnoreCase(JSONArray values, String value) {
+        for (int i = 0; values != null && i < values.length(); i++)
+            if (value.equalsIgnoreCase(values.optString(i, ""))) return true;
+        return false;
+    }
+
+    /** Verified MiniMax Code model output limits override its conservative catalog. */
+    static int verifiedModelOutputLimit(String model) {
+        return isVerifiedM3Model(model) ? 524288 : 0;
+    }
+
+    static int verifiedModelContextLimit(String model) {
+        return isVerifiedM3Model(model) ? 1048576 : 0;
+    }
+
+    private static boolean isVerifiedM3Model(String model) {
+        if (model == null) return false;
+        String id=model.trim();
+        return "MiniMax-M3".equalsIgnoreCase(id) || "MiniMax-M3.1-Flash".equalsIgnoreCase(id)
+                || "MiniMax-M3.1-Flash-Preview".equalsIgnoreCase(id);
     }
 
     static int timezoneOffsetSeconds(java.util.TimeZone timezone, long timestampMillis) {

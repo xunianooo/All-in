@@ -7,7 +7,7 @@ import org.json.*;
 public final class QuirksGatewayHttpTest {
  static void check(boolean v){if(!v)throw new AssertionError();}
  static NanoHTTPD.IHTTPSession session(String method,String uri,String key) {
-  Map<String,String> headers=new HashMap<>(); if(key!=null)headers.put("authorization","Bearer "+key);
+  Map<String,String> headers=new HashMap<>(); headers.put("host","127.0.0.1:3425"); if(key!=null)headers.put("x-all-in-management",GatewayManagementCredential.get());
   return (NanoHTTPD.IHTTPSession)Proxy.newProxyInstance(QuirksGatewayHttpTest.class.getClassLoader(),new Class[]{NanoHTTPD.IHTTPSession.class},(p,m,a)->{
    switch(m.getName()) {case "getUri":return uri;case "getMethod":return NanoHTTPD.Method.valueOf(method);case "getHeaders":return headers;case "getInputStream":return new java.io.ByteArrayInputStream(new byte[0]);case "getRemoteIpAddress":return "192.0.2.1";case "getParameters":return Collections.emptyMap();case "getParms":return Collections.emptyMap();default:return null;}
   });

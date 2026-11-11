@@ -75,6 +75,7 @@ public final class ZCodeToolSearchGatewayHttpTest {
         boolean changed=!conflict && !otherProvider;
         try(VendorPolicyGatewayHttpTest.Upstream u=new VendorPolicyGatewayHttpTest.Upstream((req,n)->new VendorPolicyGatewayHttpTest.Reply(200,req.body.optBoolean("stream")?"text/event-stream":"application/json",response(req.body.optBoolean("stream"),changed?"ToolSearchTool":"ToolSearch")))) {
             JSONObject cfg=gift?ZCodeGiftUsageHttpTest.config(u.server.getLocalPort()):VendorPolicyGatewayHttpTest.config(VendorPolicyGatewayHttpTest.provider(provider,"anthropic","https://open.bigmodel.cn/api/anthropic/v1","model"));
+            cfg.getJSONObject("server").put("authKey", "fixture-auth");
             try(VendorPolicyGatewayHttpTest.Gateway g=new VendorPolicyGatewayHttpTest.Gateway(cfg,u,false)) {
                 if(gift)g.gateway.setGiftTransportForTest(new Gift(u));
                 JSONObject body=nativeRequest?nativeBody(model,stream,conflict):chatBody(model,stream);
@@ -95,6 +96,7 @@ public final class ZCodeToolSearchGatewayHttpTest {
             try (VendorPolicyGatewayHttpTest.Upstream u = new VendorPolicyGatewayHttpTest.Upstream((req,n) ->
                     new VendorPolicyGatewayHttpTest.Reply(200, "application/json", response(false, "ToolSearchTool")))) {
                 JSONObject cfg = ZCodeGiftUsageHttpTest.config(u.server.getLocalPort());
+                cfg.getJSONObject("server").put("authKey", "fixture-auth");
                 try (VendorPolicyGatewayHttpTest.Gateway g = new VendorPolicyGatewayHttpTest.Gateway(cfg,u,false)) {
                     Gift transport = new Gift(u);
                     g.gateway.setGiftTransportForTest(transport);

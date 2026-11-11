@@ -151,6 +151,7 @@ public final class RecentUsageRoutingHttpTest {
     private static final class Result { int status; String body; Map<String,List<String>> headers; }
     private static Result http(Gateway gateway,String path,String method,String body) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+gateway.getListeningPort()+path).openConnection();
+        if(path.startsWith("/api/")) c.setRequestProperty("X-All-In-Management",GatewayManagementCredential.get()); else c.setRequestProperty("Authorization","Bearer fixture-auth");
         c.setConnectTimeout(5000); c.setReadTimeout(15000); c.setRequestMethod(method); c.setRequestProperty("Accept-Encoding","identity"); c.setRequestProperty("anthropic-version","2023-06-01");
         if(body!=null) { c.setDoOutput(true); c.setRequestProperty("Content-Type","application/json"); try(OutputStream out=c.getOutputStream()) { out.write(bytes(body)); } }
         Result r=new Result(); r.status=c.getResponseCode(); r.headers=c.getHeaderFields(); InputStream in=r.status>=400?c.getErrorStream():c.getInputStream();
@@ -263,7 +264,7 @@ public final class RecentUsageRoutingHttpTest {
         byte[] payload=bytes(resetRequest.toString());
         try(Socket socket=new Socket("127.0.0.1",f.gateway.getListeningPort())) {
             socket.setSoTimeout(10000); OutputStream out=socket.getOutputStream();
-            out.write(bytes("POST " + (protocol.equals("responses") ? "/v1/responses" : protocol.equals("anthropic") ? "/v1/messages" : "/v1/chat/completions") + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "+payload.length+"\r\n\r\n")); out.write(payload); out.flush();
+            out.write(bytes("POST " + (protocol.equals("responses") ? "/v1/responses" : protocol.equals("anthropic") ? "/v1/messages" : "/v1/chat/completions") + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer fixture-auth\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "+payload.length+"\r\n\r\n")); out.write(payload); out.flush();
             InputStream in=socket.getInputStream(); byte[] buf=new byte[2048]; ByteArrayOutputStream got=new ByteArrayOutputStream();
             while(!got.toString("UTF-8").contains(protocol.equals("responses") ? "response.output_text.delta" : protocol.equals("anthropic") ? "message_start" : "chat.completion.chunk")) { int n=in.read(buf); check(n>0,"reset received stream"); got.write(buf,0,n); }
             socket.setSoLinger(true,0);
@@ -280,7 +281,7 @@ public final class RecentUsageRoutingHttpTest {
                     case "getRemoteIpAddress": return "127.0.0.1";
                     case "getUri": return endpoint.equals("responses")?"/v1/responses":"/v1/chat/completions";
                     case "getMethod": return NanoHTTPD.Method.POST;
-                    case "getHeaders": case "getAllHeaders": { Map<String,String> headers=new HashMap<>(); headers.put("content-length",Integer.toString(bytes(payload).length)); headers.put("content-type","application/json"); return headers; }
+                    case "getHeaders": case "getAllHeaders": { Map<String,String> headers=new HashMap<>(); headers.put("content-length",Integer.toString(bytes(payload).length)); headers.put("content-type","application/json"); headers.put("host","127.0.0.1:3425"); headers.put("authorization","Bearer fixture-auth"); return headers; }
                     case "getParameters": return Collections.emptyMap();
                     case "getInputStream": return new ByteArrayInputStream(bytes(payload));
                     default: return null;

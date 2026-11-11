@@ -351,7 +351,7 @@ public final class QoderAgentGatewayHttpTest {
                 } else if(mode==1) {
                     check(!row.optBoolean("inputKnown") && !row.optBoolean("outputKnown") && row.isNull("in") && row.isNull("out"),kind+" invented usage "+row+" "+output);
                 } else {
-                    check(row.optBoolean("inputKnown") && row.getInt("in")==23 && !row.optBoolean("outputKnown") && row.isNull("out"),kind+" partial usage "+row);
+                    check(row.optBoolean("inputKnown") && row.getInt("in")==23 && row.optBoolean("outputKnown") && row.getInt("out")==0,kind+" per-frame partial usage normalization "+row);
                 }
             }
         }
@@ -372,9 +372,108 @@ public final class QoderAgentGatewayHttpTest {
                 }
             }
             try(Upstream primary=new Upstream(sse(first()+tail())); Upstream backup=new Upstream(http(500,"backup")); Gateway g=new Gateway(config(backup),primary)) {
-                HttpURLConnection c=connect(g,kind,body); try { int code=c.getResponseCode(); check(code>=400 && code<500,kind+" invalid history status "+code+" mode="+mode); } finally { c.disconnect(); }
-                check(primary.calls.get()==0 && backup.calls.get()==0,kind+" invalid history reached upstream mode="+mode);
+                HttpURLConnection c=connect(g,kind,body); try {
+                    int code=c.getResponseCode(); String text=readAll(code>=400?c.getErrorStream():c.getInputStream());
+                    if(kind.equals("chat")) {
+                        /* 合法对标之后：这三条病史不再本地 400。chat 落在候选全 Qoder 的路由上，历史原样
+                         * 交给 0.2.64 的 qoderMessages（QoderProtocol.apply）去补 id／配对，所以这里按
+                         * 上游拿到的报文正向断言（见 repairedChatHistory）。 */
+                        check(code==200,kind+" repaired history status "+code+" mode="+mode+" "+text);
+                        check(text.contains("early-marker"),kind+" repaired history never saw the reply mode="+mode+" "+text);
+                    } else {
+                        /* /v1/messages 与 /v1/responses 仍走严格规范化：状态码与「一个字节不上行」不变。 */
+                        check(code>=400 && code<500,kind+" invalid history status "+code+" mode="+mode);
+                    }
+                } finally { c.disconnect(); }
+                check(kind.equals("chat") ? primary.calls.get()==1 : primary.calls.get()==0,kind+" invalid history upstream calls mode="+mode+" "+primary.calls.get());
+                check(backup.calls.get()==0,kind+" invalid history reached fallback mode="+mode);
+                if(kind.equals("chat")) repairedChatHistory(mode,primary.lastRequest);
             }
+        }
+        if(kind.equals("chat")) nonQoderChatHistory();
+    }
+    /** The relayed history of one repaired chat case, asserted as 0.2.64 qoderMessages shapes it. */
+    static void repairedChatHistory(int mode,String encoded) throws Exception {
+        JSONArray wire=new JSONObject(QoderAuth.decodeBody(encoded)).getJSONArray("messages");
+        String all=wire.toString();
+        check(!all.contains("unavailable") && !all.contains("interrupted"),
+                "chat history "+mode+" was answered with an invented result: "+all);
+        java.util.List<String> answered=new java.util.ArrayList<String>(), said=new java.util.ArrayList<String>();
+        int assistantTurns=0;
+        JSONArray open=null;   /* 当前这组工具回合能回答的调用：最近一个带调用的助手回合，离开这组就作废 */
+        for(int i=0;i<wire.length();i++) {
+            JSONObject turn=wire.getJSONObject(i);
+            if(turn.optJSONArray("tool_calls")!=null) {
+                JSONArray calls=turn.getJSONArray("tool_calls");
+                check(calls.length()==2,"chat history "+mode+" call count "+calls.length()+": "+all);
+                for(int k=0;k<calls.length();k++)
+                    check(!calls.getJSONObject(k).optString("id").isEmpty(),"chat history "+mode+" left a call without an id: "+all);
+                check("private reasoning".equals(turn.optString("reasoning_content")),"chat history "+mode+" dropped the assistant's thinking: "+all);
+                assistantTurns++; open=calls; continue;
+            }
+            if(!"tool".equals(turn.optString("role"))) { open=null; continue; }
+            /* Qoder 只收「回答前面那个带调用的助手回合里某个调用」的工具回合。 */
+            check(open!=null,"chat history "+mode+" sent a tool turn answering no call of a preceding call turn: "+all);
+            String id=turn.getString("tool_call_id"); boolean named=false;
+            for(int k=0;k<open.length();k++) if(id.equals(open.getJSONObject(k).optString("id"))) named=true;
+            check(named,"chat history "+mode+" answered a call no preceding turn made: "+all);
+            answered.add(id); said.add(turn.optString("content"));
+        }
+        check(assistantTurns==1,"chat history "+mode+" assistant turns "+assistantTurns+": "+all);
+        if(mode==0) {
+            /* 客户端把回答 call-a 的那一轮整个丢了：插件不替它造结果，call-a 原样没人回答。 */
+            check(answered.equals(java.util.Collections.singletonList("call-b")) && "result-b".equals(said.get(0)),
+                    "chat history 0 routing "+answered+" "+said+": "+all);
+        } else if(mode==1) {
+            /* 两份结果都写 call-b：第一份回答 call-b，第二份回答本回合最早还没被回答的 call-a，文字不丢。 */
+            check(answered.equals(Arrays.asList("call-b","call-a")),"chat history 1 pairing "+answered+": "+all);
+            check(said.equals(Arrays.asList("result-b","result-a")),"chat history 1 words "+said+": "+all);
+        } else {
+            /* 结果被搬到助手回合之前：它变成用户自己那一轮的文字，后面那条结果回答 call-a。 */
+            check(answered.equals(java.util.Collections.singletonList("call-a")) && "result-a".equals(said.get(0)),
+                    "chat history 2 routing "+answered+" "+said+": "+all);
+            check(all.contains("result-b"),"chat history 2 dropped the orphan result's words: "+all);
+        }
+    }
+    /**
+     * 反面对照：同一条 chat 病史改走非 Qoder 路由（Qoder + 非 Qoder 兜底的混组、纯非 Qoder 模型）时，
+     * Qoder 适配器一次都不被调用，严格规范化照旧 —— 插件语义只在候选全 Qoder 的路由上生效。
+     */
+    static void nonQoderChatHistory() throws Exception {
+        Map<String,long[]> rest=rests();
+        String[] keys=new String[]{"qoder-test-backup/fixture-model","group/qoder-test-group"};
+        Map<String,long[]> previous=new HashMap<String,long[]>();
+        for(String key:keys) { long[] held=rest.remove(key); if(held!=null) previous.put(key,held); }
+        try {
+            for(int mode=0;mode<3;mode++) {
+                JSONObject body=request("chat",false,true);
+                JSONArray messages=body.getJSONArray("messages");
+                if(mode==0) messages.remove(3); else if(mode==1) messages.getJSONObject(3).put("tool_call_id","call-b");
+                else { JSONObject orphan=messages.getJSONObject(2); messages.remove(2); messages.put(0,orphan); }
+                try(Upstream primary=new Upstream(sse(first()+tail())); Upstream backup=new Upstream(http(500,"backup")); Gateway g=new Gateway(config(backup),primary)) {
+                    /* 混组里还有非 Qoder 候选：按严格口径本地拒绝，两台上游都没有请求。 */
+                    check(status(g,"chat",body.put("model","group/qoder-test-group"))==400,
+                            "mixed group must refuse what the Qoder-only route repairs mode="+mode);
+                    check(primary.calls.get()==0 && backup.calls.get()==0,"mixed group reached an upstream mode="+mode);
+                    /* 纯非 Qoder 模型：仍由严格规范化处理（它替没人回答的调用补一条结果），Qoder 适配器不参与。 */
+                    int code=status(g,"chat",body.put("model","qoder-test-backup/fixture-model"));
+                    check(code!=200,"a non-Qoder route reported the unrepaired history as success mode="+mode+" "+code);
+                    check(primary.calls.get()==0,"a non-Qoder route handed the history to the Qoder adapter mode="+mode);
+                    check(backup.calls.get()==1,"the non-Qoder route did not reach its own upstream mode="+mode);
+                    JSONArray strictWire=new JSONObject(backup.lastRequest).getJSONArray("messages");
+                    int answers=0, invented=0;
+                    for(int i=0;i<strictWire.length();i++) {
+                        JSONObject turn=strictWire.getJSONObject(i);
+                        if(!"tool".equals(turn.optString("role"))) continue;
+                        answers++; String text=turn.optString("content");
+                        if(!"result-a".equals(text) && !"result-b".equals(text)) invented++;
+                    }
+                    check(answers==2 && invented>=1,"the non-Qoder route no longer runs the strict normalizer: "+strictWire);
+                }
+            }
+        } finally {
+            for(String key:keys) rest.remove(key);
+            for(Map.Entry<String,long[]> held:previous.entrySet()) rest.put(held.getKey(),held.getValue());
         }
     }
     static void serviceStopCancellation(String kind) throws Exception {
@@ -419,11 +518,59 @@ public final class QoderAgentGatewayHttpTest {
             check(result.contains(kind.equals("messages")?"max_tokens":kind.equals("responses")?"max_output_tokens":"length"),kind+" length "+result);
         }
     }
+    /** One tool call plus the terminal frames, so a named choice can be honoured. */
+    static String singleCall(String name) {
+        return delta(new JSONObject().put("tool_calls", new JSONArray().put(tool(0, "call-a", name, "{\"a\":1}"))), null)
+                + delta(new JSONObject(), "tool_calls") + usage() + done();
+    }
+    /** The same request with the selected tool named, in the shape each surface accepts. */
+    static JSONObject namedRequest(String kind, String name) {
+        JSONObject named = request(kind, false, false);
+        if (kind.equals("messages")) named.put("tool_choice", new JSONObject().put("type", "tool").put("name", name));
+        else if (kind.equals("responses")) named.put("tool_choice", new JSONObject().put("type", "function").put("name", name));
+        else named.put("tool_choice", new JSONObject().put("type", "function").put("function", new JSONObject().put("name", name)));
+        return named;
+    }
+    static int status(Gateway g, String kind, JSONObject body) throws Exception {
+        HttpURLConnection c = connect(g, kind, body);
+        try { int code = c.getResponseCode(); readAll(code >= 400 ? c.getErrorStream() : c.getInputStream()); return code; }
+        finally { c.disconnect(); }
+    }
+    /**
+     * Qoder cannot be told to call one tool, so a named choice travels as "the tools are
+     * available"; a reply that then ignores the selected tool still fails closed rather
+     * than passing for success, and an undeclared name never leaves the device.
+     */
+    static void namedChoice(String kind) throws Exception {
+        try (Upstream primary = new Upstream(sse(first() + singleCall("one"))); Upstream backup = new Upstream(http(500, "backup"))) {
+            try (Gateway g = new Gateway(config(backup), primary)) {
+                response(g, kind, namedRequest(kind, "one"));
+                JSONObject upstream = new JSONObject(QoderAuth.decodeBody(primary.lastRequest));
+                check(upstream.getJSONArray("tools").length() == 2, kind + " named choice dropped the tools");
+                check(!upstream.getJSONArray("system").getJSONObject(0).getString("text").contains("You must call an available function"),
+                        kind + " named choice must not become a required one");
+            }
+        }
+        try (Upstream primary = new Upstream(sse(first() + singleCall("two"))); Upstream backup = new Upstream(http(500, "backup"))) {
+            try (Gateway g = new Gateway(config(backup), primary)) {
+                check(status(g, kind, namedRequest(kind, "one")) >= 500,
+                        kind + " a reply calling another tool must not be reported as success");
+            }
+        }
+        try (Upstream primary = new Upstream(sse(first() + singleCall("one"))); Upstream backup = new Upstream(http(500, "backup"))) {
+            try (Gateway g = new Gateway(config(backup), primary)) {
+                int before = primary.calls.get();
+                check(status(g, kind, namedRequest(kind, "absent")) >= 400 && status(g, kind, namedRequest(kind, "absent")) < 500,
+                        kind + " undeclared named choice is a local rejection");
+                check(primary.calls.get() == before, kind + " undeclared named choice reached upstream");
+            }
+        }
+    }
     public static void main(String[] args) throws Exception {
         NetworkPolicy.configure(null);
         String q=new JSONObject().put("code",10605).put("queue",new JSONObject().put("retryAfterSeconds",7)).toString();
         scenario("early queue",http(403,q),503,true,",\"max_tokens\":64",1);
-        for(String kind:new String[]{"chat","messages","responses"}) { for(boolean stream:new boolean[]{false,true}) matrix(kind,stream); live(kind); failures(kind); finishAndUnknown(kind); usageCases(kind); invalidHistory(kind); serviceStopCancellation(kind); downstreamDisconnectOnWrite(kind); }
+        for(String kind:new String[]{"chat","messages","responses"}) { for(boolean stream:new boolean[]{false,true}) matrix(kind,stream); live(kind); failures(kind); finishAndUnknown(kind); usageCases(kind); invalidHistory(kind); serviceStopCancellation(kind); downstreamDisconnectOnWrite(kind); namedChoice(kind); }
         System.out.println("QoderAgentGatewayHttpTest passed");
     }
 }

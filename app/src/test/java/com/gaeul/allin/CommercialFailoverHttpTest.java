@@ -101,7 +101,7 @@ public final class CommercialFailoverHttpTest {
         if(protocol.equals("responses")) b.put("input","hello");
         else { b.put("messages",new JSONArray().put(new JSONObject().put("role","user").put("content","hello"))); if(protocol.equals("anthropic")) b.put("max_tokens",32); }
         HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:"+g.getListeningPort()+path).openConnection();
-        c.setConnectTimeout(5000); c.setReadTimeout(10000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type","application/json"); c.setRequestProperty("Accept-Encoding","identity"); c.setRequestProperty("anthropic-version","2023-06-01");
+        c.setConnectTimeout(5000); c.setReadTimeout(10000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Authorization","Bearer fixture-auth"); c.setRequestProperty("Content-Type","application/json"); c.setRequestProperty("Accept-Encoding","identity"); c.setRequestProperty("anthropic-version","2023-06-01");
         try(OutputStream out=c.getOutputStream()) { out.write(b.toString().getBytes(StandardCharsets.UTF_8)); }
         Result r=new Result(); r.status=c.getResponseCode(); r.retry=c.getHeaderField("Retry-After"); InputStream in=r.status>=400?c.getErrorStream():c.getInputStream();
         if(in!=null) try(InputStream input=in) { byte[] buf=new byte[2048]; while(input.read(buf)!=-1) { } } c.disconnect(); return r;
@@ -117,7 +117,7 @@ public final class CommercialFailoverHttpTest {
         byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);
         try(Socket socket=new Socket("127.0.0.1",g.getListeningPort())) {
             socket.setSoTimeout(10000); OutputStream out=socket.getOutputStream();
-            out.write(("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "+bytes.length+"\r\n\r\n").getBytes(StandardCharsets.UTF_8)); out.write(bytes); out.flush();
+            out.write(("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer fixture-auth\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "+bytes.length+"\r\n\r\n").getBytes(StandardCharsets.UTF_8)); out.write(bytes); out.flush();
             InputStream in=socket.getInputStream(); ByteArrayOutputStream got=new ByteArrayOutputStream(); byte[] buffer=new byte[1024];
             while(!got.toString("UTF-8").contains("chat.completion.chunk")) { int n=in.read(buffer); check(n>0,"cancel initial frame"); got.write(buffer,0,n); }
             socket.setSoLinger(true,0);
@@ -134,7 +134,8 @@ public final class CommercialFailoverHttpTest {
         for(String protocol:new String[]{"openai","anthropic","responses"}) {
             rows.clear(); try(Upstream u=new Upstream((i,k,m)->new Reply(i==1?429:200,"rate_limit_error"))) {
                 JSONObject cfg=config(u,protocol,keys(),options(),false); try(Gateway g=new Gateway(cfg)) {
-                    check(post(g,cfg,protocol,false,false).status==200,"protocol failover status"); idle(g);
+                    int observedStatus=post(g,cfg,protocol,false,false).status;
+                    check(observedStatus==200,"protocol failover status protocol="+protocol+" status="+observedStatus+" upstreamAttempts="+u.keys.size()); idle(g);
                     check(u.keys.size()==2 && u.keys.get(0).equals(K1) && u.keys.get(1).equals(K2),"protocol key rotation"); attempts(rows,2,1);
                     check(rows.size()==2,"success produces two rows"); UsageLedger.Row a=rows.get(0), b=rows.get(1);
                     check(a.attempt==1 && !a.terminal && a.status==429 && b.attempt==2 && b.terminal && b.tries==2 && b.status==200,"attempt metadata");

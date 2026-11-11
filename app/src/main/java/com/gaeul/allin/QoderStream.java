@@ -24,13 +24,21 @@ public final class QoderStream {
 
     public static final class Failure extends IOException {
         public final int status, code, retryAfter;
+        /** The max_tokens ceiling a range refusal named, 0 when the refusal named none. */
+        public final int maxTokensCap;
         public final boolean sentOrUnknown;
 
         public Failure(int status, int code, int retryAfter, boolean sentOrUnknown, String message) {
+            this(status, code, retryAfter, 0, sentOrUnknown, message);
+        }
+
+        public Failure(int status, int code, int retryAfter, int maxTokensCap,
+                boolean sentOrUnknown, String message) {
             super(message);
             this.status = status;
             this.code = code;
             this.retryAfter = retryAfter;
+            this.maxTokensCap = Math.max(0, maxTokensCap);
             this.sentOrUnknown = sentOrUnknown;
         }
     }
@@ -38,8 +46,11 @@ public final class QoderStream {
     private static Failure failure(int status, String body, boolean sent) throws IOException {
         try {
             JSONObject f = QoderFailurePolicy.failure(status, body);
+            // A range refusal names the ceiling; keep it so the caller can ask once more at it
+            // instead of throwing a history away or guessing a number.
             return new Failure(f.optInt("status", 502), f.optInt("qoder_code", 0),
-                    f.optInt("retry_after", 0), sent, f.optString("error", "Qoder request failed"));
+                    f.optInt("retry_after", 0), QoderFailurePolicy.rangeCap(body), sent,
+                    f.optString("error", "Qoder request failed"));
         } catch (Exception ex) {
             throw new IOException("Invalid Qoder failure");
         }
@@ -93,8 +104,10 @@ public final class QoderStream {
             int status = conn.getResponseCode();
             source = status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream();
             if (source != null) source = contextInput(source, conn, context);
-            source = decodeEncoding(source, conn.getContentEncoding());
-            if (status < 200 || status >= 300) throw failure(status, readError(source), true);
+            String encoding = conn.getContentEncoding();
+            source = decodeEncoding(source, encoding);
+            if (status < 200 || status >= 300)
+                throw failure(status, readError(source, declaredBytes(conn, encoding)), true);
             verifyMime(conn.getContentType());
             if (source == null) throw new IOException("Missing Qoder response stream");
             Stream stream = new Stream(conn, source, original, model, context, observer);
@@ -141,7 +154,27 @@ public final class QoderStream {
             throw new IOException("Invalid Qoder response content type");
     }
 
-    private static String readError(InputStream in) throws IOException {
+    /**
+     * The number of bytes the answered refusal promised, or -1 when this transport cannot check it:
+     * an answer with no declared length (chunked), or one it decodes (the promise is about the wire,
+     * the bytes read are the decoded ones). A partial answer is not Qoder's verdict at all: the
+     * plugin reads it with {@code (await res.text())} (index.mjs:3651), which rejects when the body
+     * ends early, and that rejection is the 502 at index.mjs:3701 — never a status read off half of
+     * the text. No platform is relied on to say so: the JDK's HttpURLConnection reads a short
+     * fixed-length body to EOF with no error at all (measured on 17: 24 of 51 bytes, then EOF), and
+     * Android's throws (measured on 16). Checking the promise by size reads nothing twice and sends
+     * nothing again: the request was answered, it is simply not an answer Qoder finished.
+     */
+    private static long declaredBytes(HttpURLConnection conn, String encoding) {
+        if (encoding != null) {
+            String e = encoding.trim();
+            if (!e.isEmpty() && !e.equalsIgnoreCase("identity")) return -1;
+        }
+        return conn.getContentLength();
+    }
+
+    /** The refused answer's own words, bounded; a body short of its declared length is a failure. */
+    private static String readError(InputStream in, long declared) throws IOException {
         if (in == null) return "";
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[2048];
@@ -150,6 +183,9 @@ public final class QoderStream {
             if (n <= 0) break;
             out.write(buf, 0, n);
         }
+        // Only a promise this read meant to take whole is checked; a longer one is bounded here on purpose.
+        if (declared >= 0 && declared <= QoderFailurePolicy.MAX_ERROR_BYTES && out.size() < declared)
+            throw new IOException("Qoder refusal body ended early");
         return out.toString("UTF-8");
     }
 
@@ -343,17 +379,26 @@ public final class QoderStream {
             Object choice = original == null ? null : original.opt("tool_choice");
             if ("none".equals(choice) && result.length() > 0) throw new IOException("Qoder violated tool_choice none");
             if ("required".equals(choice) && result.length() == 0) throw new IOException("Qoder omitted required tool");
+            /* A selected tool is carried as "the tools are available", so the only place its
+               intent can still be held is here: a reply that calls something else fails
+               closed instead of passing for the answer the caller asked for. */
+            String selected = "";
             if (choice instanceof JSONObject) {
-                JSONObject fn = ((JSONObject) choice).optJSONObject("function");
-                String name = fn == null ? "" : fn.optString("name", "");
-                if (name.isEmpty() || result.length() == 0) throw new IOException("Qoder omitted selected tool");
+                JSONObject select = (JSONObject) choice;
+                JSONObject fn = select.optJSONObject("function");
+                selected = fn == null ? select.optString("name", "") : fn.optString("name", "");
+            } else if (choice instanceof String && !"auto".equals(choice) && !"none".equals(choice)
+                    && !"required".equals(choice) && !"any".equals(choice)) {
+                selected = ((String) choice).trim();
+            }
+            if (!selected.isEmpty()) {
+                if (result.length() == 0) throw new IOException("Qoder omitted selected tool");
                 for (int i = 0; i < result.length(); i++) {
                     JSONObject call = result.optJSONObject(i), f = call == null ? null : call.optJSONObject("function");
-                    if (f == null || !name.equals(f.optString("name"))) throw new IOException("Qoder violated selected tool");
+                    if (f == null || !selected.equals(f.optString("name"))) throw new IOException("Qoder violated selected tool");
                 }
             }
-            if (original != null && Boolean.FALSE.equals(original.opt("parallel_tool_calls")) && result.length() > 1)
-                throw new IOException("Qoder returned parallel tools when disabled");
+            if(original!=null&&Boolean.FALSE.equals(original.opt("parallel_tool_calls"))&&result.length()>1)throw new IOException("Qoder returned parallel tools when disabled");
         }
 
         private void finish(ByteArrayOutputStream out) throws Exception {
@@ -374,10 +419,10 @@ public final class QoderStream {
                         .put("function", new JSONObject().put("name", call.name).put("arguments", call.args.toString())));
             }
             checkToolChoice(result);
+            if (original!=null && "required".equals(original.opt("tool_choice")) && result.length()==0) throw new IOException("Qoder omitted required tool");
             if (finish.equals("tool_calls") && result.length() == 0) throw new IOException("Missing Qoder tool calls");
-            if (!finish.equals("stop") && !finish.equals("length") && !finish.equals("tool_calls"))
-                throw new IOException("Unknown Qoder finish reason");
             if (result.length() > 0 && finish.equals("length")) throw new IOException("Qoder tool call truncated");
+            if (!finish.equals("stop") && !finish.equals("length") && !finish.equals("tool_calls") && !finish.equals("content_filter")) finish="stop";
             if (result.length() > 0) { emit(out, chunk(new JSONObject().put("tool_calls", result), null)); business = true; }
             if (!business) throw new IOException("Empty Qoder response");
             String reason = result.length() > 0 ? "tool_calls" : finish;
@@ -390,22 +435,22 @@ public final class QoderStream {
         }
 
         /** Merge successive usage snapshots without inventing or adding token counts. */
-        private static JSONObject mergeUsage(JSONObject previous, JSONObject update) throws JSONException {
-            JSONObject merged = previous == null ? new JSONObject() : new JSONObject(previous.toString());
-            Iterator<String> keys = update.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                Object value = update.opt(key);
-                if (value == null || value == JSONObject.NULL) continue;
-                if (value instanceof JSONObject) {
-                    JSONObject old = merged.optJSONObject(key);
-                    merged.put(key, mergeUsage(old, (JSONObject) value));
-                } else {
-                    merged.put(key, value);
-                }
-            }
-            return merged;
+        private static JSONObject normalizeUsage(JSONObject raw) throws IOException, JSONException {
+            int prompt=count(raw.opt("prompt_tokens")), completion=count(raw.opt("completion_tokens"));
+            JSONObject out=new JSONObject().put("prompt_tokens",prompt).put("completion_tokens",completion).put("total_tokens",prompt+completion);
+            JSONObject pd=raw.optJSONObject("prompt_tokens_details"), cd=raw.optJSONObject("completion_tokens_details"); if(pd==null)pd=raw.optJSONObject("details");
+            int cached=pd==null?0:count(pd.opt("cached_tokens")), reasoning=cd==null?0:count(cd.opt("reasoning_tokens"));
+            if(cached>0)out.put("prompt_tokens_details",new JSONObject().put("cached_tokens",cached));
+            if(reasoning>0)out.put("completion_tokens_details",new JSONObject().put("reasoning_tokens",reasoning));
+            return out;
         }
+        private static int count(Object raw) throws IOException {
+            if(raw==null||raw==JSONObject.NULL)return 0;
+            if(!(raw instanceof Number))throw new IOException("Invalid Qoder usage count");
+            double n=((Number)raw).doubleValue(); if(!Double.isFinite(n)||n<0||n>Integer.MAX_VALUE||n!=Math.rint(n))throw new IOException("Invalid Qoder usage count");
+            return (int)n;
+        }
+
 
         private void acceptChunk(JSONObject data, ByteArrayOutputStream out) throws Exception {
             JSONArray choices = data.optJSONArray("choices");
@@ -414,7 +459,7 @@ public final class QoderStream {
             JSONObject u = data.optJSONObject("usage");
             if (data.has("usage") && !data.isNull("usage") && u == null) throw new IOException("Invalid Qoder usage");
             if (u != null) {
-                usage = mergeUsage(usage, u);
+                usage = normalizeUsage(u);
                 if (observer != null) observer.usage(usage);
             }
             if (choices == null) {

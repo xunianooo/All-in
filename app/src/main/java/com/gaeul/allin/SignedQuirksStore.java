@@ -67,7 +67,10 @@ final class SignedQuirksStore {
         Signature verifier=Signature.getInstance("SHA256withRSA"); verifier.initVerify(trust); verifier.update(DOMAIN); verifier.update(payload);
         if(!verifier.verify(sig)) throw new SecurityException("invalid signature");
         ProviderQuirks.Snapshot snapshot=ProviderQuirks.parse(payload);
-        compare(snapshot.ruleVersion,snapshot.ruleVersion); // restrict remote versions to numeric triples
+        /* The parser and compare() share one grammar, so a parsed document is always orderable.
+           Kept as the second half of that invariant: if the parser ever widens again, the store
+           still refuses a version it cannot order instead of installing one. */
+        compare(snapshot.ruleVersion,snapshot.ruleVersion);
         return new Verified(payload,snapshot);
     }
     private static int compare(String a,String b) {

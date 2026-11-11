@@ -13,7 +13,224 @@ public final class AnthropicBridgeRequestTest {
         userTextClosesPendingExchange();
         malformedMessagesRejected();
         sharedNormalizerAndOrphanBoundary();
+        nullSamplingIsUnset();
+        contentBlocksAreNeverSilentlyDropped();
+        illegalRequestTypesRejected();
+        nativeReasoningOnlyTurnProjects();
+        nativePayloadBlocksAreForwardedNotConverted();
+        qoderRepairIsAnIsolatedOptIn();
         System.out.println("AnthropicBridgeRequestTest: all checks passed");
+    }
+
+    // Repro: "temperature": null was copied through as NaN/0, and string/bool
+    // values were coerced. Absent and null must both stay absent; any other type
+    // must fail instead of being guessed.
+    private static void nullSamplingIsUnset() throws Exception {
+        JSONObject unset = new JSONObject()
+                .put("temperature", JSONObject.NULL)
+                .put("top_p", JSONObject.NULL)
+                .put("stream", JSONObject.NULL)
+                .put("stop_sequences", JSONObject.NULL)
+                .put("messages", new org.json.JSONArray().put(new JSONObject().put("role", "user").put("content", "hi")));
+        JSONObject converted = AnthropicBridge.requestToOpenAI(unset);
+        check(!converted.has("temperature") && !converted.has("top_p"), "null sampling must stay unset");
+        check(!converted.has("stream") && !converted.has("stop"), "null stream/stop must stay unset");
+        converted.toString(); // must stay serialisable: NaN breaks the whole upstream request
+        JSONObject kept = AnthropicBridge.requestToOpenAI(new JSONObject().put("temperature", 0.3).put("top_p", 0.9));
+        check(Math.abs(kept.getDouble("temperature") - 0.3) < 1e-9, "temperature preserved");
+        check(Math.abs(kept.getDouble("top_p") - 0.9) < 1e-9, "top_p preserved");
+        for (Object bad : new Object[] {"0.5", Boolean.TRUE, new org.json.JSONArray().put(1)}) {
+            rejects(new JSONObject().put("temperature", bad), "temperature must be a number", "temperature");
+            rejects(new JSONObject().put("top_p", bad), "top_p must be a number", "top_p");
+        }
+    }
+
+    // Repro: an array of blocks dropped every unsupported type (document,
+    // search_result, unknown, ...) and could drop the whole turn while reporting
+    // success. Known native-only blocks stay explicitly skipped; everything else
+    // must fail loudly.
+    private static void contentBlocksAreNeverSilentlyDropped() throws Exception {
+        String[] dropped = {
+            "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"eA==\"}}]}]}",
+            "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"search_result\",\"content\":[]}]}]}",
+            "{\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"only\"}]}]}",
+            "{\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"mystery\",\"value\":1}]}]}",
+            "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"a\",\"content\":[{\"type\":\"document\",\"source\":{}}]}]}]}",
+            "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"a\",\"content\":7}]}]}",
+            "{\"messages\":[{\"role\":\"user\",\"content\":[]}]}"
+        };
+        for (String json : dropped) {
+            try {
+                AnthropicBridge.requestToOpenAI(new JSONObject(json));
+                throw new AssertionError("silently accepted content " + json);
+            } catch (IllegalArgumentException expected) {
+                check(locatesContent(expected.getMessage()), "error must locate content: " + expected.getMessage());
+            }
+        }
+        JSONObject thinking = new JSONObject("{\"messages\":[{\"role\":\"assistant\",\"content\":["
+                + "{\"type\":\"thinking\",\"thinking\":\"plan\",\"signature\":\"sig\"},"
+                + "{\"type\":\"redacted_thinking\",\"data\":\"opaque\"},"
+                + "{\"type\":\"text\",\"text\":\"answer\"}]}]}");
+        org.json.JSONArray messages = AnthropicBridge.requestToOpenAI(thinking).getJSONArray("messages");
+        check("answer".equals(messages.getJSONObject(0).getString("content")), "native-only thinking must not hide text");
+        String[] badSystem = {"{\"system\":{\"type\":\"text\",\"text\":\"x\"}}", "{\"system\":[{\"type\":\"image\",\"source\":{}}]}",
+                "{\"system\":[42]}", "{\"system\":7}"};
+        for (String json : badSystem) {
+            try {
+                AnthropicBridge.requestToOpenAI(new JSONObject(json));
+                throw new AssertionError("silently accepted system " + json);
+            } catch (IllegalArgumentException expected) {
+                check(expected.getMessage().contains("system"), "error must locate system: " + expected.getMessage());
+            }
+        }
+    }
+
+    private static boolean locatesContent(String message) {
+        return message != null && message.contains("content");
+    }
+
+    // Repro: a native Messages client (Claude Code) replays signed thinking blocks in
+    // history, and an interrupted turn can hold nothing but that reasoning block. Chat
+    // has no field for it, but the native relay forwards the untouched original request,
+    // so the projection must keep the turn instead of failing the whole request with 400.
+    // Strict Chat conversion stays strict: only the native projection tolerates it.
+    private static void nativeReasoningOnlyTurnProjects() throws Exception {
+        String raw = "{\"model\":\"fixture\",\"max_tokens\":32,\"messages\":["
+                + "{\"role\":\"user\",\"content\":\"hello\"},"
+                + "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"reason\",\"signature\":\"sig\"}]}]}";
+        JSONArray projected = AnthropicBridge.projectNativeRequest(new JSONObject(raw)).getJSONArray("messages");
+        check(projected.length() == 2, "reasoning-only assistant turn must stay in the native projection: " + projected);
+        check("".equals(projected.getJSONObject(1).getString("content")),
+                "reasoning-only turn must project as empty content: " + projected);
+        String redacted = "{\"model\":\"fixture\",\"messages\":[{\"role\":\"assistant\",\"content\":"
+                + "[{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}]}]}";
+        JSONArray redactedProjection = AnthropicBridge.projectNativeRequest(new JSONObject(redacted)).getJSONArray("messages");
+        check(redactedProjection.length() == 1 && "".equals(redactedProjection.getJSONObject(0).getString("content")),
+                "redacted reasoning-only turn must project: " + redactedProjection);
+        try {
+            AnthropicBridge.requestToOpenAI(new JSONObject(raw));
+            throw new AssertionError("Chat conversion must still reject a reasoning-only turn");
+        } catch (IllegalArgumentException expected) {
+            check(locatesContent(expected.getMessage()), "rejection must locate content: " + expected.getMessage());
+        }
+    }
+
+    // Repro: a native Messages client attaches a hosted document or replays a server
+    // search result. Chat has no field for either, so the strict conversion rejects the
+    // request (real content must not be dropped silently). The native projection may omit
+    // them, because the body that is actually relayed is the untouched original - which is
+    // only ever used while NativeAnthropicPolicy still certifies the native path. These
+    // cases cover both halves plus the negative controls that keep the omission honest.
+    private static void nativePayloadBlocksAreForwardedNotConverted() throws Exception {
+        String[] payloads = {
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"summarize\"},"
+                + "{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"eA==\"}}]}]}",
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":["
+                + "{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"eA==\"}}]}]}",
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"check\"},"
+                + "{\"type\":\"search_result\",\"source\":\"srv\",\"title\":\"t\",\"content\":[{\"type\":\"text\",\"text\":\"hit\"}]}]}]}",
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\","
+                + "\"name\":\"read\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"c1\","
+                + "\"content\":[{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"eA==\"}}]}]}]}"
+        };
+        for (String json : payloads) {
+            JSONObject original = new JSONObject(json);
+            JSONObject untouched = new JSONObject(json);
+            // The omission is only safe while the request still demands the native relay.
+            check(NativeAnthropicPolicy.requiresNative(original), "native payload must require the native path: " + json);
+            JSONObject projected = AnthropicBridge.projectNativeRequest(original);
+            check(jsonEquivalent(original, untouched), "projection must not consume the real payload: " + original);
+            JSONObject current = new JSONObject(projected.toString());
+            // Positive control: a faithful transcript passes the safety check, so the
+            // negative controls below fail for the right reason instead of always throwing.
+            NativeAnthropicPolicy.checkNativeRequired(original, projected, current, true);
+            try {
+                NativeAnthropicPolicy.checkNativeRequired(original, projected, current, false);
+                throw new AssertionError("omitted native content must never be accepted without the native path: " + json);
+            } catch (IllegalArgumentException expected) {
+                check(expected.getMessage() != null && expected.getMessage().contains("protected"),
+                        "native refusal must name protected content: " + expected.getMessage());
+            }
+            JSONObject rewritten = new JSONObject(projected.toString());
+            rewritten.getJSONArray("messages").put(new JSONObject().put("role", "system").put("content", "injected"));
+            try {
+                NativeAnthropicPolicy.checkNativeRequired(original, projected, rewritten, true);
+                throw new AssertionError("a rewritten transcript must not pass the native check: " + json);
+            } catch (IllegalArgumentException expected) {
+                check(expected.getMessage() != null && expected.getMessage().contains("protected"),
+                        "rewritten refusal must name protected content: " + expected.getMessage());
+            }
+            try {
+                AnthropicBridge.requestToOpenAI(new JSONObject(json));
+                throw new AssertionError("strict conversion must reject unrepresentable native content: " + json);
+            } catch (IllegalArgumentException expected) {
+                check(locatesContent(expected.getMessage()), "strict rejection must locate content: " + expected.getMessage());
+            }
+        }
+        // The projection keeps the visible text and never invents a replacement for the
+        // omitted block; a turn made only of native payload stays but carries no fake text.
+        JSONArray mixed = AnthropicBridge.projectNativeRequest(new JSONObject(payloads[0])).getJSONArray("messages");
+        check(mixed.length() == 1 && "summarize".equals(mixed.getJSONObject(0).getString("content")),
+                "visible text survives the projection: " + mixed);
+        JSONArray documentOnly = AnthropicBridge.projectNativeRequest(new JSONObject(payloads[1])).getJSONArray("messages");
+        check(documentOnly.length() == 1 && "".equals(documentOnly.getJSONObject(0).getString("content")),
+                "native-only turn projects as empty text instead of a fabricated summary: " + documentOnly);
+        JSONArray toolResult = AnthropicBridge.projectNativeRequest(new JSONObject(payloads[3])).getJSONArray("messages");
+        check("tool".equals(toolResult.getJSONObject(1).getString("role")) && "".equals(toolResult.getJSONObject(1).getString("content")),
+                "tool result carrying a document keeps its slot without fake text: " + toolResult);
+        // Unknown block types are still unknown: the projection refuses to guess there and
+        // rejects them, so only listed native payload types may be omitted.
+        String[] unknown = {
+            "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"mystery\",\"value\":1}]}]}",
+            "{\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"mystery\",\"value\":1}]}]}",
+            "{\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"read\",\"input\":{}}]},"
+                + "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"c1\",\"content\":[{\"type\":\"mystery\"}]}]}]}"
+        };
+        for (String json : unknown) {
+            try {
+                AnthropicBridge.projectNativeRequest(new JSONObject(json));
+                throw new AssertionError("projection must not guess an unknown block type: " + json);
+            } catch (IllegalArgumentException expected) {
+                check(locatesContent(expected.getMessage()), "unknown block rejection must locate content: " + expected.getMessage());
+            }
+        }
+    }
+
+    private static boolean jsonEquivalent(JSONObject left, JSONObject right) {
+        return new JSONArray().put(left).toString().equals(new JSONArray().put(right).toString());
+    }
+
+    // Repro: tools/tool_choice/thinking/max_tokens/stream/stop_sequences with an
+    // illegal type were ignored or coerced instead of failing.
+    private static void illegalRequestTypesRejected() throws Exception {
+        Object[][] cases = {
+            {"max_tokens", "4096"}, {"stream", "true"}, {"tools", "{\"name\":\"x\"}"},
+            {"tool_choice", "auto"}, {"thinking", "enabled"}, {"stop_sequences", "stop"}
+        };
+        for (Object[] entry : cases) {
+            String field = (String) entry[0];
+            rejects(new JSONObject().put(field, entry[1]), field + " illegal type", field);
+        }
+        rejects(new JSONObject("{\"tools\":[42]}"), "tools entry must be an object", "tools");
+        rejects(new JSONObject("{\"tools\":[{\"name\":\"\"}]}"), "tools name required", "tools");
+        rejects(new JSONObject("{\"tools\":[{\"name\":\"x\",\"input_schema\":[]}]}"), "input_schema must be an object", "tools");
+        rejects(new JSONObject("{\"tool_choice\":{\"type\":\"mystery\"}}"), "unknown tool_choice type", "tool_choice");
+        rejects(new JSONObject("{\"thinking\":{\"type\":\"maybe\"}}"), "unknown thinking type", "thinking");
+        rejects(new JSONObject("{\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":\"big\"}}"), "budget_tokens type", "budget_tokens");
+        rejects(new JSONObject("{\"stop_sequences\":[\"a\",2]}"), "stop sequence entry type", "stop_sequences");
+    }
+
+    private static void rejects(JSONObject request, String label, String field) {
+        try {
+            AnthropicBridge.requestToOpenAI(request);
+            throw new AssertionError("accepted " + label);
+        } catch (IllegalArgumentException expected) {
+            check(expected.getMessage() != null && expected.getMessage().contains(field), label + ": error must name " + field + ", was " + expected.getMessage());
+        } catch (AssertionError failed) {
+            throw failed;
+        } catch (Exception other) {
+            throw new AssertionError(label + ": wrong failure " + other);
+        }
     }
 
     private static void mixedToolResultsPrecedeUserText() throws Exception {
@@ -134,6 +351,39 @@ public final class AnthropicBridgeRequestTest {
         JSONArray multimodal = new JSONArray("[{\"role\":\"tool\",\"tool_call_id\":\"orphan\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.invalid/a\"}}]}]");
         Object kept = AnthropicBridge.normalizeOpenAiMessages(multimodal).getJSONObject(0).get("content");
         check(kept instanceof JSONArray && kept.toString().contains("https://example.invalid/a"), "orphan multimodal retained as parts");
+    }
+
+    // The opt-in Qoder history repair (repairQoderHistory) must not touch any of the
+    // strict behaviour above, and must not be reachable by accident: it is a separate
+    // entry point, its only effect is the call ids the plugin itself would compute, and
+    // normalizeOpenAiMessages keeps refusing exactly what it refused before. The full
+    // Qoder suite (real adapter + plugin differential) lives in QoderHistoryRepairTest.
+    private static void qoderRepairIsAnIsolatedOptIn() throws Exception {
+        JSONArray lost = new JSONArray("[{\"role\":\"user\",\"content\":\"hi\"},"
+                + "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"type\":\"function\","
+                + "\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1}\"}}]},"
+                + "{\"role\":\"tool\",\"content\":\"result\"}]");
+        String before = lost.toString();
+        try {
+            AnthropicBridge.normalizeOpenAiMessages(lost);
+            throw new AssertionError("the strict normalizer must still refuse a call without an id");
+        } catch (IllegalArgumentException expected) {
+            check(expected.getMessage().contains("id"), "strict refusal must still name the id");
+        }
+        check(before.equals(lost.toString()), "strict refusal must not rewrite the caller's messages");
+        JSONArray repaired = AnthropicBridge.repairQoderHistory(lost);
+        check("call_6b41bb068d910234a4cc06aebc323ba5".equals(
+                repaired.getJSONObject(1).getJSONArray("tool_calls").getJSONObject(0).getString("id")),
+                "repair must use the plugin's callID");
+        check(repaired.getJSONObject(2).getString("content").equals("result")
+                        && !repaired.toString().contains("interrupted"),
+                "repair must never invent a tool result");
+        check(repaired.length() == 3 && before.equals(lost.toString()), "repair must not mutate the caller's messages");
+        check(AnthropicBridge.qoderHistoryRepairable(new JSONObject().put("messages", lost)),
+                "a history the Qoder adapter can take must be repairable");
+        check(!AnthropicBridge.qoderHistoryRepairable(new JSONObject().put("messages",
+                new JSONArray("[{\"role\":\"user\",\"tool_calls\":{}}]"))),
+                "a broken tool_calls must never be repairable");
     }
 
     private static void check(boolean condition, String message) {

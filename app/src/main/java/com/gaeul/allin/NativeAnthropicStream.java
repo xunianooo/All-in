@@ -23,6 +23,8 @@ final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.A
     private final PrivacyMasker.Session session;
     private final Listener listener;
     private final Runnable closeAction;
+    private final boolean thinkingOnlyTruncationCompat;
+    private boolean hasThinking, hasText, hasToolOrRefusal;
     private final Map<Integer, Block> blocks = new HashMap<>();
     private final Set<Integer> used = new HashSet<>();
     private byte[] output = new byte[0];
@@ -43,7 +45,11 @@ final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.A
         }
     }
     NativeAnthropicStream(InputStream upstream, PrivacyMasker.Session session, Listener listener, Runnable closeAction) {
+        this(upstream, session, listener, closeAction, false);
+    }
+    NativeAnthropicStream(InputStream upstream, PrivacyMasker.Session session, Listener listener, Runnable closeAction, boolean thinkingOnlyTruncationCompat) {
         if (upstream == null) throw new NullPointerException("upstream");
+        this.thinkingOnlyTruncationCompat = thinkingOnlyTruncationCompat;
         this.upstream = upstream; this.session = session; this.listener = listener; this.closeAction = closeAction;
     }
     private boolean masking() { return session != null && session.placeholderToReal != null && !session.placeholderToReal.isEmpty(); }
@@ -146,6 +152,7 @@ final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.A
         String type = obj == null ? "" : obj.optString("type", "");
         if (known(event) && (!event.equals(type) || obj == null)) throw new Exception();
         if (!known(type)) {
+            hasToolOrRefusal = true;
             // Unknown data events cannot cross withheld placeholder fragments: their
             // ordering relative to that text is unknowable until the fragment resolves.
             for (Block block : blocks.values()) if (block.unmask.hasPending()) throw new Exception();
@@ -172,6 +179,9 @@ final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.A
                 int i = index(obj); if (used.size() >= 65536 || !used.add(i)) throw new Exception();
                 JSONObject block = obj.getJSONObject("content_block"); String kind = string(block, "type");
                 Block state = new Block(kind, session); blocks.put(i, state);
+                if ("thinking".equals(kind)) hasThinking |= !block.optString("thinking", "").isEmpty();
+                else if ("text".equals(kind)) hasText |= !block.optString("text", "").isEmpty();
+                else hasToolOrRefusal = true;
                 if ("tool_use".equals(kind)) {
                     JSONObject input = block.getJSONObject("input");
                     if (masking()) { String before = input.toString(); unmaskInput(input, session); changed = !before.equals(input.toString()); }
@@ -188,10 +198,14 @@ final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.A
                 if ("input_json_delta".equals(kind)) { if (!"tool_use".equals(state.type)) throw new Exception(); field = "partial_json"; }
                 if ("thinking_delta".equals(kind) || "signature_delta".equals(kind)) {
                     if (!"thinking".equals(state.type)) throw new Exception();
-                    string(delta, "thinking_delta".equals(kind) ? "thinking" : "signature");
+                    String value = string(delta, "thinking_delta".equals(kind) ? "thinking" : "signature");
+                    if ("thinking_delta".equals(kind) && !value.isEmpty()) hasThinking = true;
                 }
+                if (!"text_delta".equals(kind) && !"thinking_delta".equals(kind)
+                        && !"signature_delta".equals(kind)) hasToolOrRefusal = true;
                 if (field != null) {
                     String before = string(delta, field);
+                    if ("text_delta".equals(kind) && !before.isEmpty()) hasText = true;
                     if (masking()) { String after = state.unmask.feed(before); if (!before.equals(after)) { delta.put(field, after); changed = true; } }
                 }
             } else if ("content_block_stop".equals(type)) {
@@ -207,7 +221,22 @@ final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.A
                 }
             } else if ("message_delta".equals(type)) {
                 JSONObject delta = obj.getJSONObject("delta");
-                if (delta.has("stop_reason") && !delta.isNull("stop_reason")) { if (string(delta, "stop_reason").isEmpty() || !blocks.isEmpty() || stopReason) throw new Exception(); stopReason = true; }
+                if (delta.has("stop_reason") && !delta.isNull("stop_reason")) {
+                    ZCodeAnthropic.validateStopReason(delta);
+                    if (!blocks.isEmpty() || stopReason) throw new Exception();
+                    if (thinkingOnlyTruncationCompat && "max_tokens".equals(delta.optString("stop_reason"))
+                            && hasThinking && !hasText && !hasToolOrRefusal && used.size() < 65536) {
+                        int i = 0; while (used.contains(i)) i++;
+                        JSONObject block = new JSONObject().put("type", "text").put("text", ThinkingTruncationStream.NOTICE);
+                        JSONObject start = new JSONObject().put("type", "content_block_start").put("index", i).put("content_block", block);
+                        JSONObject end = new JSONObject().put("type", "content_block_stop").put("index", i);
+                        byte[] a = eventBytes("content_block_start", start), b = eventBytes("content_block_stop", end);
+                        prefix = new byte[a.length + b.length];
+                        System.arraycopy(a, 0, prefix, 0, a.length); System.arraycopy(b, 0, prefix, a.length, b.length);
+                        delta.put("stop_reason", "end_turn"); changed = true;
+                    }
+                    stopReason = true;
+                }
             } else if ("message_stop".equals(type)) {
                 if (!stopReason || !blocks.isEmpty()) throw new Exception();
                 finished = true;

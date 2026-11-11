@@ -37,7 +37,7 @@ public final class WorkBuddyCatalogHttpTest {
             catch (Exception e) { throw new IOException(e); }
         });
         String oldModels = provider.getJSONArray("models").toString(), oldMeta = provider.getJSONObject("modelMeta").toString();
-        NanoHTTPD.Response response = gateway.serve(RoutingSetupOfflineTest.request("127.0.0.1", "/api/auth/workbuddy/sync-models", "POST", "{}", "fixture-auth"));
+        NanoHTTPD.Response response = gateway.serve(RoutingSetupOfflineTest.request("127.0.0.1", "/api/auth/workbuddy/sync-models", "POST", "{}", null));
         String responseBody = ResponsesGatewayOfflineTest.read(response.getData());
         FakeConnection conn = captured[0];
         check(conn != null, "vendor hook used: " + responseBody);
