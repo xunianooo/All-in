@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Pure Raccoon refresh decisions and token-response parsing for gateway wiring. */
 public final class RaccoonRefreshPolicy {

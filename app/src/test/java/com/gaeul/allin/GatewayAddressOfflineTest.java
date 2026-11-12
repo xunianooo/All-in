@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 import fi.iki.elonen.NanoHTTPD;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.lang.reflect.Field;

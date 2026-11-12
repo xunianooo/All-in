@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class ModelBillingMetadataOfflineTest {
  private static JSONObject n(String p,String raw)throws Exception{return ModelBillingMetadata.normalize(p,new JSONObject(raw));}

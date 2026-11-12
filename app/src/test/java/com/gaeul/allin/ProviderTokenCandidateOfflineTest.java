@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class ProviderTokenCandidateOfflineTest {
     private static void check(boolean ok) { if (!ok) throw new AssertionError(); }

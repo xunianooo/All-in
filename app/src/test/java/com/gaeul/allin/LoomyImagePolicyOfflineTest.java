@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class LoomyImagePolicyOfflineTest {
     static void ok(boolean value) { if (!value) throw new AssertionError(); }
@@ -24,16 +24,16 @@ public final class LoomyImagePolicyOfflineTest {
 
     private static void multiImageOrderSurvives() throws Exception {
         // First image has no text neighbour: indexed replacement used to erase the remote image.
-        org.json.JSONArray blocks = new org.json.JSONArray()
+        com.gaeul.allin.json.JSONArray blocks = new com.gaeul.allin.json.JSONArray()
                 .put(new JSONObject().put("type", "image_url").put("image_url", "data:image/png;base64,ONE="))
                 .put(new JSONObject().put("type", "image_url").put("image_url", "https://example.test/remote.png"))
                 .put(new JSONObject().put("type", "input_image").put("image_url", "data:image/png;base64,TWO="))
                 .put(new JSONObject().put("type", "image_url").put("image_url", new JSONObject().put("url", "data:image/png;base64,THREE=")))
                 .put(new JSONObject().put("type", "text").put("text", "tail"))
                 .put(new JSONObject().put("type", "opaque").put("value", "keep"));
-        JSONObject input = new JSONObject().put("messages", new org.json.JSONArray().put(new JSONObject().put("content", blocks)));
+        JSONObject input = new JSONObject().put("messages", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("content", blocks)));
         String original = input.toString();
-        org.json.JSONArray actual = LoomyImagePolicy.prepare(input, "deepseek-chat")
+        com.gaeul.allin.json.JSONArray actual = LoomyImagePolicy.prepare(input, "deepseek-chat")
                 .getJSONArray("messages").getJSONObject(0).getJSONArray("content");
         ok(original.equals(input.toString()));
         ok(actual.length() == 4);
@@ -42,10 +42,10 @@ public final class LoomyImagePolicyOfflineTest {
         ok(actual.getJSONObject(2).getString("text").equals("<image_base64>data:image/png;base64,TWO=</image_base64>\n"
                 + "<image_base64>data:image/png;base64,THREE=</image_base64>\ntail"));
         ok(actual.getJSONObject(3).getString("value").equals("keep"));
-        org.json.JSONArray allImages = new org.json.JSONArray()
+        com.gaeul.allin.json.JSONArray allImages = new com.gaeul.allin.json.JSONArray()
                 .put(blocks.getJSONObject(0)).put(blocks.getJSONObject(2)).put(blocks.getJSONObject(3));
-        JSONObject imagesOnly = new JSONObject().put("messages", new org.json.JSONArray().put(new JSONObject().put("content", allImages)));
-        org.json.JSONArray converted = LoomyImagePolicy.prepare(imagesOnly, "deepseek-chat")
+        JSONObject imagesOnly = new JSONObject().put("messages", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("content", allImages)));
+        com.gaeul.allin.json.JSONArray converted = LoomyImagePolicy.prepare(imagesOnly, "deepseek-chat")
                 .getJSONArray("messages").getJSONObject(0).getJSONArray("content");
         String text = converted.getJSONObject(0).getString("text");
         ok(converted.length() == 1 && text.indexOf("ONE=") < text.indexOf("TWO=") && text.indexOf("TWO=") < text.indexOf("THREE="));

@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import fi.iki.elonen.NanoHTTPD;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.net.*;

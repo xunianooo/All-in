@@ -103,8 +103,8 @@ public class GatewayService extends Service {
         }
     }
 
-    public static org.json.JSONObject healthStatus(Context context) {
-        org.json.JSONObject o = new org.json.JSONObject();
+    public static com.gaeul.allin.json.JSONObject healthStatus(Context context) {
+        com.gaeul.allin.json.JSONObject o = new com.gaeul.allin.json.JSONObject();
         GatewayService s = current;
         try {
             o.put("enabled", context != null && isGatewayEnabled(context));
@@ -508,11 +508,11 @@ public class GatewayService extends Service {
             public void restoreIfUnchanged(byte[] hash, byte[] replacement, byte[] rollback) throws Exception {
                 synchronized (ENGINE_SERIAL) {
                     if (PENDING_STOPS.get() != 0) throw new IllegalStateException("gateway stopping");
-                    org.json.JSONObject restoreConfig = EncryptedConfigBackup.validateConfig(replacement);
+                    com.gaeul.allin.json.JSONObject restoreConfig = EncryptedConfigBackup.validateConfig(replacement);
                     Object restoreNetwork = restoreConfig.opt("network");
-                    if (restoreConfig.has("network") && !(restoreNetwork instanceof org.json.JSONObject))
+                    if (restoreConfig.has("network") && !(restoreNetwork instanceof com.gaeul.allin.json.JSONObject))
                         throw new IllegalArgumentException("network config");
-                    NetworkPolicy.parse((org.json.JSONObject) restoreNetwork);
+                    NetworkPolicy.parse((com.gaeul.allin.json.JSONObject) restoreNetwork);
                     final GatewayService owner = current;
                     final boolean enabled = isGatewayEnabled(app);
                     if (enabled && (owner == null || owner.disposed)) throw new IllegalStateException("gateway unavailable");

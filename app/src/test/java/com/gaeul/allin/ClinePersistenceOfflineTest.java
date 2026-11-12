@@ -4,7 +4,7 @@ import java.lang.reflect.*;
 import java.nio.file.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class ClinePersistenceOfflineTest {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }

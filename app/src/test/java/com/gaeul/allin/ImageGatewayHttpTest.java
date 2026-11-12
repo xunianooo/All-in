@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import java.io.*;import java.net.*;import java.nio.charset.StandardCharsets;import org.json.*;
+import java.io.*;import java.net.*;import java.nio.charset.StandardCharsets;import com.gaeul.allin.json.*;
 
 /** Image cross-protocol integration with isolated localhost upstream. */
 public final class ImageGatewayHttpTest {

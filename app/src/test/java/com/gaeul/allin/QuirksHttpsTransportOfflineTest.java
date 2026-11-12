@@ -5,7 +5,7 @@ import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class QuirksHttpsTransportOfflineTest {
  static void check(boolean b){if(!b)throw new AssertionError();}

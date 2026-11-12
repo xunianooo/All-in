@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class RaccoonRefreshPolicyOfflineTest {
     static void ok(boolean value) { if (!value) throw new AssertionError(); }

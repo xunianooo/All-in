@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.net.URI;
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
 
 /** Conservative fingerprint for official ZCode coding-plan Messages requests. */
 final class ZCodeRequestPolicy {

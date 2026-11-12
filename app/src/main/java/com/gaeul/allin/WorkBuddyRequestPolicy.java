@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.io.IOException;
 
 /** Pure conversion for WorkBuddy chat bodies. The caller must use the returned copy. */

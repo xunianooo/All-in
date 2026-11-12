@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * 各供应商的"读不出来"与"读到了零"必须分得开。

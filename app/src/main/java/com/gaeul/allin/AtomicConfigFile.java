@@ -8,7 +8,16 @@ import java.io.IOException;
 final class AtomicConfigFile {
     private AtomicConfigFile() {}
 
-    static void write(File target, String json) throws IOException {
+    static void write(File target, String json) throws IOException { write(target,json,false); }
+
+    /** Returns true only when a Win32 write-through rename already made metadata durable. */
+    static boolean writeFence(File target,String text) throws IOException {
+        boolean windows=File.separatorChar=='\\' && !isAndroidRuntime(System.getProperty("java.vm.name", ""));
+        write(target,text,windows);
+        return windows;
+    }
+
+    private static void write(File target, String json, boolean writeThrough) throws IOException {
         File absolute = target.getAbsoluteFile();
         File parent = absolute.getParentFile();
         if (parent == null || !parent.isDirectory()) throw new IOException("Configuration directory missing");
@@ -19,7 +28,8 @@ final class AtomicConfigFile {
                 output.flush();
                 output.getFD().sync();
             }
-            replace(temporary, absolute);
+            if(writeThrough) DesktopDurableReplace.replace(temporary,absolute);
+            else replace(temporary, absolute);
         } finally {
             // A failed replacement leaves the previous configuration untouched.
             if (temporary.exists()) temporary.delete();

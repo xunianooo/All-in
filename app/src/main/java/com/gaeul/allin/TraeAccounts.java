@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.util.HashMap;
 import java.util.Map;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Account refresh coordinator. Store.replace must be an atomic full-object CAS. */
 public final class TraeAccounts {

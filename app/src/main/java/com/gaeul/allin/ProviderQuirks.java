@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /**
  * Offline, immutable, request-scoped compatibility decisions. No credentials or I/O.

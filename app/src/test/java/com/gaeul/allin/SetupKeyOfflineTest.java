@@ -8,7 +8,7 @@ import java.io.InputStreamReader;
 import fi.iki.elonen.NanoHTTPD;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class SetupKeyOfflineTest {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }

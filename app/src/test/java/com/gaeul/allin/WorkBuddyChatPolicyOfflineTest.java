@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.util.Map;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Offline request and response tests for the pinned WorkBuddy 0.2.26 Chat policy. */
 public final class WorkBuddyChatPolicyOfflineTest {

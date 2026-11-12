@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.util.Arrays;
 import java.util.List;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class MiniMaxModelMetadataOfflineTest {
     public static void main(String[] args) throws Exception {

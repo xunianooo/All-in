@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.io.File;
 import java.nio.file.Files;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class UsageLedgerPartialPersistenceOfflineTest {
     static void check(boolean condition, String message) {

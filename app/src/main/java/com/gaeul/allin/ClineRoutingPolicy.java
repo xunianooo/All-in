@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Default request routing constraints for the official Cline endpoint. */
 final class ClineRoutingPolicy {

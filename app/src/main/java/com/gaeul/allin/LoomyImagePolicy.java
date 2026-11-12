@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.util.Locale;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Loomy chat image compatibility. Pure transformation; callers decide whether to send. */
 public final class LoomyImagePolicy {

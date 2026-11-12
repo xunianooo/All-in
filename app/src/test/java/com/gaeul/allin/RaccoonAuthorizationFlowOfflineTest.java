@@ -83,8 +83,8 @@ public final class RaccoonAuthorizationFlowOfflineTest {
             calls.incrementAndGet();
             check(url.equals(RaccoonOAuthClient.AUTH_BASE + "/login_with_authorization_code"), "exact HTTPS exchange URL");
             check(body.length() == 1 && body.optString("authorization_code").equals("synthetic-code"), "exact exchange body");
-            return new RaccoonOAuthClient.Response(200, new org.json.JSONObject().put("code", 0).put("data",
-                    new org.json.JSONObject().put("access_token", "opaque-access").put("refresh_token", "fixture-refresh")));
+            return new RaccoonOAuthClient.Response(200, new com.gaeul.allin.json.JSONObject().put("code", 0).put("data",
+                    new com.gaeul.allin.json.JSONObject().put("access_token", "opaque-access").put("refresh_token", "fixture-refresh")));
         });
         RaccoonLoginProtocol.Credentials c = client.exchangeAuthorizationCode("synthetic-code");
         check(c.access.equals("opaque-access") && c.refresh.equals("fixture-refresh"), "fixture exchange result");

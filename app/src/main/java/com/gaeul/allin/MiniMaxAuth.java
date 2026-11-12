@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -512,8 +512,7 @@ public class MiniMaxAuth {
     }
 
     /** 拼出签到/账号接口的完整 URL（含 mcode 的固定参数与签名时间戳） */
-    private static String signedUrl(String path, String userID) {
-        long now = System.currentTimeMillis();
+    private static String signedUrl(String path, String userID, long now) {
         int tzSec = java.util.TimeZone.getDefault().getOffset(now) / 1000;
         StringBuilder q = new StringBuilder();
         q.append("device_platform=web").append("&biz_id=3").append("&app_id=3001")
@@ -527,7 +526,10 @@ public class MiniMaxAuth {
          .append("&browser_name=mcode")
          .append("&user_id=").append(userID == null || userID.trim().isEmpty() ? "0" : userID.trim())
          .append("&client=mcode");
-        return AGENT + path + "?" + q;
+        int queryAt = path.indexOf('?');
+        String basePath = queryAt < 0 ? path : path.substring(0, queryAt);
+        String extra = queryAt < 0 ? "" : path.substring(queryAt + 1);
+        return AGENT + basePath + "?" + q + (extra.isEmpty() ? "" : "&" + extra);
     }
 
     private static void applySignedHeaders(HttpURLConnection conn, String pathWithQuery, String access,
@@ -550,10 +552,12 @@ public class MiniMaxAuth {
 
     /** 签名 GET：返回 {code, body} */
     private static JSONObject signedGet(String path, String access, String userID) throws Exception {
-        long now = System.currentTimeMillis();
-        String url = signedUrl(path, userID);
+        return signedGet(path,access,userID,System.currentTimeMillis(),MiniMaxAuth::open);
+    }
+    static JSONObject signedGet(String path,String access,String userID,long now,AllowanceConnectionFactory factory) throws Exception {
+        String url = signedUrl(path, userID, now);
         String pathWithQuery = url.substring(AGENT.length());
-        HttpURLConnection conn = open(url);
+        HttpURLConnection conn = factory.open(url);
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(20000);
@@ -571,12 +575,40 @@ public class MiniMaxAuth {
         return out;
     }
 
+    /** Bounded read-only account query. No refresh, redirect, sign-in or claim. */
+    static JSONObject signedAllowanceGet(String path, String access, String userID, long now,
+                                          AllowanceConnectionFactory factory) throws Exception {
+        if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
+        String url = signedUrl(path, userID, now);
+        HttpURLConnection conn = factory.open(url);
+        try {
+            conn.setRequestMethod("GET"); conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(3000); conn.setReadTimeout(5000);
+            applySignedHeaders(conn, url.substring(AGENT.length()), access, userID, null, now);
+            int status = conn.getResponseCode();
+            if (status != 200) throw new java.io.IOException("MiniMax account HTTP " + status);
+            try (InputStream in = conn.getInputStream(); java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+                byte[] buffer = new byte[4096]; int n, total = 0;
+                while ((n = in.read(buffer)) != -1) {
+                    if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
+                    total += n; if (total > 1024 * 1024) throw new java.io.IOException("MiniMax response too large");
+                    out.write(buffer, 0, n);
+                }
+                return new JSONObject().put("_status", status).put("_body", new JSONObject(out.toString("UTF-8")));
+            }
+        } finally { conn.disconnect(); }
+    }
+
     /** 签名 POST（body 参与签名） */
     private static JSONObject signedPost(String path, String access, String userID, String jsonBody) throws Exception {
-        long now = System.currentTimeMillis();
-        String url = signedUrl(path, userID);
+        return signedPost(path,access,userID,jsonBody,System.currentTimeMillis(),MiniMaxAuth::open);
+    }
+    static JSONObject signedPost(String path,String access,String userID,String jsonBody,long now,AllowanceConnectionFactory factory) throws Exception {
+        // Sign and send one normalized string; never re-serialize after signing.
+        if(jsonBody==null)jsonBody="{}";
+        String url = signedUrl(path, userID, now);
         String pathWithQuery = url.substring(AGENT.length());
-        HttpURLConnection conn = open(url);
+        HttpURLConnection conn = factory.open(url);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);

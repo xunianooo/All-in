@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** The defaults here are compatibility defaults, not claims about vendor model capability. */
 public final class CompletionBudgetOfflineTest {

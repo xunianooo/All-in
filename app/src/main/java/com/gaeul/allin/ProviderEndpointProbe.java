@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.io.*;
 import java.net.Socket;
 import java.net.URI;

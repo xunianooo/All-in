@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 import java.util.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Validates consumed configuration fields while preserving unrelated legacy fields. */
 final class BackupConfigSchema {

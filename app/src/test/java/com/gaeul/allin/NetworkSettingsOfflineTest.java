@@ -4,7 +4,7 @@ import fi.iki.elonen.NanoHTTPD;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class NetworkSettingsOfflineTest {
     static void check(boolean value, String message) { if (!value) throw new AssertionError(message); }

@@ -3,7 +3,7 @@ import fi.iki.elonen.NanoHTTPD;
 import java.lang.reflect.*;
 import java.nio.file.*;
 import java.util.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 public final class QuirksGatewayHttpTest {
  static void check(boolean v){if(!v)throw new AssertionError();}
  static NanoHTTPD.IHTTPSession session(String method,String uri,String key) {

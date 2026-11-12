@@ -7,7 +7,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Direct contracts of GatewayServer's Chat forwarding stream; no network or Android context. */
 public final class GatewayStreamReadOfflineTest {

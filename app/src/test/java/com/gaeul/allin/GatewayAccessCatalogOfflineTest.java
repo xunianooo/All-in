@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 public final class GatewayAccessCatalogOfflineTest {
  static void check(boolean v,String m){if(!v)throw new AssertionError(m);}
  static JSONObject p(String id,String protocol){return new JSONObject().put("id",id).put("protocol",protocol).put("models",new JSONArray().put("m"));}

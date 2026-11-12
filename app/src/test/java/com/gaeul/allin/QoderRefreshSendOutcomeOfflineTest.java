@@ -16,7 +16,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.GZIPOutputStream;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Qoder 刷新请求的「单次 TLS 传输 + 发送阶段辨别」离线测试：假传输、真实环回 socket、不联网、不运行 Gradle。
@@ -1496,8 +1496,8 @@ public final class QoderRefreshSendOutcomeOfflineTest {
         int depth = 0;
         for (Throwable cause = failure.getCause(); cause != null; cause = cause.getCause()) {
             if (++depth > 8) break;
-            boolean parser = cause instanceof org.json.JSONException
-                    || cause.getClass().getName().startsWith("org.json.");
+            boolean parser = cause instanceof com.gaeul.allin.json.JSONException
+                    || cause.getClass().getName().startsWith("com.gaeul.allin.json.");
             check(!parser, what + " carried a parser exception as its cause: " + cause);
         }
     }

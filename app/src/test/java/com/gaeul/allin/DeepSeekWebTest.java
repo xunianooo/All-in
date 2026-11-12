@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 import com.gaeul.allin.DeepSeekWeb;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;

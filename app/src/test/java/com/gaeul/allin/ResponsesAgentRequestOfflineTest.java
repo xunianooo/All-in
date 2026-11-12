@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 import fi.iki.elonen.NanoHTTPD;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class ResponsesAgentRequestOfflineTest {
     static void check(boolean ok,String what) { if(!ok) throw new AssertionError(what); }

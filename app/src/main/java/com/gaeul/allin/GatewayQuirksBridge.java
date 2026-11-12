@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import android.content.Context;
 import android.os.Build;
 import java.io.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** API 26+ updater classes remain isolated behind the guarded nested factory. */
 abstract class GatewayQuirksBridge {

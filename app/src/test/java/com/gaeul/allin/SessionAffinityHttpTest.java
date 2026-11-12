@@ -2,7 +2,7 @@ package com.gaeul.allin;
 import java.io.*;
 import java.lang.reflect.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.*;
 
 public final class SessionAffinityHttpTest {

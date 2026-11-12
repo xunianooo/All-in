@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 

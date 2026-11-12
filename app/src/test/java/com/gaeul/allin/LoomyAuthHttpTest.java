@@ -7,7 +7,7 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public class LoomyAuthHttpTest {
     static int refresh=0; static String mode="ok";

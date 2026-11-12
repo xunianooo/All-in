@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.util.regex.Pattern;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Safe, bounded signature-rejection retry rules for WorkBuddy. */
 public final class WorkBuddySignatureRetryPolicy {

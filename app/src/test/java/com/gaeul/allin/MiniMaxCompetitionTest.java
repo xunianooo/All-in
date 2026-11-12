@@ -5,7 +5,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class MiniMaxCompetitionTest {
  static void check(boolean b,String m) { if(!b) throw new AssertionError(m); }

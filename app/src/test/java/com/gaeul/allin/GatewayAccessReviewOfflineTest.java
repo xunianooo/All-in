@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.util.concurrent.atomic.AtomicInteger;
 public final class GatewayAccessReviewOfflineTest {
  static void check(boolean b,String m){if(!b)throw new AssertionError(m);}

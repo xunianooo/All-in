@@ -8,8 +8,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Passes native Anthropic SSE through, changing only explicitly unmasked text. */
 final class NativeAnthropicStream extends InputStream implements fi.iki.elonen.AllInTrackedResponse.WriteCompletion {

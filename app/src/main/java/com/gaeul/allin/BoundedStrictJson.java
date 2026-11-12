@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-/** Strict JSON grammar before org.json; protects recursive parser and rejects duplicate keys. */
+/** Strict JSON grammar before com.gaeul.allin.json; protects recursive parser and rejects duplicate keys. */
 final class BoundedStrictJson {
     private final String s; private int i, nodes;
     BoundedStrictJson(String s) { this.s = s; }

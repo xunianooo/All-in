@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Antigravity「刷新 token 交换」出站结果分类的定向离线测试。

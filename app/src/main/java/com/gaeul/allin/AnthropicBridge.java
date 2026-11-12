@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -892,7 +892,7 @@ final class AnthropicBridge {
                         if (fr != null && !fr.isEmpty() && !"null".equals(fr)) finish = fr;
 
                         if (delta != null) {
-                            // 注意：Android 自带的 org.json 对 JSONObject.NULL 调 optString 会返回字符串
+                            // 注意：Android 自带的 com.gaeul.allin.json 对 JSONObject.NULL 调 optString 会返回字符串
                             // "null"（桌面版 json.jar 返回 ""）。上游最后一个 chunk 常带 "content": null，
                             // 不判 NULL 就会多出一个内容为 "null" 的文本块。
                             Object rawReason = delta.opt("reasoning_content");

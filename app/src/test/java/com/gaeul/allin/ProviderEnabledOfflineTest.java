@@ -5,7 +5,7 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class ProviderEnabledOfflineTest {
     static final String PATH = "/api/providers/enabled";

@@ -6,7 +6,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import fi.iki.elonen.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Final HTTP framing, early close and usage-event ordering on the gift path. */
 public final class GiftDeliveryOfflineTest {

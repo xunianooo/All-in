@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -138,7 +138,7 @@ public class UsageLedger {
         public String session = "";      // 会话标识（客户端 header 或 Anthropic metadata.user_id）
         // Empty requestId denotes an immutable legacy row. New attempts use ordinal 1+;
         // ordinal 0 is a terminal-only marker and never counts as an attempt.
-        public String requestId = "", credentialId = "";
+        public String requestId = "", credentialId = "", accountId = "";
         public int attempt = 1;
         public boolean terminal = true;
         // New rows: known, estimated or unknown. Empty source is treated as unknown.
@@ -510,6 +510,7 @@ public class UsageLedger {
             if (!r.isLegacy()) {
                 o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.terminal);
                 if (r.credentialId != null && !r.credentialId.isEmpty()) o.put("credentialId", r.credentialId);
+                if (r.accountId != null && !r.accountId.isEmpty()) o.put("accountId", r.accountId);
                 o.put("usageSource", r.effectiveUsageSource());
                 o.put("outboundAt",r.outboundAt); o.put("queuedMs",r.queuedMs);
                 o.put("failureKind",r.failureKind); o.put("upstreamErrorCode",r.upstreamErrorCode); o.put("upstreamRetryAfter",r.upstreamRetryAfter);
@@ -553,6 +554,7 @@ public class UsageLedger {
             r.diagnostics=RequestDiagnostics.Snapshot.parse(o.optJSONObject("diagnostics"));
             r.requestId = o.optString("requestId", "");
             r.credentialId = o.optString("credentialId", "");
+            r.accountId = o.optString("accountId", "");
             r.outboundAt=o.optLong("outboundAt",0); r.queuedMs=o.optLong("queuedMs",0);
             r.failureKind=o.optString("failureKind",""); r.upstreamErrorCode=o.optString("upstreamErrorCode",""); r.upstreamRetryAfter=o.optString("upstreamRetryAfter","");
             r.attempt = o.optInt("attempt", 1); r.terminal = o.optBoolean("terminal", true);
@@ -751,6 +753,7 @@ public class UsageLedger {
                 o.put("prov", r.prov);
                 o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.isTerminal());
                 o.put("credentialId", r.credentialId); o.put("usageSource", r.effectiveUsageSource());
+                o.put("accountId", r.accountId);
                 o.put("outboundAt",r.outboundAt); o.put("queuedMs",r.queuedMs); o.put("failureKind",r.failureKind); o.put("upstreamErrorCode",r.upstreamErrorCode); o.put("upstreamRetryAfter",r.upstreamRetryAfter);
                 o.put("cacheSource", r.cacheSource); o.put("reasoningSource", r.reasoningSource);
                 o.put("cacheInputTokens", r.cacheInputTokens >= 0 && !"partial".equals(r.cacheSource) ? r.cacheInputTokens : JSONObject.NULL);
@@ -973,6 +976,7 @@ public class UsageLedger {
             o.put("statusCode", r.status);
             o.put("model", r.model == null || r.model.isEmpty() ? r.req : r.model);
             o.put("provider", r.prov);
+            o.put("accountId", r.accountId);
             o.put("totalTokens", r.countedTokens());
             o.put("requestId", r.requestId); o.put("attempt", r.attempt); o.put("terminal", r.isTerminal());
             o.put("usageSource", r.effectiveUsageSource());

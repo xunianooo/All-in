@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 public final class ContextGuardProtectionTest {
     static void ok(boolean b) { if (!b) throw new AssertionError(); }
     static String repeat(String s, int n) { StringBuilder b = new StringBuilder(); while(n-- > 0) b.append(s); return b.toString(); }

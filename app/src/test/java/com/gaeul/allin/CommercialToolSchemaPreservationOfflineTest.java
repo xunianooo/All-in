@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** No unsupported DeepSeek schema rewriting may be introduced into protocol bridges. */
 public final class CommercialToolSchemaPreservationOfflineTest {

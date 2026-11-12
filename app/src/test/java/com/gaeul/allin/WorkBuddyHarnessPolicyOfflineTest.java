@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class WorkBuddyHarnessPolicyOfflineTest {
  static void check(boolean b,String why){if(!b)throw new AssertionError(why);}

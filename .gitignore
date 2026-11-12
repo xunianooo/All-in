@@ -11,3 +11,12 @@ MagPocket-*.apk
 /app/ledger-*.jsonl
 
 /ledger-*.jsonl
+
+# Local account-bearing handoff, credentials, backups and generated installers
+/PROJECT_MEMORY.md
+/signing/
+*.jks
+*.p12
+*.pfx
+*.aibk
+*.apk

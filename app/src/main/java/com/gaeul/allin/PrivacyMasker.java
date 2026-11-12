@@ -51,7 +51,7 @@ public class PrivacyMasker {
         /** 用户自定义正则，一行一条 */
         public java.util.List<String> customPatterns = new java.util.ArrayList<String>();
 
-        public static Config fromJson(org.json.JSONObject o) {
+        public static Config fromJson(com.gaeul.allin.json.JSONObject o) {
             Config c = new Config();
             if (o == null) return c;
             c.enabled = o.optBoolean("enabled", true);
@@ -61,7 +61,7 @@ public class PrivacyMasker {
             c.maskIds = o.optBoolean("maskIds", false);
             c.maskBankCards = o.optBoolean("maskBankCards", false);
             c.maskLandlines = o.optBoolean("maskLandlines", false);
-            org.json.JSONArray arr = o.optJSONArray("customPatterns");
+            com.gaeul.allin.json.JSONArray arr = o.optJSONArray("customPatterns");
             if (arr != null) {
                 for (int i = 0; i < arr.length(); i++) {
                     String v = arr.optString(i, "").trim();
@@ -71,8 +71,8 @@ public class PrivacyMasker {
             return c;
         }
 
-        public org.json.JSONObject toJson() {
-            org.json.JSONObject o = new org.json.JSONObject();
+        public com.gaeul.allin.json.JSONObject toJson() {
+            com.gaeul.allin.json.JSONObject o = new com.gaeul.allin.json.JSONObject();
             o.put("enabled", enabled);
             o.put("maskApiKeys", maskApiKeys);
             o.put("maskEmails", maskEmails);
@@ -80,7 +80,7 @@ public class PrivacyMasker {
             o.put("maskIds", maskIds);
             o.put("maskBankCards", maskBankCards);
             o.put("maskLandlines", maskLandlines);
-            org.json.JSONArray arr = new org.json.JSONArray();
+            com.gaeul.allin.json.JSONArray arr = new com.gaeul.allin.json.JSONArray();
             for (String v : customPatterns) arr.put(v);
             o.put("customPatterns", arr);
             return o;

@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -58,7 +58,7 @@ public final class AnthropicBridgeStreamOfflineTest {
             "{\"content\":null}"
         };
         for (String delta : deltas) {
-            add(events, state.onChunk(new JSONObject().put("choices", new org.json.JSONArray()
+            add(events, state.onChunk(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray()
                     .put(new JSONObject().put("delta", chunk(delta))))));
         }
         add(events, state.onChunk(chunk("{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":42}}")));
@@ -105,7 +105,7 @@ public final class AnthropicBridgeStreamOfflineTest {
         StringBuilder huge = new StringBuilder();
         for (int i = 0; i < 1100000; i++) huge.append('x');
         JSONObject call = new JSONObject().put("index", 1).put("function", new JSONObject().put("arguments", huge.toString()));
-        JSONObject c = new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", new JSONObject().put("tool_calls", new org.json.JSONArray().put(call)))));
+        JSONObject c = new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("delta", new JSONObject().put("tool_calls", new com.gaeul.allin.json.JSONArray().put(call)))));
         require(bounded.onChunk(c).toString().contains("event: error") && bounded.isFailed(), "deferred buffer overflow must fail");
     }
 
@@ -115,19 +115,19 @@ public final class AnthropicBridgeStreamOfflineTest {
         for (int i = 0; i < finishes.length; i++) {
             JSONObject choice = new JSONObject().put("message", new JSONObject().put("content", ""))
                     .put("finish_reason", finishes[i]);
-            JSONObject response = new JSONObject().put("choices", new org.json.JSONArray().put(choice));
+            JSONObject response = new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(choice));
             require(expected[i].equals(AnthropicBridge.responseToAnthropic(response, "fixture").optString("stop_reason")), "nonstream mapping " + finishes[i]);
             AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
             List<String> events = new ArrayList<String>();
-            add(events, state.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", new JSONObject()).put("finish_reason", finishes[i])))));
+            add(events, state.onChunk(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("delta", new JSONObject()).put("finish_reason", finishes[i])))));
             add(events, state.onEnd());
             require(events.toString().contains("\"stop_reason\":\"" + expected[i] + "\"") && !state.isFailed(), "stream mapping " + finishes[i]);
         }
         for (Object finish : new Object[] {JSONObject.NULL, "", "mystery", 123}) {
             JSONObject choice = new JSONObject().put("message", new JSONObject().put("content", "partial")).put("finish_reason", finish);
-            require("error".equals(AnthropicBridge.responseToAnthropic(new JSONObject().put("choices", new org.json.JSONArray().put(choice)), "fixture").optString("type")), "nonstream invalid finish " + finish);
+            require("error".equals(AnthropicBridge.responseToAnthropic(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(choice)), "fixture").optString("type")), "nonstream invalid finish " + finish);
             AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
-            state.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", new JSONObject().put("content", "partial")).put("finish_reason", finish))));
+            state.onChunk(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("delta", new JSONObject().put("content", "partial")).put("finish_reason", finish))));
             String end = state.onEnd().toString();
             require(state.isFailed() && end.contains("event: error") && !end.contains("message_stop"), "stream invalid finish " + finish);
         }
@@ -136,7 +136,7 @@ public final class AnthropicBridgeStreamOfflineTest {
         String[] deltas = {"{\"reasoning_content\":\"thought\"}", "{\"refusal\":\"no\"}", "{\"tool_calls\":[{\"index\":0,\"id\":\"t\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}"};
         for (String delta : deltas) {
             AnthropicBridge.StreamState state = new AnthropicBridge.StreamState("fixture");
-            state.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("delta", chunk(delta)))));
+            state.onChunk(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("delta", chunk(delta)))));
             state.onChunk(chunk("{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"));
             require(state.onEnd().toString().contains("message_stop") && !state.isFailed(), "valid content " + delta);
         }
@@ -214,8 +214,8 @@ public final class AnthropicBridgeStreamOfflineTest {
         JSONObject call = new JSONObject().put("index", 0);
         if (!id.isEmpty()) call.put("id", id);
         call.put("function", fn);
-        return chunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject()
-                .put("index", 0).put("delta", new JSONObject().put("tool_calls", new org.json.JSONArray().put(call)))))
+        return chunk(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject()
+                .put("index", 0).put("delta", new JSONObject().put("tool_calls", new com.gaeul.allin.json.JSONArray().put(call)))))
                 .toString());
     }
 
@@ -289,7 +289,7 @@ public final class AnthropicBridgeStreamOfflineTest {
         AnthropicBridge.StreamState s = new AnthropicBridge.StreamState("fixture");
         List<String> events = new ArrayList<String>();
         add(events, s.onChunk(chunk("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}")));
-        add(events, s.onChunk(new JSONObject().put("choices", new org.json.JSONArray().put(new JSONObject().put("index", 0).put("delta", new JSONObject()).put("finish_reason", "stop"))).put("usage", open.getJSONObject("usage"))));
+        add(events, s.onChunk(new JSONObject().put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("index", 0).put("delta", new JSONObject()).put("finish_reason", "stop"))).put("usage", open.getJSONObject("usage"))));
         add(events, s.onEnd()); validateLifecycle(events);
         JSONObject start = null, end = null;
         for (String raw : events) {
@@ -326,11 +326,11 @@ public final class AnthropicBridgeStreamOfflineTest {
             if ("message_delta".equals(ev.optString("type"))) assertUsage(ev.getJSONObject("usage"), 10, 20, 30, 2);
         }
         JSONObject readOnly = chunk("{\"usage\":{\"prompt_tokens\":60,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":20}}}");
-        readOnly.put("choices", new org.json.JSONArray().put(new JSONObject().put("finish_reason", "stop").put("message", new JSONObject().put("content", ""))));
+        readOnly.put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("finish_reason", "stop").put("message", new JSONObject().put("content", ""))));
         JSONObject u = AnthropicBridge.responseToAnthropic(readOnly, "fixture").getJSONObject("usage");
         require(u.getLong("input_tokens") == 40 && u.getLong("cache_read_input_tokens") == 20 && !u.has("cache_creation_input_tokens"), "absent cache write is unknown");
         JSONObject invalid = chunk("{\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":-4,\"prompt_tokens_details\":{\"cached_tokens\":-5,\"cache_write_tokens\":30}}}");
-        invalid.put("choices", new org.json.JSONArray().put(new JSONObject().put("finish_reason", "stop").put("message", new JSONObject().put("content", ""))));
+        invalid.put("choices", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("finish_reason", "stop").put("message", new JSONObject().put("content", ""))));
         u = AnthropicBridge.responseToAnthropic(invalid, "fixture").getJSONObject("usage");
         assertUsage(u, 0, 0, 30, 0);
     }

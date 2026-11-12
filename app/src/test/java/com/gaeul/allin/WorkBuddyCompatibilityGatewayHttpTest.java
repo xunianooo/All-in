@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Synthetic loopback upstream exercises the actual gateway transport and cache. */
 public final class WorkBuddyCompatibilityGatewayHttpTest {

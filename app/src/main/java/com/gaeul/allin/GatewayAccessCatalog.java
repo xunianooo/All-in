@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.Set;
@@ -61,7 +61,7 @@ final class GatewayAccessCatalog {
         for(String identity:identities) input.append(identity).append('\0');
         return "v2:"+fingerprint(input.toString());
     }
-    static void preserveAccountScope(JSONObject oldConfig, JSONObject newConfig) throws org.json.JSONException {
+    static void preserveAccountScope(JSONObject oldConfig, JSONObject newConfig) throws com.gaeul.allin.json.JSONException {
         JSONArray old=oldConfig==null?null:oldConfig.optJSONArray("providers"), next=newConfig.optJSONArray("providers");
         for(int i=0;next!=null && i<next.length();i++) {
             JSONObject p=next.optJSONObject(i); if(p==null) continue;
@@ -96,8 +96,22 @@ final class GatewayAccessCatalog {
     }
     private static boolean accountUsable(JSONObject p, String model, long now) {
         String id=p.optString("id"), protocol=p.optString("protocol", "openai");
-        if (p.has("accessCatalogPool") && !p.optString("accessCatalogPool").equals(poolFingerprint(p))) return false;
         JSONArray accounts=p.optJSONArray("accounts");
+        boolean workbuddy="workbuddy".equals(id) || "workbuddy-ai".equals(id);
+        boolean ownCatalog=hasAccountCatalog(accounts) || p.optJSONObject("legacyKeyCatalog")!=null;
+        if (p.has("accessCatalogPool") && !p.optString("accessCatalogPool").equals(poolFingerprint(p))
+                && !(workbuddy && ownCatalog)) return false;
+        if(workbuddy) {
+            boolean scoped=p.optBoolean("accessAccountCatalogScoped",false) || ownCatalog;
+            for(JSONObject account:AccountPoolPolicy.routingAccounts(p)) {
+                if(!supportsAccountModel(account,model,scoped))continue;
+                try {WorkBuddyLogin.enterpriseValue(account);}catch(java.io.IOException invalid){continue;}
+                if("oauth".equals(account.optString("type")) && account.optLong("expires",0)>0 && account.optLong("expires")<=now
+                        && (!present(account,"refresh") || (account.optLong("refreshExpiresAt",0)>0 && account.optLong("refreshExpiresAt")<=now)))continue;
+                return true;
+            }
+            return false;
+        }
         if ("loomy".equals(id)) {
             boolean scoped=p.optBoolean("accessAccountCatalogScoped", false) || hasAccountCatalog(accounts);
             for (int i=0; accounts!=null && i<accounts.length(); i++)
@@ -133,7 +147,7 @@ final class GatewayAccessCatalog {
         }
         return usableKey(p,model);
     }
-    static JSONObject build(JSONObject cfg, long now, GiftSnapshot gift) throws org.json.JSONException {
+    static JSONObject build(JSONObject cfg, long now, GiftSnapshot gift) throws com.gaeul.allin.json.JSONException {
         JSONObject exposed=cfg.optJSONObject("exposed"); boolean filtered=exposed!=null && exposed.optBoolean("enabled",false);
         JSONArray whitelist=exposed==null?null:exposed.optJSONArray("items");
         LinkedHashMap<String,JSONObject> available=new LinkedHashMap<>(); int unknown=0;

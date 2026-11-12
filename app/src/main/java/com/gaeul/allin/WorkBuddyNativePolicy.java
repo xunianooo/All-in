@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.util.Locale;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Pure policy for the CN Claude Messages route. No network calls or retry state. */
 public final class WorkBuddyNativePolicy {

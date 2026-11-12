@@ -8,7 +8,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Inexact one-shot requests: delivery depends on Android and vendor policy. */
 public class KeepAliveScheduler {
@@ -22,6 +22,12 @@ public class KeepAliveScheduler {
         if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
         return PendingIntent.getBroadcast(c, REQ_CODE, i, flags);
     }
+    static boolean pendingRequestFresh(String mode,long scheduled,long target,long now,long wallAge) {
+        return "inexactOneShot".equals(mode) && scheduled>0 && now>=scheduled && target>scheduled && wallAge>=0
+                && Math.abs(wallAge-(now-scheduled))<60000L
+                // Allow normal inexact/Doze delay, but never trust cancelled alarm metadata forever.
+                && (now<=target || now-target<=2L*INTERVAL_MS);
+    }
     public static synchronized boolean schedule(Context c) {
         if (c == null) return false;
         if (!GatewayService.isGatewayEnabled(c)) { cancel(c); return false; }
@@ -32,8 +38,7 @@ public class KeepAliveScheduler {
         long scheduledWall = p.getLong("scheduledAt", 0);
         long wallAge = System.currentTimeMillis() - scheduledWall;
         // A reboot changes elapsed time; wall/elapsed mismatch also catches fast reboots.
-        if ("inexactOneShot".equals(p.getString("mode", "")) && scheduled > 0 && now >= scheduled && target > 0 && wallAge >= 0
-                && Math.abs(wallAge - (now - scheduled)) < 60000L) return true;
+        if (pendingRequestFresh(p.getString("mode", ""),scheduled,target,now,wallAge)) return true;
         return request(c, now);
     }
     static synchronized void rearmAfterDelivery(Context c) {

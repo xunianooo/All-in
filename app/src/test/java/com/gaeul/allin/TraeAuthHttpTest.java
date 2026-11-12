@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPOutputStream;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 public class TraeAuthHttpTest {
  static void ok(boolean v,String m){if(!v)throw new AssertionError(m);}
  static int call(int port,String request)throws Exception {try(Socket s=new Socket("127.0.0.1",port)){s.setSoTimeout(5000);s.getOutputStream().write(request.getBytes("UTF-8"));s.getOutputStream().flush();String line=new BufferedReader(new InputStreamReader(s.getInputStream(),"UTF-8")).readLine();return Integer.parseInt(line.split(" ")[1]);}}

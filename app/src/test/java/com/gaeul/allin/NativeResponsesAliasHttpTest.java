@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.NanoHTTPD;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;

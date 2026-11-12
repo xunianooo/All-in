@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Standalone JVM regression suite; pass gate, serve, health, or all (default). */
 public final class BackgroundHealthOfflineTest {

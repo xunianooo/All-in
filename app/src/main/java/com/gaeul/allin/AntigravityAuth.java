@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -1712,7 +1712,7 @@ public class AntigravityAuth {
             if (text.trim().isEmpty()) return new JSONObject();
             try {
                 return new JSONObject(text);
-            } catch (org.json.JSONException je) {
+            } catch (com.gaeul.allin.json.JSONException je) {
                 String preview = text.replace('\n', ' ').replace('\r', ' ').trim();
                 if (preview.length() > 160) preview = preview.substring(0, 160) + "…";
                 throw new Exception("响应不是 JSON（" + preview + "）", je);
@@ -1768,7 +1768,7 @@ public class AntigravityAuth {
             if (text.trim().isEmpty()) return new JSONObject();
             try {
                 return new JSONObject(text);
-            } catch (org.json.JSONException je) {
+            } catch (com.gaeul.allin.json.JSONException je) {
                 String preview = text.replace('\n', ' ').replace('\r', ' ').trim();
                 if (preview.length() > 160) preview = preview.substring(0, 160) + "…";
                 throw new Exception("Google 响应不是 JSON（" + preview + "）", je);

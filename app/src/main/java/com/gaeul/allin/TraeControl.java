@@ -3,8 +3,8 @@ package com.gaeul.allin;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Lifecycle and account control for the consumer Trae provider. */
 public final class TraeControl implements AutoCloseable {

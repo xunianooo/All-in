@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 public final class TraeAccountsOfflineTest {

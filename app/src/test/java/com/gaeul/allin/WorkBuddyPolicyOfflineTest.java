@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 import java.util.Map;
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
 
 public class WorkBuddyPolicyOfflineTest {
     private static final String CN = "https://copilot.tencent.com/v2/chat/completions";

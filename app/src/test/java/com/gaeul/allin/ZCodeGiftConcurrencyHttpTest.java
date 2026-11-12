@@ -6,7 +6,7 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Real loopback requests only; all identities and bodies are synthetic. */
 public final class ZCodeGiftConcurrencyHttpTest {

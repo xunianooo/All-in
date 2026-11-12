@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 import java.util.Map;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public class WorkBuddyNativePolicyOfflineTest {
     static void check(boolean b) { if (!b) throw new AssertionError(); }

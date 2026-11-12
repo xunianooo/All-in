@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.util.List;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 public final class ZCodeAnthropicOfflineTest {
     private static JSONObject json(String s) throws Exception { return new JSONObject(s); }

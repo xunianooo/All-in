@@ -7,7 +7,7 @@ import java.util.*;
 import fi.iki.elonen.NanoHTTPD;
 import java.nio.file.Files;
 import java.util.concurrent.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class RoutingAuditOfflineTest {
     static void check(boolean ok, String msg) { if (!ok) throw new AssertionError(msg); }

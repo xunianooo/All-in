@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.NanoHTTPD;
 public final class GatewayAccessHttpOfflineTest {
  static void check(boolean ok,String msg){if(!ok)throw new AssertionError(msg);}

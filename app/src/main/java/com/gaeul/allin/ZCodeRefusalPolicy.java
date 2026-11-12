@@ -7,7 +7,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Local, in-memory duplicate-refusal protection. 180 seconds is our conservative
  * policy, not an upstream duration or a claim that an IP/account is banned.

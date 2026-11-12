@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Extracts only provider-documented model multipliers; never token prices. */
 public final class ModelBillingMetadata {

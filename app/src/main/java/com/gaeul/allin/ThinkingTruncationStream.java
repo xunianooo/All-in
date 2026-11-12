@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Narrow client compatibility for a reasoning-only Chat SSE stopped by token limit. */
 final class ThinkingTruncationStream extends InputStream {

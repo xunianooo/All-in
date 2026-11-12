@@ -9,8 +9,8 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
-import org.json.JSONObject;
-import org.json.JSONTokener;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONTokener;
 
 /** Normalizes the documented Zhipu platform refusal envelope on its coding endpoints. */
 final class ZhipuEnvelope {

@@ -9,7 +9,7 @@ import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Real loopback HTTP on both sides of the gateway; credentials and upstream are synthetic. */
 public final class TraeGatewayHttpTest {

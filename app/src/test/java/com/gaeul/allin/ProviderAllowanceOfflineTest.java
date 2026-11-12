@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class ProviderAllowanceOfflineTest {
     private static void check(boolean ok) { if (!ok) throw new AssertionError(); }
@@ -77,6 +77,16 @@ public final class ProviderAllowanceOfflineTest {
         JSONObject mixed=ProviderAllowance.fromMiniMax(new JSONObject("{\"model_remains\":[{\"model_name\":\"general\",\"current_interval_remaining_percent\":70},{\"model_name\":\"video\",\"current_interval_remaining_percent\":0}]}"),1);
         check(mixed.getJSONArray("windows").length()==1 && mixed.getJSONArray("windows").getJSONObject(0).getDouble("remainingPercent")==70 && mixed.getJSONArray("modelPools").length()==1);
         check(ProviderAllowance.fromMiniMax(new JSONObject("{\"base_resp\":{\"status_code\":1},\"model_remains\":[{\"model_name\":\"video\",\"current_interval_status\":2}]}"),1)==null);
+        JSONObject qoder = ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"userQuota\":{\"total\":100,\"used\":100},\"addOnQuota\":{\"cap\":50,\"remaining\":25},\"orgResourcePackage\":{\"total\":0}}}"),1);
+        check(qoder.getDouble("remaining")==25,"spent plan is not a spent account with add-on credits");
+        check(qoder.getJSONArray("windows").length()==3,"Qoder pools remain separate");
+        check(qoder.getJSONArray("windows").getJSONObject(2).getDouble("remaining")==0,"zero-cap pool is known zero");
+        check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"enterprise\",\"qoderUsage\":{}}"),1)==null,"enterprise pool is not a personal credit quota");
+        check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{}}"),1)==null,"no pool is unknown");
+        check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"userQuota\":{\"total\":100}}}"),1)==null,"missing used and remaining is unknown");
+        check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"userQuota\":{\"total\":\"100\",\"used\":0}}}"),1)==null,"string cap is not a Qoder number");
+        check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"userQuota\":null,\"user_quota\":{\"total\":100,\"used\":0}}}"),1)==null,"present camel null does not fall through");
+        check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"user_quota\":{\"total\":0}}}"),1).getDouble("remaining")==0,"known free account is zero");
         System.out.println("ProviderAllowanceOfflineTest OK");
     }
 }

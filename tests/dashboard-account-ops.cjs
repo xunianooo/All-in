@@ -52,6 +52,5 @@ function check(b,m){if(!b)throw Error(m)}
  document.querySelector('#result').textContent='PASS';
 })().catch(e=>document.querySelector('#result').textContent='FAIL '+e.message);
 </script>`;
-const path='/tmp/allin-dashboard-account-test.html';fs.writeFileSync(path,harness);
-const out=cp.execFileSync('chromium',['--headless','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--virtual-time-budget=3000','--dump-dom','file://'+path],{encoding:'utf8',stdio:['ignore','pipe','ignore']});
+const out=require('./browser-fixture.cjs').dom(harness,3000);
 assert(out.includes('<pre id="result">PASS</pre>'),out.match(/<pre id="result">.*?<\/pre>/)?.[0]);console.log('dashboard account operations DOM/API passed');

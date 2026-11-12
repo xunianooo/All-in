@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -66,8 +66,8 @@ final class AnthropicReasoningPolicy {
             if (rawMode == null) rawMode = metadata.opt("thinking");
             Object rawEfforts = metadata.opt("efforts");
             Set<String> levels = new HashSet<String>();
-            if (rawEfforts instanceof org.json.JSONArray) {
-                org.json.JSONArray values = (org.json.JSONArray) rawEfforts;
+            if (rawEfforts instanceof com.gaeul.allin.json.JSONArray) {
+                com.gaeul.allin.json.JSONArray values = (com.gaeul.allin.json.JSONArray) rawEfforts;
                 for (int i = 0; i < values.length(); i++) {
                     Object value = values.opt(i);
                     if (value instanceof String) {
@@ -79,7 +79,7 @@ final class AnthropicReasoningPolicy {
             String mode = rawMode instanceof String ? ((String) rawMode).trim().toLowerCase(Locale.ROOT).replace('-', '_') : "";
             boolean hasMode = "switchable".equals(mode) || "forced_on".equals(mode)
                     || "forced_off".equals(mode) || "off".equals(mode) || "on".equals(mode);
-            if (!hasMode && !(rawEfforts instanceof org.json.JSONArray))
+            if (!hasMode && !(rawEfforts instanceof com.gaeul.allin.json.JSONArray))
                 return builtInCapabilities(Provider.MINIMAX, model);
             boolean switchable = "switchable".equals(mode);
             boolean forcedOn = "forced_on".equals(mode);

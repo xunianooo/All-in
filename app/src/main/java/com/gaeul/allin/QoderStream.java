@@ -6,7 +6,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Converts Qoder's SSE envelopes to OpenAI chat-completion SSE. */
 public final class QoderStream {

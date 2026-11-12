@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.util.*;
 
 /** Explicit rejection-only retry policy. No inference replay on transport errors or arbitrary 5xx. */

@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Internal opaque domain IDs; never emitted in dashboard, errors or diagnostics. */
 public final class CredentialIdentity {
@@ -25,6 +25,9 @@ public final class CredentialIdentity {
                 id=LEGACY.get(account);
                 if(id==null) { id=java.util.UUID.randomUUID().toString(); LEGACY.put(account,id); }
             }
+            // One uid can own personal and enterprise accounts; those quotas are not interchangeable.
+            id += "\nuid:"+account.optString("uid","")+"\nenterprise:"+account.optString("enterpriseId","")
+                    +"\ndomain:"+account.optString("domain","")+"\nsite:"+account.optString("site","");
         }
         if(id==null || id.isEmpty()) id=digest(key==null?"":key);
         return digest(origin(provider,baseUrl)+"\n"+id);

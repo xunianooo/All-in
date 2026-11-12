@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 public final class MiniMaxPollPolicyOfflineTest {
     static void check(boolean b) { if (!b) throw new AssertionError(); }
     public static void main(String[] args) throws Exception {

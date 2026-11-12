@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 import fi.iki.elonen.NanoHTTPD;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.lang.reflect.Proxy;
 import java.util.*;
 import java.util.concurrent.*;

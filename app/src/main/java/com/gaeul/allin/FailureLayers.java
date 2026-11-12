@@ -93,11 +93,11 @@ public final class FailureLayers {
         String text = body == null ? "" : body.toLowerCase(Locale.ROOT);
         boolean hasError = false;
         try {
-            org.json.JSONObject obj = new org.json.JSONObject(body == null ? "" : body);
-            org.json.JSONObject error = obj.optJSONObject("error");
+            com.gaeul.allin.json.JSONObject obj = new com.gaeul.allin.json.JSONObject(body == null ? "" : body);
+            com.gaeul.allin.json.JSONObject error = obj.optJSONObject("error");
             Object code = error != null ? error.opt("code") : null;
-            if (code == null || code == org.json.JSONObject.NULL) code = obj.opt("code");
-            if (code != null && code != org.json.JSONObject.NULL) {
+            if (code == null || code == com.gaeul.allin.json.JSONObject.NULL) code = obj.opt("code");
+            if (code != null && code != com.gaeul.allin.json.JSONObject.NULL) {
                 String c = String.valueOf(code).toLowerCase(Locale.ROOT);
                 if (c.equals("insufficient_quota") || c.equals("quota_exceeded")
                         || c.equals("insufficient_balance") || c.equals("insufficient_credits")) return Kind.QUOTA;
@@ -111,7 +111,7 @@ public final class FailureLayers {
             }
             hasError = obj.has("error") && !obj.isNull("error") && !Boolean.FALSE.equals(obj.opt("error"));
             hasError |= Boolean.FALSE.equals(obj.opt("success")) || Boolean.FALSE.equals(obj.opt("ok"));
-            org.json.JSONObject data = obj.optJSONObject("data");
+            com.gaeul.allin.json.JSONObject data = obj.optJSONObject("data");
             if (data != null) hasError |= (data.has("error") && !data.isNull("error")
                     && !Boolean.FALSE.equals(data.opt("error"))) || Boolean.FALSE.equals(data.opt("success"));
         } catch (Exception ignored) { }
@@ -244,14 +244,14 @@ public final class FailureLayers {
      * 把一次失败的展示字段一次写进 JSON：kind、layer、是否影响推理、能否换模型、建议。
      * 调用方只需要再补自己的 statusCode 与原文。
      */
-    public static void describe(org.json.JSONObject into, Kind k) { describe(into, k, null); }
+    public static void describe(com.gaeul.allin.json.JSONObject into, Kind k) { describe(into, k, null); }
 
     /**
-     * 同 {@link #describe(org.json.JSONObject, Kind)}，但层由调用方指明。
+     * 同 {@link #describe(com.gaeul.allin.json.JSONObject, Kind)}，但层由调用方指明。
      * 同一个 Kind 在不同上下文属于不同层：没读出来的是“可领取活动”，
      * 还是“已有额度”，只有发起这次查询的人知道。
      */
-    public static void describe(org.json.JSONObject into, Kind k, Layer layerOverride) {
+    public static void describe(com.gaeul.allin.json.JSONObject into, Kind k, Layer layerOverride) {
         if (into == null) return;
         try {
             Layer l = layerOverride != null ? layerOverride : layer(k);
@@ -259,15 +259,15 @@ public final class FailureLayers {
             into.put("failureLayer", name(l));
             into.put("failureLayerLabel", layerLabel(l));
             into.put("failureLabel", label(k));
-            into.put("affectsInference", org.json.JSONObject.NULL);
-            into.put("canTryOtherModel", org.json.JSONObject.NULL);
+            into.put("affectsInference", com.gaeul.allin.json.JSONObject.NULL);
+            into.put("canTryOtherModel", com.gaeul.allin.json.JSONObject.NULL);
             String a = advice(k);
             if (!a.isEmpty()) into.put("advice", a);
             else into.remove("advice");
         } catch (Exception ignored) { }
     }
     /** 保留已有分类和 transportKind，仅在执行结果未知时覆盖执行建议。 */
-    public static void describeExecution(org.json.JSONObject into, boolean sent, boolean unknown) {
+    public static void describeExecution(com.gaeul.allin.json.JSONObject into, boolean sent, boolean unknown) {
         if (into == null) return;
         try {
             if (sent && unknown) into.put("advice", advice(Kind.UNKNOWN_EXECUTION));

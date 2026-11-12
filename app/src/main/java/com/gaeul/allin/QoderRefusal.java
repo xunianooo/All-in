@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.util.List;
 import java.util.Set;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * The refusal Android answers from what it knows, instead of asking Qoder: a model the account's

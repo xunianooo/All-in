@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 public final class GiftRefreshConcurrencyOfflineTest {

@@ -9,7 +9,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.zip.GZIPInputStream;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Real loopback HTTP pacing, measured at complete SSE events, never at TCP packet boundaries. */
 public final class GatewayStreamingHttpTest {

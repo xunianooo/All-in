@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** The domestic WorkBuddy native signature refusal's one recovery, without any network. */
 public final class WorkBuddyNativeSignatureRecoveryOfflineTest {

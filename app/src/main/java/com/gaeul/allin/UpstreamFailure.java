@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.util.Locale;
 
 /** A rejection is different from an unknown result after sending. No general inference retry. */

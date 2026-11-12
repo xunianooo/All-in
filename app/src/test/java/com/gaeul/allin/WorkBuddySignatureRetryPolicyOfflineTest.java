@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Retry eligibility, safety and one-retry budget tests for WorkBuddy signature refusals. */
 public final class WorkBuddySignatureRetryPolicyOfflineTest {

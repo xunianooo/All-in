@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 public final class WorkBuddyRefusalPolicyOfflineTest {
     static void ok(boolean v) { if(!v) throw new AssertionError(); }

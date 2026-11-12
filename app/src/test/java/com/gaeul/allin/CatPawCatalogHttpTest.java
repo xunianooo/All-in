@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public class CatPawCatalogHttpTest {
     static class Fixture extends HttpURLConnection {

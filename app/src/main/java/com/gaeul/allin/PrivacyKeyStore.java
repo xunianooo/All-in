@@ -54,7 +54,7 @@ final class PrivacyKeyStore implements PrivacyMasker.KeyProvider {
             } catch (Exception e) { throw new PrivacyMasker.PrivacyException(); }
         }
     }
-    private static void privateFile(File file) throws IOException {
+    static void privateFile(File file) throws IOException {
         if (File.separatorChar == '\\') {
             privateWindowsFile(file);
             return;

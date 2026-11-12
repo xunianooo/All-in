@@ -10,8 +10,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** WorkBuddy Chat compatibility rules pinned to opencode-workbuddy-auth 0.2.26. */
 public final class WorkBuddyChatPolicy {

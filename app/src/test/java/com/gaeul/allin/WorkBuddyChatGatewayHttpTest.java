@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Actual Gateway loopback requests for Chat policy and response bridges, on both sites. */
 public final class WorkBuddyChatGatewayHttpTest {

@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Focused offline contracts for ZCode and MiniMax Anthropic reasoning projection. */
 public final class AnthropicReasoningPolicyOfflineTest {
@@ -197,12 +197,12 @@ public final class AnthropicReasoningPolicyOfflineTest {
                 "MiniMax-M2.7") == 0, "unverified model uses its live catalog value");
         AnthropicReasoningPolicy.ModelCapabilities previewCatalog=AnthropicReasoningPolicy.ModelCapabilities.miniMaxFromCatalog(
                 "MiniMax-live-preview",new JSONObject().put("thinkingMode","forced_on")
-                        .put("efforts",new org.json.JSONArray().put("low").put("max").put("default")));
+                        .put("efforts",new com.gaeul.allin.json.JSONArray().put("low").put("max").put("default")));
         check(previewCatalog.forcedOn && previewCatalog.effortField
                 && previewCatalog.efforts.contains("max") && !previewCatalog.efforts.contains("default"),
                 "live MiniMax thinking mode and effortOptions drive conversion");
         AnthropicReasoningPolicy.ModelCapabilities switchableCatalog=AnthropicReasoningPolicy.ModelCapabilities.miniMaxFromCatalog(
-                "MiniMax-live-switch",new JSONObject().put("thinkingMode","switchable").put("efforts",new org.json.JSONArray()));
+                "MiniMax-live-switch",new JSONObject().put("thinkingMode","switchable").put("efforts",new com.gaeul.allin.json.JSONArray()));
         check(switchableCatalog.switchable && !switchableCatalog.forcedOn && !switchableCatalog.effortField,
                 "live switchable mode is distinct from effort field support");
         check(AnthropicReasoningPolicy.preferredOutputLimit(AnthropicReasoningPolicy.Provider.MINIMAX,
@@ -292,7 +292,7 @@ public final class AnthropicReasoningPolicyOfflineTest {
         JSONObject m31Catalog = ZCodeAnthropic.toAnthropic(json("{\"model\":\"MiniMax-M3.1-Flash\",\"max_tokens\":30000,\"reasoning_effort\":\"xhigh\"}"), true,
                 AnthropicReasoningPolicy.Provider.MINIMAX,
                 AnthropicReasoningPolicy.ModelCapabilities.miniMaxFromCatalog("MiniMax-M3.1-Flash",
-                        new JSONObject().put("thinkingMode", "forced_on").put("efforts", new org.json.JSONArray().put("low").put("xhigh"))));
+                        new JSONObject().put("thinkingMode", "forced_on").put("efforts", new com.gaeul.allin.json.JSONArray().put("low").put("xhigh"))));
         check("xhigh".equals(m31Catalog.getJSONObject("output_config").getString("effort")),
                 "live M3.1-Flash metadata still drives output_config.effort");
         JSONObject dynamicMini = new JSONObject().put("model", "MiniMax-dynamic").put("max_tokens", 100000).put("reasoning_effort", "xhigh");

@@ -4,7 +4,7 @@ import java.io.*;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Converts a Trae event stream to OpenAI chat completion SSE. */
 public final class TraeStream extends InputStream {

@@ -10,8 +10,8 @@ import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Projection of OpenAI chat requests onto Qoder's agent chat protocol. */
 public final class QoderProtocol {

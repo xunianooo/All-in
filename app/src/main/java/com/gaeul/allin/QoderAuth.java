@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -623,9 +623,9 @@ public class QoderAuth {
     public static String textOf(Object content) {
         if (content == null) return "";
         if (content instanceof String) return (String) content;
-        if (content instanceof org.json.JSONArray) {
+        if (content instanceof com.gaeul.allin.json.JSONArray) {
             StringBuilder sb = new StringBuilder();
-            org.json.JSONArray arr = (org.json.JSONArray) content;
+            com.gaeul.allin.json.JSONArray arr = (com.gaeul.allin.json.JSONArray) content;
             for (int i = 0; i < arr.length(); i++) {
                 Object part = arr.opt(i);
                 if (part instanceof JSONObject) {
@@ -645,8 +645,8 @@ public class QoderAuth {
      * 只移植文本主线路径（system 合并、user/assistant/tool 文本块、tools），
      * 图片与 tool-call 配对的完整实现见插件的 qoderMessages。
      */
-    public static JSONObject buildChatBody(SignIn si, org.json.JSONArray messages,
-                                           org.json.JSONArray tools, Integer maxTokens,
+    public static JSONObject buildChatBody(SignIn si, com.gaeul.allin.json.JSONArray messages,
+                                           com.gaeul.allin.json.JSONArray tools, Integer maxTokens,
                                            String modelKey, JSONObject modelConfig) throws Exception {
         StringBuilder sysText = new StringBuilder(QODER_SYS);
         StringBuilder userSys = new StringBuilder();
@@ -705,13 +705,13 @@ public class QoderAuth {
         o.put("task_id", "common");
         o.put("session_type", "app");
         if (modelConfig != null && modelConfig.length() > 0) o.put("model_config", modelConfig);
-        o.put("system", new org.json.JSONArray().put(sysBlock));
+        o.put("system", new com.gaeul.allin.json.JSONArray().put(sysBlock));
 
         // messages：第一条 system 承载 Qoder 系统行 + 用户系统词，其余按文本块平铺
-        org.json.JSONArray msgs = new org.json.JSONArray();
+        com.gaeul.allin.json.JSONArray msgs = new com.gaeul.allin.json.JSONArray();
         JSONObject sysMsg = new JSONObject();
         sysMsg.put("role", "system");
-        sysMsg.put("content", new org.json.JSONArray().put(sysBlock));
+        sysMsg.put("content", new com.gaeul.allin.json.JSONArray().put(sysBlock));
         msgs.put(sysMsg);
         for (int i = 0; i < messages.length(); i++) {
             JSONObject m = messages.optJSONObject(i);
@@ -722,7 +722,7 @@ public class QoderAuth {
             if (t.isEmpty()) continue;
             JSONObject mm = new JSONObject();
             mm.put("role", role);
-            org.json.JSONArray cb = new org.json.JSONArray();
+            com.gaeul.allin.json.JSONArray cb = new com.gaeul.allin.json.JSONArray();
             JSONObject tb = new JSONObject();
             tb.put("type", "text");
             tb.put("text", t);
@@ -735,7 +735,7 @@ public class QoderAuth {
         o.put("messages", msgs);
 
         if (tools != null && tools.length() > 0) {
-            org.json.JSONArray qt = new org.json.JSONArray();
+            com.gaeul.allin.json.JSONArray qt = new com.gaeul.allin.json.JSONArray();
             for (int i = 0; i < tools.length(); i++) {
                 JSONObject t = tools.optJSONObject(i);
                 if (t == null) continue;
@@ -762,7 +762,7 @@ public class QoderAuth {
      * 发送聊天请求并解析 SSE 事件流。
      * 返回 OpenAI 风格的 piece 数组：{text}/{reasoning}/{tool}/{error}。
      */
-    public static org.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody) throws Exception {
+    public static com.gaeul.allin.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody) throws Exception {
         return chatEvents(si, qoderBody, url -> NetworkPolicy.openHttp(url));
     }
 
@@ -799,12 +799,12 @@ public class QoderAuth {
             super("Qoder transport failed", cause); this.sentOrUnknown = sentOrUnknown;
         }
     }
-    public static org.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody, ConnectionFactory factory) throws Exception {
+    public static com.gaeul.allin.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody, ConnectionFactory factory) throws Exception {
         return chatEvents(si, qoderBody, factory, null);
     }
-    public static org.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody, ConnectionFactory factory,
+    public static com.gaeul.allin.json.JSONArray chatEvents(SignIn si, JSONObject qoderBody, ConnectionFactory factory,
                                                  RequestContext context) throws Exception {
-        org.json.JSONArray pieces = new org.json.JSONArray();
+        com.gaeul.allin.json.JSONArray pieces = new com.gaeul.allin.json.JSONArray();
         String wire = encodeBody(qoderBody.toString());
         String mkey = qoderBody.optJSONObject("model_config") == null ? ""
                 : qoderBody.optJSONObject("model_config").optString("key", "");
@@ -909,7 +909,7 @@ public class QoderAuth {
                     p.put("text", c);
                     pieces.put(p);
                 }
-                org.json.JSONArray tcs = delta.optJSONArray("tool_calls");
+                com.gaeul.allin.json.JSONArray tcs = delta.optJSONArray("tool_calls");
                 if (tcs != null) {
                     for (int i = 0; i < tcs.length(); i++) {
                         JSONObject tc = tcs.optJSONObject(i);
@@ -994,12 +994,12 @@ public class QoderAuth {
     }
 
     public static final class Catalog {
-        public final org.json.JSONArray models;
+        public final com.gaeul.allin.json.JSONArray models;
         public final JSONObject meta;
         public final boolean freeView;
         public final int discoveredCount;
-        public final org.json.JSONArray disabledModels;
-        private Catalog(org.json.JSONArray models, JSONObject meta, boolean freeView, int discoveredCount, org.json.JSONArray disabledModels) {
+        public final com.gaeul.allin.json.JSONArray disabledModels;
+        private Catalog(com.gaeul.allin.json.JSONArray models, JSONObject meta, boolean freeView, int discoveredCount, com.gaeul.allin.json.JSONArray disabledModels) {
             this.models = models; this.meta = meta; this.freeView = freeView; this.discoveredCount=discoveredCount; this.disabledModels=disabledModels;
         }
     }
@@ -1209,8 +1209,8 @@ public class QoderAuth {
             for (String scene : new String[]{"app", "chat"}) {
                 if (!root.has(scene)) continue;
                 Object value = root.opt(scene);
-                if (!(value instanceof org.json.JSONArray)) throw new java.io.IOException("Invalid scene");
-                found = true; org.json.JSONArray arr = (org.json.JSONArray)value;
+                if (!(value instanceof com.gaeul.allin.json.JSONArray)) throw new java.io.IOException("Invalid scene");
+                found = true; com.gaeul.allin.json.JSONArray arr = (com.gaeul.allin.json.JSONArray)value;
                 for (int i = 0; i < arr.length(); i++) {
                     Object item = arr.opt(i);
                     if (!(item instanceof JSONObject)) throw new java.io.IOException("Invalid entry");
@@ -1232,8 +1232,8 @@ public class QoderAuth {
                 }
             }
             if (!found) throw new java.io.IOException("Missing scenes");
-            org.json.JSONArray models = new org.json.JSONArray(); JSONObject meta = new JSONObject();
-            boolean paidOff = false, paidOn = false; int discovered=0; org.json.JSONArray disabled=new org.json.JSONArray();
+            com.gaeul.allin.json.JSONArray models = new com.gaeul.allin.json.JSONArray(); JSONObject meta = new JSONObject();
+            boolean paidOff = false, paidOn = false; int discovered=0; com.gaeul.allin.json.JSONArray disabled=new com.gaeul.allin.json.JSONArray();
             long catalogObservedAt = System.currentTimeMillis();
             for (java.util.Map.Entry<String, JSONObject> e : ordered.entrySet()) {
                 String k = e.getKey(); JSONObject m = e.getValue();
@@ -2219,7 +2219,7 @@ public class QoderAuth {
      * 解析上游给出的这一对 token。
      *
      * <p><b>解析器的异常绝不作为 cause 外传。</b>JSON 解析器的报文是「它正在读的正文」派生的
-     * （不同的 org.json 实现、不同的 Android 版本都可能把被解析的片段或键值写进 message），
+     * （不同的 com.gaeul.allin.json 实现、不同的 Android 版本都可能把被解析的片段或键值写进 message），
      * 而这段正文正是新签发的一对 token。把它挂成 cause，就等于让一次失败把明文凭据带进日志、
      * 带进任何打印堆栈的地方。所以这里只抛一个不带正文的安全异常：诊断只留阶段与类别。
      *
@@ -2245,7 +2245,7 @@ public class QoderAuth {
     /** 一次性 token 交换响应体的上限（沿用原来的 64 KiB）。 */
     static final int MAX_REFRESH_RESPONSE_BYTES = 64 * 1024;
 
-    public static org.json.JSONArray fetchModels(SignIn si, JSONObject metaOut) {
+    public static com.gaeul.allin.json.JSONArray fetchModels(SignIn si, JSONObject metaOut) {
         try {
             Catalog catalog = readCatalog(si);
             if (metaOut != null) {
@@ -2253,6 +2253,6 @@ public class QoderAuth {
                 while (keys.hasNext()) { String key = keys.next(); metaOut.put(key, catalog.meta.get(key)); }
             }
             return catalog.models;
-        } catch (Exception ignored) { return new org.json.JSONArray(); }
+        } catch (Exception ignored) { return new com.gaeul.allin.json.JSONArray(); }
     }
 }

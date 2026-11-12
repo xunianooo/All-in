@@ -1260,6 +1260,7 @@
             <span class="project-info-text"><span class="project-info-kicker">开源项目</span><span class="project-info-meta">github.com/xunianooo/All-in</span></span><span class="project-info-arrow" aria-hidden="true">↗</span>
           </a>
       </div>
+      <p style="font-size:0.75rem;color:var(--text-muted);margin:8px 4px 16px;"><a href="licenses.html" style="color:#a5b4fc;">第三方开源许可</a> · 1.2.24-test</p>
       <div id="setup-anchor"></div>
 
       <!-- 一键连接到 ETA（手机上的 agent）：复制连接信息 + 拉起 ETA -->
@@ -5473,11 +5474,13 @@
       const request = billingRequests[id] = (billingRequests[id] || 0) + 1;
       const previous = providerBillingCache[id];
       try {
-        if (['qoder_cn','workbuddy','raccoon','trae-cn','catpaw','antigravity'].includes(id)) {
+        if (['qoder_cn','workbuddy','workbuddy-ai','raccoon','trae-cn','catpaw','antigravity'].includes(id)) {
+          try {
           const sync = await fetch(API_BASE + '/api/auth/' + encodeURIComponent(id) + '/sync-models', id === 'trae-cn' ? {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'} : undefined);
           const catalog = await sync.json();
-          if (!sync.ok || catalog.ok !== true) throw new Error('catalog refresh failed');
-          await loadConfig();
+          if (!sync.ok || catalog.ok !== true) { if (id !== 'workbuddy' && id !== 'workbuddy-ai') throw new Error('catalog refresh failed'); }
+          if (sync.ok && catalog.ok === true) await loadConfig();
+          } catch (catalogError) { if (id !== 'workbuddy' && id !== 'workbuddy-ai') throw catalogError; }
         }
         const r = await fetch(API_BASE + '/api/providers/billing?provider=' + encodeURIComponent(id));
         const data = await r.json();
@@ -5499,7 +5502,7 @@
       snapshot.accounts.forEach(a => {
         const row = document.createElement('p'), allowance = a.allowance || {};
         const parts = [String(a.name || a.accountId)];
-        if (a.stale || snapshot.stale) parts.push('上次快照');
+        if ((a.stale || snapshot.stale) && a.allowance) parts.push('上次快照');
         const direct = billingAllowanceText(allowance); if (direct) parts.push('剩余 ' + direct);
         (Array.isArray(allowance.windows) ? allowance.windows : []).forEach(w => {
           if (!w) return;
@@ -5508,8 +5511,8 @@
         });
         const observed = allowance.observedAt || a.snapshotAt;
         if (observed) { const date = new Date(observed); if (!isNaN(date.getTime())) parts.push('时间 ' + date.toLocaleString()); }
-        else if (a.stale || snapshot.stale) parts.push('时间未知');
-        if (a.errorKind) parts.push('刷新失败：' + String(a.errorKind));
+        else if ((a.stale || snapshot.stale) && a.allowance) parts.push('时间未知');
+        if (a.errorKind) parts.push(({not_provided:'尚未接入官方额度查询',unsupported:'暂不支持额度查询',key_not_supported:'静态 Key 不支持账户额度，请使用官方登录账号',sign_in_required:'登录已失效，请重新登录',unknown:'官方未返回可识别的额度',unavailable:'额度查询失败，请检查网络后重试'})[a.errorKind] || '额度查询失败，请重试');
         row.textContent = parts.join(' · '); box.appendChild(row);
         if (id === 'minimax-code') {
           const pools = Array.isArray(allowance.modelPools) ? allowance.modelPools : [];

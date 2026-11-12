@@ -8,7 +8,7 @@ import java.net.URL;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public class WorkBuddyNativeTransportOfflineTest {
     static void check(boolean ok, String why) { if(!ok)throw new AssertionError(why); }

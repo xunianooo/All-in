@@ -7,7 +7,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Offline contract checks for the WorkBuddy filter-refusal stream, against the plugin's

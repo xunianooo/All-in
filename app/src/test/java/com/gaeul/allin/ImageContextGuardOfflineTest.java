@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 public final class ImageContextGuardOfflineTest {
     static void ok(boolean x) { if (!x) throw new AssertionError(); }
     static String rep(String s, int n) { StringBuilder b = new StringBuilder(); while (n-- > 0) b.append(s); return b.toString(); }

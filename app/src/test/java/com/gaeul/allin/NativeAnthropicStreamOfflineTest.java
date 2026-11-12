@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class NativeAnthropicStreamOfflineTest {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }

@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import java.util.Map;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Response name restoration helpers for the WorkBuddy Chat compatibility policy. */
 public final class WorkBuddyChatResponsePolicy {

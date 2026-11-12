@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 public final class ResponsesBridgeOfflineTest {
     static void check(boolean value, String why) { if (!value) throw new AssertionError(why); }

@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Qoder's failure classification and request limits, read from the plugin as the first authority:

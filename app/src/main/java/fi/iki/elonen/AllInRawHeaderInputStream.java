@@ -26,8 +26,9 @@ import java.util.concurrent.TimeUnit;
  * deadline thread that closes the underlying stream when the budget expires, which unblocks the read
  * that the guard is waiting on even if the socket read timeout is infinite. It therefore aborts the
  * connection (no 408 is written, because NanoHTTPD may be mid-response and its writer must stay
- * single-threaded) and never touches the accept thread. The budget covers only the header phase:
- * request bodies and long streaming responses are never bounded here.</p>
+ * single-threaded) and never touches the accept thread. Headers and incoming bodies have separate
+ * absolute budgets. The body timer is retired as soon as Content-Length bytes arrive; long outgoing
+ * streaming responses are never bounded by these ingress timers.</p>
  *
  * <p>Each header arms its own deadline generation token, and the token is claimed exactly once,
  * under a short lock, by whichever side gets there first: the reader that finished the header or the
@@ -63,6 +64,21 @@ public final class AllInRawHeaderInputStream extends InputStream {
         HEADER_DEADLINES.setKeepAliveTime(30L, TimeUnit.SECONDS);
         HEADER_DEADLINES.allowCoreThreadTimeOut(true);
     }
+    static final long BODY_DEADLINE_MILLIS = 30000L;
+    private static final ScheduledThreadPoolExecutor BODY_DEADLINES = new ScheduledThreadPoolExecutor(1, runnable -> {
+        Thread thread = new Thread(runnable, "allin-body-deadline");
+        thread.setDaemon(true);
+        return thread;
+    });
+    static {
+        BODY_DEADLINES.setRemoveOnCancelPolicy(true);
+        BODY_DEADLINES.setKeepAliveTime(30L, TimeUnit.SECONDS);
+        BODY_DEADLINES.allowCoreThreadTimeOut(true);
+    }
+    private final long bodyDeadlineMillis;
+    private long armedBodyGeneration;
+    private ScheduledFuture<?> bodyDeadline;
+    private volatile boolean bodyDeadlineExceeded;
     private final InputStream source;
     private final OutputStream response;
     private final long headerDeadlineMillis;
@@ -89,9 +105,14 @@ public final class AllInRawHeaderInputStream extends InputStream {
 
     /** Same contract with an explicit header budget; production uses {@link #HEADER_DEADLINE_MILLIS}. */
     AllInRawHeaderInputStream(InputStream source, OutputStream response, long headerDeadlineMillis) {
+        this(source, response, headerDeadlineMillis, BODY_DEADLINE_MILLIS);
+    }
+
+    AllInRawHeaderInputStream(InputStream source, OutputStream response, long headerDeadlineMillis, long bodyDeadlineMillis) {
         this.source = source;
         this.response = response;
         this.headerDeadlineMillis = headerDeadlineMillis;
+        this.bodyDeadlineMillis = Math.max(1L, bodyDeadlineMillis);
     }
 
     @Override public int read() throws IOException {
@@ -104,7 +125,7 @@ public final class AllInRawHeaderInputStream extends InputStream {
         if (bytes == null) throw new NullPointerException();
         if (offset < 0 || length < 0 || offset > bytes.length - length) throw new IndexOutOfBoundsException();
         if (length == 0) return 0;
-        if (closed) return -1;
+        if (closed) { if (bodyDeadlineExceeded) throw bodyDeadlineFailure(null); return -1; }
         if (header != null && headerPosition < header.length) {
             int count = Math.min(length, header.length - headerPosition);
             System.arraycopy(header, headerPosition, bytes, offset, count);
@@ -112,10 +133,18 @@ public final class AllInRawHeaderInputStream extends InputStream {
             return count;
         }
         if (bodyRemaining > 0) {
-            int count = source.read(bytes, offset, (int) Math.min((long) length, bodyRemaining));
-            if (count < 0) { closed = true; return -1; }
-            bodyRemaining -= count;
-            return count;
+            try {
+                int count = source.read(bytes, offset, (int) Math.min((long) length, bodyRemaining));
+                if (bodyDeadlineExceeded) throw bodyDeadlineFailure(null);
+                if (count < 0) { retireBodyDeadline(); closed = true; return -1; }
+                bodyRemaining -= count;
+                if (bodyRemaining == 0 && !retireBodyDeadline()) throw bodyDeadlineFailure(null);
+                return count;
+            } catch (IOException failure) {
+                if (bodyDeadlineExceeded) throw bodyDeadlineFailure(failure);
+                retireBodyDeadline();
+                throw failure;
+            }
         }
         if (!loadHeader()) return -1;
         return read(bytes, offset, length);
@@ -132,6 +161,7 @@ public final class AllInRawHeaderInputStream extends InputStream {
                 // be handed out as a valid header.
                 throw headerDeadlineFailure(null);
             }
+            if (complete && bodyRemaining > 0) armBodyDeadline();
             return complete;
         } catch (IOException | RuntimeException | Error failure) {
             disarmHeaderDeadline(generation);
@@ -139,6 +169,51 @@ public final class AllInRawHeaderInputStream extends InputStream {
         } finally {
             if (deadline != null) deadline.cancel(false);
         }
+    }
+
+    private void armBodyDeadline() throws IOException {
+        synchronized (deadlineGuard) {
+            if (closed) throw new IOException("Connection closed");
+            bodyDeadlineExceeded = false;
+            final long generation = ++generationCounter;
+            armedBodyGeneration = generation;
+            try {
+                bodyDeadline = BODY_DEADLINES.schedule(() -> bodyDeadlineExpired(generation), bodyDeadlineMillis, TimeUnit.MILLISECONDS);
+            } catch (RejectedExecutionException unavailable) {
+                armedBodyGeneration = 0L;
+                closed = true;
+                throw new IOException("Request body deadline unavailable");
+            }
+        }
+    }
+
+    private boolean retireBodyDeadline() {
+        synchronized (deadlineGuard) {
+            boolean complete = !bodyDeadlineExceeded;
+            armedBodyGeneration = 0L;
+            if (bodyDeadline != null) { bodyDeadline.cancel(false); bodyDeadline = null; }
+            return complete;
+        }
+    }
+
+    void bodyDeadlineExpired(long generation) {
+        synchronized (deadlineGuard) {
+            if (generation != armedBodyGeneration || armedBodyGeneration == 0L) return;
+            armedBodyGeneration = 0L;
+            bodyDeadlineExceeded = true;
+            closed = true;
+        }
+        // source is the raw socket stream, not NanoHTTPD's BufferedInputStream.
+        try { source.close(); } catch (IOException ignored) { }
+    }
+
+    long armedBodyGeneration() { synchronized (deadlineGuard) { return armedBodyGeneration; } }
+    static int pendingBodyDeadlines() { return BODY_DEADLINES.getQueue().size(); }
+
+    private SocketTimeoutException bodyDeadlineFailure(Throwable cause) {
+        SocketTimeoutException failure = new SocketTimeoutException("Request body not complete within " + bodyDeadlineMillis + " ms");
+        if (cause != null) failure.initCause(cause);
+        return failure;
     }
 
     /** Arms one budget for exactly one header and returns its generation token. */
@@ -308,5 +383,9 @@ public final class AllInRawHeaderInputStream extends InputStream {
     static int pendingHeaderDeadlines() { return HEADER_DEADLINES.getQueue().size(); }
 
     @Override public int available() { return 0; }
-    @Override public void close() throws IOException { closed = true; source.close(); }
+    @Override public void close() throws IOException {
+        synchronized (deadlineGuard) { closed = true; armedGeneration = 0L; }
+        retireBodyDeadline();
+        source.close();
+    }
 }

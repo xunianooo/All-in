@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -120,7 +120,7 @@ public final class CatPawAuth {
                     body.write(b, 0, n);
                 }
             }
-            Object parsed = new org.json.JSONTokener(body.toString("UTF-8")).nextValue();
+            Object parsed = new com.gaeul.allin.json.JSONTokener(body.toString("UTF-8")).nextValue();
             JSONArray rows;
             if (parsed instanceof JSONArray) rows = (JSONArray) parsed;
             else if (parsed instanceof JSONObject) {

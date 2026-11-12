@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.util.*;
 public class DeepSeekToolBridgeTest {
  static void review(DeepSeekToolBridge.Prepared p, JSONObject req) throws Exception {

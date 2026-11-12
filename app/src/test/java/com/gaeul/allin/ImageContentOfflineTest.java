@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.security.MessageDigest;
 public class ImageContentOfflineTest {
  static void check(boolean b,String s){if(!b)throw new AssertionError(s);}

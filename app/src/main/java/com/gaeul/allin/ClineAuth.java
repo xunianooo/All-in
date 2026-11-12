@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -978,7 +978,7 @@ public class ClineAuth {
             for (Map.Entry<String, String> e : clientHeaders(null).entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) return null;
-            return new org.json.JSONTokener(readStream(conn.getInputStream())).nextValue();
+            return new com.gaeul.allin.json.JSONTokener(readStream(conn.getInputStream())).nextValue();
         } finally { conn.disconnect(); }
     }
 
@@ -1173,7 +1173,7 @@ public class ClineAuth {
                 }
             }
             try { result.json = new JSONObject(bytes.toString("UTF-8")); }
-            catch (org.json.JSONException e) { result.kind = FailureLayers.Kind.SCHEMA; return result; }
+            catch (com.gaeul.allin.json.JSONException e) { result.kind = FailureLayers.Kind.SCHEMA; return result; }
             if (businessFailure(result.json)) result.kind = FailureLayers.Kind.BUSINESS;
         } catch (Exception e) {
             result.kind = FailureLayers.transport(e);

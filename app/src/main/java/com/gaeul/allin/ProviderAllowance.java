@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Converts known provider usage responses into a minimal account-level snapshot.
  * Null means no readable allowance; it never means exhausted. */
@@ -108,6 +108,39 @@ public final class ProviderAllowance {
             return done(out);
         } catch(Exception e) { return null; }
     }
+    /** Qoder's three sequential pools; unknown is never converted into a zero. */
+    public static JSONObject fromQoder(JSONObject raw, long at) {
+        if (raw == null || !"qoder".equals(raw.optString("displayMode"))) return null;
+        JSONObject usage = raw.optJSONObject("qoderUsage"); if (usage == null) return null;
+        String[][] fields = {{"userQuota", "user_quota"}, {"addOnQuota", "add_on_quota"}, {"orgResourcePackage", "org_resource_package"}};
+        try {
+            JSONObject out = base("credits", at); double sum = 0; int known = 0;
+            for (int i = 0; i < fields.length; i++) {
+                Object value = usage.has(fields[i][0]) ? usage.opt(fields[i][0]) : usage.opt(fields[i][1]);
+                if (!(value instanceof JSONObject)) continue;
+                JSONObject pool = (JSONObject) value;
+                Object capRaw = pool.opt("total"); if (!(capRaw instanceof Number)) capRaw = pool.opt("cap");
+                if (!(capRaw instanceof Number)) return null;
+                double cap = ((Number) capRaw).doubleValue();
+                if (!Double.isFinite(cap) || cap < 0) return null;
+                double left = 0;
+                if (cap > 0) {
+                    Object usedRaw = pool.opt("used"), leftRaw = pool.opt("remaining");
+                    if (usedRaw instanceof Number) left = cap - ((Number) usedRaw).doubleValue();
+                    else if (leftRaw instanceof Number) left = ((Number) leftRaw).doubleValue();
+                    else return null;
+                    if (!Double.isFinite(left)) return null;
+                    left = Math.max(0, Math.min(cap, left));
+                }
+                JSONObject w = new JSONObject().put("name", QoderCredits.TURN_POOLS[i]).put("unit", "credits").put("remaining", left).put("total", cap);
+                if (cap > 0) w.put("remainingPercent", 100 * left / cap);
+                out.getJSONArray("windows").put(w); sum += left; known++;
+            }
+            if (known == 0 || !Double.isFinite(sum)) return null;
+            return out.put("remaining", sum);
+        } catch (Exception bad) { return null; }
+    }
+
     private static Double miniPercent(Object value) {
         if (value instanceof String) {
             String text=((String)value).trim();

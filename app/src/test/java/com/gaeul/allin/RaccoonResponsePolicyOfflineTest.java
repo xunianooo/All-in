@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Offline contract checks for the Raccoon response shaping the plugin performs. */
 public final class RaccoonResponsePolicyOfflineTest {

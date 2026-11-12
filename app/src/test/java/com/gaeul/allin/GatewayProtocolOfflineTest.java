@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.io.*;
 import java.lang.reflect.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class GatewayProtocolOfflineTest {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }

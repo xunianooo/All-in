@@ -13,7 +13,7 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** User-controlled vendor experiments. No permission or running state implies immunity to freezing. */
 final class BackgroundKeepAlive {

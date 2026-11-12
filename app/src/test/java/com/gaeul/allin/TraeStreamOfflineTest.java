@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public class TraeStreamOfflineTest {
     static InputStream input(String s){return new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8));}

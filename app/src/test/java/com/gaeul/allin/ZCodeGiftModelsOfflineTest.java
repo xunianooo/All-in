@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * ZCodeGift 的模型清单与型号额度，对着上游 {@code bucketModels} /{@code startPlan} /{@code giftSpent}
@@ -29,7 +29,7 @@ public final class ZCodeGiftModelsOfflineTest {
         }
     }
 
-    /** org.json 的 JSONArray.equals 比的是对象身份，这里按名字逐个比。 */
+    /** com.gaeul.allin.json 的 JSONArray.equals 比的是对象身份，这里按名字逐个比。 */
     static void eqModels(java.util.List<String> actual, String message, String... want) {
         eq(java.util.Arrays.asList(want), actual, message);
     }

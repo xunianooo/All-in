@@ -14,8 +14,8 @@ import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
 
 /**
  * Standalone HTTP transport for WorkBuddy China Claude Messages.
@@ -354,7 +354,7 @@ public final class WorkBuddyNativeTransport {
     private static boolean protectedMessage(JSONObject message) {
         if(message==null)return false;
         if(message.has("signature"))return true;
-        org.json.JSONArray blocks=message.optJSONArray("content");
+        com.gaeul.allin.json.JSONArray blocks=message.optJSONArray("content");
         for(int i=0;blocks!=null && i<blocks.length();i++) {
             JSONObject block=blocks.optJSONObject(i);
             if(block!=null && (block.has("signature") || "redacted_thinking".equals(block.optString("type"))))return true;

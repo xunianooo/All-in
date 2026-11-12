@@ -18,7 +18,8 @@ final class IngressBody {
     enum Classification { OK, INVALID_FRAMING, UNSUPPORTED_TRANSFER_ENCODING, UNSUPPORTED_CONTENT_ENCODING,
         TOO_LARGE, INCOMPLETE, TIMEOUT, INVALID_UTF8, IO_ERROR }
 
-    static final class Result {
+    static final class Result implements AutoCloseable {
+        private IngressMemoryBudget.Lease memory;
         final String text;
         final int status;
         final String message;
@@ -30,6 +31,25 @@ final class IngressBody {
             this.classification = classification; this.bytesRead = bytesRead; this.mustClose = status != 200;
         }
         boolean ok() { return status == 200; }
+        public void close() { if (memory != null) memory.close(); }
+    }
+
+    /** Transfers a prepared body to a held-response worker without freeing a running worker's lease. */
+    static final class Handoff {
+        private Result result;
+        private boolean started;
+        Handoff(Result result) { this.result = result; }
+        synchronized Result begin() {
+            if (result == null) return null;
+            started = true;
+            return result;
+        }
+        synchronized void cancelPending() {
+            if (!started && result != null) { result.close(); result = null; }
+        }
+        synchronized void finish() {
+            if (result != null) { result.close(); result = null; }
+        }
     }
 
     private IngressBody() { }
@@ -45,6 +65,9 @@ final class IngressBody {
         return read(in, headers, method, limit, null);
     }
     static Result read(InputStream in, Map<String, String> headers, String method, int limit, OutboundLimiter.Cancellation cancellation) {
+        return read(in,headers,method,limit,cancellation,30000L);
+    }
+    static Result read(InputStream in, Map<String, String> headers, String method, int limit, OutboundLimiter.Cancellation cancellation, long timeoutMillis) {
         if (cancellation != null && cancellation.isCancelled())
             return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, 0);
         int bound = limit > 0 ? Math.min(limit, MAX_LIMIT) : DEFAULT_LIMIT;
@@ -89,24 +112,35 @@ final class IngressBody {
         if (!"POST".equalsIgnoreCase(method) && !"PUT".equalsIgnoreCase(method) && !"PATCH".equalsIgnoreCase(method))
             return fail(400, "Request body not supported for method", Classification.INVALID_FRAMING, 0);
         if (in == null) return fail(400, "Incomplete request body", Classification.INCOMPLETE, 0);
+        long allocation = IngressMemoryBudget.allocationBytes(length);
+        if (allocation > IngressMemoryBudget.MAX_BYTES) return fail(413,"Request body exceeds device memory budget",Classification.TOO_LARGE,0);
+        IngressMemoryBudget.Lease memory=IngressMemoryBudget.acquire(allocation);
+        if(memory==null) return fail(503,"Concurrent request body capacity exhausted",Classification.IO_ERROR,0);
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(1,Math.min(30000L,timeoutMillis)));
         long count = 0;
+        boolean retained = false;
         try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(length, 8192));
-            byte[] buffer = new byte[8192];
+            // Content-Length is already validated: one exact allocation avoids BAOS growth/copies.
+            byte[] buffer = new byte[(int) length];
             while (count < length) {
+                if(System.nanoTime()>=deadline) return fail(408,"Request body deadline exceeded",Classification.TIMEOUT,count);
                 if (cancellation != null && cancellation.isCancelled())
                     return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, count);
-                int n = in.read(buffer, 0, (int) Math.min(buffer.length, length - count));
+                int n = in.read(buffer, (int) count, (int) Math.min(8192L, length - count));
+                if(System.nanoTime()>=deadline) return fail(408,"Request body deadline exceeded",Classification.TIMEOUT,count+Math.max(0,n));
                 if (cancellation != null && cancellation.isCancelled())
                     return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, count);
                 if (n < 0) return fail(400, "Incomplete request body", Classification.INCOMPLETE, count);
                 if (n == 0) return fail(400, "Unable to read request body", Classification.IO_ERROR, count);
-                out.write(buffer, 0, n); count += n;
+                count += n;
             }
             try {
                 String text = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(out.toByteArray())).toString();
-                return success(text, count);
+                        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(buffer)).toString();
+                Result result = success(text, count);
+                result.memory = memory;
+                retained = true;
+                return result;
             } catch (CharacterCodingException e) {
                 return fail(400, "Invalid UTF-8 request body", Classification.INVALID_UTF8, count);
             }
@@ -116,6 +150,9 @@ final class IngressBody {
             if (cancellation != null && cancellation.isCancelled())
                 return fail(408, "Request body cancelled or deadline exceeded", Classification.TIMEOUT, count);
             return fail(400, "Unable to read request body", Classification.IO_ERROR, count);
+        } finally {
+            memory.readComplete();
+            if (!retained) memory.close();
         }
     }
     private static String trimOws(String s) {

@@ -18,7 +18,7 @@ import android.webkit.WebViewClient;
 import android.webkit.WebResourceRequest;
 import android.widget.*;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -43,7 +43,8 @@ public class LoginActivity extends Activity {
     }
     private WebView webView;
     private TextView subtitleView;
-    private boolean isPolling = false;
+    private volatile boolean isPolling = false;
+    private volatile int workBuddyGeneration;
     private String currentState = "";
     private String currentProvider = "workbuddy";
     private volatile RaccoonAuthorizationFlow raccoonAuthorizationFlow;
@@ -65,6 +66,8 @@ public class LoginActivity extends Activity {
     private String codexFlowId = "";
     private String qoderFlowId = "";
     private String catpawSid = "";
+    private int accountSaveGeneration;
+    private boolean accountSaveInFlight;
 
     private static final String DEEPSEEK_ORIGIN = "https://chat.deepseek.com";
     // Evaluated only in the top-level page, with a second origin check inside JS.
@@ -146,7 +149,11 @@ public class LoginActivity extends Activity {
             @Override
             public void onClick(View v) {
                 if ("trae-cn".equals(currentProvider)) checkTraeStatus();
-                else extractTokenFromPage(true);
+                else if ("workbuddy".equals(currentProvider)) {
+                    if (!isPolling && !currentState.isEmpty()) startWorkBuddyPolling(currentState, ++workBuddyGeneration);
+                    else if (!isPolling) initWorkBuddyAuth();
+                    else Toast.makeText(LoginActivity.this,"正在确认官方身份和保存结果，请稍候",Toast.LENGTH_SHORT).show();
+                } else extractTokenFromPage(true);
             }
         });
         titleRow.addView(doneBtn);
@@ -298,8 +305,12 @@ public class LoginActivity extends Activity {
 
         setContentView(root);
 
-        // 根据供应商启动不同通道
-        routeLogin();
+        // Wait for local cookie cleanup; never call the vendor's logout/revocation API.
+        android.webkit.WebStorage.getInstance().deleteAllData();
+        CookieManager.getInstance().removeAllCookies(done -> {
+            if(isFinishing() || isDestroyed())return;
+            CookieManager.getInstance().flush();webView.clearCache(true);webView.clearHistory();routeLogin();
+        });
     }
 
     private String getProviderDisplayName(String id) {
@@ -481,52 +492,28 @@ public class LoginActivity extends Activity {
     }
 
     private void initWorkBuddyAuth() {
-        subtitleView.setText("正在连接腾讯官方申请授权通道...");
-        new Thread(scopedLoginTask(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    String stateUrl = "https://copilot.tencent.com/v2/plugin/auth/state?platform=CLI";
-                    HttpURLConnection conn = NetworkPolicy.openHttp(stateUrl);
-                    conn.setRequestMethod("POST");
-                    conn.setDoOutput(true);
-                    conn.setConnectTimeout(15000);
-                    conn.setReadTimeout(15000);
-                    conn.setRequestProperty("Content-Type", "application/json");
-
-                    OutputStream os = conn.getOutputStream();
-                    os.write("{}".getBytes("UTF-8"));
-                    os.flush();
-                    os.close();
-
-                    if (conn.getResponseCode() >= 200 && conn.getResponseCode() < 400) {
-                        BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = br.readLine()) != null) sb.append(line);
-                        br.close();
-
-                        JSONObject res = new JSONObject(sb.toString());
-                        JSONObject data = res.optJSONObject("data");
-                        if (data != null) {
-                            final String authUrl = data.optString("authUrl");
-                            currentState = data.optString("state");
-
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    subtitleView.setText("输入手机号短信验证码或微信登录，完成后自动入池");
-                                    webView.loadUrl(authUrl);
-                                    startWorkBuddyPolling();
-                                }
-                            });
-                            return;
-                        }
-                    }
-                    showError("获取腾讯官方授权链接失败");
-                } catch (final Exception e) {
-                    showError("网络连接失败: " + e.getMessage());
-                }
+        final int generation=++workBuddyGeneration;
+        subtitleView.setText("正在申请官方授权；本次登录不会移除已入池账号…");
+        new Thread(scopedLoginTask(() -> {
+            try {
+                LocalBridge.Result response=LocalBridge.requestResult("GET","/api/auth/workbuddy/init-login",null,20000);
+                JSONObject data=new JSONObject(response.body);
+                if(response.status<200 || response.status>=300 || !data.optBoolean("ok",false))throw new java.io.IOException();
+                final String state=data.optString("state","");
+                final String authUrl=data.optString("authUrl","");
+                java.net.URI url=java.net.URI.create(authUrl);
+                if(state.isEmpty() || !"https".equalsIgnoreCase(url.getScheme()) || url.getHost()==null || url.getRawUserInfo()!=null)
+                    throw new java.io.IOException();
+                mainHandler.post(() -> {
+                    if(isFinishing() || isDestroyed() || generation!=workBuddyGeneration)return;
+                    currentState=state;
+                    subtitleView.setText("请在官方页面选择个人或团队账号；确认保存成功后才会完成入池");
+                    webView.loadUrl(authUrl);
+                    startWorkBuddyPolling(state,generation);
+                });
+            } catch(Exception failed) {
+                mainHandler.post(() -> {if(!isFinishing() && !isDestroyed() && generation==workBuddyGeneration)
+                    subtitleView.setText("无法取得官方授权链接，请检查网关后点完成入池重试");});
             }
         })).start();
     }
@@ -1346,67 +1333,42 @@ public class LoginActivity extends Activity {
         })).start();
     }
 
-    private void startWorkBuddyPolling() {
-        isPolling = true;
-        new Thread(scopedLoginTask(new Runnable() {
-            @Override
-            public void run() {
-                int count = 0;
-                while (isPolling && count < 100) {
-                    count++;
-                    try {
-                        Thread.sleep(2500);
-                        if (!isPolling) break;
-
-                        String tokenUrl = "https://copilot.tencent.com/v2/plugin/auth/token?state=" + URLEncoder.encode(currentState, "UTF-8");
-                        HttpURLConnection conn = NetworkPolicy.openHttp(tokenUrl);
-                        conn.setRequestMethod("GET");
-                        conn.setConnectTimeout(10000);
-                        conn.setReadTimeout(10000);
-
-                        int code = conn.getResponseCode();
-                        InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
-                        BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = br.readLine()) != null) sb.append(line);
-                        br.close();
-
-                        JSONObject resJson = new JSONObject(sb.toString());
-                        int respCode = resJson.optInt("code", -1);
-
-                        if (respCode == 0) {
-                            JSONObject data = resJson.optJSONObject("data");
-                            String token = "";
-                            String username = "WorkBuddy用户";
-
-                            if (data != null) {
-                                token = data.optString("accessToken", "");
-                                if (token.isEmpty()) token = data.optString("access_token", "");
-                                if (token.isEmpty()) token = data.optString("token", "");
-
-                                username = data.optString("name", "");
-                                if (username.isEmpty()) username = data.optString("nickname", "");
-                                if (username.isEmpty()) username = data.optString("userId", "WorkBuddy用户");
-                            }
-
-                            if (!token.isEmpty()) {
-                                isPolling = false;
-                                saveAccountToGateway(currentProvider, username, token);
-
-                                final String finalUser = username;
-                                mainHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        Toast.makeText(LoginActivity.this, "🎉 " + getProviderDisplayName(currentProvider) + " 账号 [" + finalUser + "] 已成功加入网关池！", Toast.LENGTH_LONG).show();
-                                        finish();
-                                    }
-                                });
-                                return;
-                            }
-                        }
-                    } catch (Exception ignored) {}
-                }
+    private void startWorkBuddyPolling(final String state, final int generation) {
+        isPolling=true;
+        new Thread(scopedLoginTask(() -> {
+            final long deadline=System.currentTimeMillis()+5*60*1000L;
+            while(isPolling && generation==workBuddyGeneration && System.currentTimeMillis()<deadline) {
+                try {
+                    Thread.sleep(1500);
+                    if(!isPolling || generation!=workBuddyGeneration)break;
+                    LocalBridge.Result response=LocalBridge.requestResult("GET","/api/auth/workbuddy/poll-login?state="
+                            +URLEncoder.encode(state,"UTF-8"),null,20000);
+                    JSONObject result=new JSONObject(response.body);
+                    if(response.accountSaved() && "success".equals(result.optString("status"))) {
+                        isPolling=false;
+                        mainHandler.post(() -> {
+                            if(isFinishing() || isDestroyed() || generation!=workBuddyGeneration)return;
+                            Toast.makeText(LoginActivity.this,"WorkBuddy 账号已确认保存并入池",Toast.LENGTH_LONG).show();
+                            finish();
+                        });
+                        return;
+                    }
+                    if(response.status==410 || response.status==409 || response.status>=500 || !result.optBoolean("ok",false)) {
+                        isPolling=false;
+                        mainHandler.post(() -> {
+                            if(isFinishing() || isDestroyed() || generation!=workBuddyGeneration)return;
+                            if(response.status==410 || response.status==409)currentState="";
+                            subtitleView.setText("尚未确认入池：请检查官方账号选择，点完成入池重试；已有账号保持不变");
+                        });
+                        return;
+                    }
+                } catch(InterruptedException cancelled) { Thread.currentThread().interrupt();break; }
+                catch(Exception transientFailure) { /* State/token retrieval GET can be retried; refresh is never replayed here. */ }
+            }
+            if(generation==workBuddyGeneration) {
+                isPolling=false;
+                mainHandler.post(() -> {if(!isFinishing() && !isDestroyed() && generation==workBuddyGeneration){
+                    currentState="";subtitleView.setText("授权等待超时，请点完成入池重新发起");}});
             }
         })).start();
     }
@@ -1660,7 +1622,7 @@ public class LoginActivity extends Activity {
                     if (!deepSeekActive || deepSeekComplete || isFinishing() || generation != deepSeekGeneration
                             || webView == null || !isDeepSeekOrigin(webView.getUrl())) return;
                     try {
-                        Object decoded = new org.json.JSONTokener(result == null ? "null" : result).nextValue();
+                        Object decoded = new com.gaeul.allin.json.JSONTokener(result == null ? "null" : result).nextValue();
                         if (!(decoded instanceof String) || ((String) decoded).isEmpty()) {
                             if (manual) showError("未检测到登录状态，请先在官方页面完成登录和验证。");
                             return;
@@ -1774,6 +1736,9 @@ public class LoginActivity extends Activity {
     }
 
     private void saveAccountToGateway(final String providerId, final String name, final String token) {
+        if (isFinishing() || isDestroyed() || accountSaveInFlight) return;
+        accountSaveInFlight = true;
+        final int generation = ++accountSaveGeneration;
         new Thread(scopedLoginTask(new Runnable() {
             @Override
             public void run() {
@@ -1784,17 +1749,18 @@ public class LoginActivity extends Activity {
                     body.put("provider", providerId);
 
                     // raw socket：明文 HTTP 在本机被系统禁止
-                    String resp = LocalBridge.post("/api/auth/" + providerId + "/add", body.toString());
-                    final int code = (resp != null) ? 200 : 0;
-
+                    final LocalBridge.Result response = LocalBridge.postResult("/api/auth/" + providerId + "/add", body.toString());
                     mainHandler.post(new Runnable() {
                         @Override
                         public void run() {
-                            if (code >= 200 && code < 300) {
+                            if (isFinishing() || isDestroyed() || generation != accountSaveGeneration) return;
+                            accountSaveInFlight = false;
+                            if (response.accountSaved()) {
                                 Toast.makeText(LoginActivity.this, "🎉 " + getProviderDisplayName(providerId) + " 账号 [" + name + "] 已成功加入网关池！", Toast.LENGTH_LONG).show();
                                 finish();
                             } else {
-                                Toast.makeText(LoginActivity.this, "入池失败，状态码: " + code, Toast.LENGTH_SHORT).show();
+                                subtitleView.setText(response.accountFailureMessage());
+                                Toast.makeText(LoginActivity.this, response.accountFailureMessage(), Toast.LENGTH_LONG).show();
                             }
                         }
                     });
@@ -1802,7 +1768,9 @@ public class LoginActivity extends Activity {
                     mainHandler.post(new Runnable() {
                         @Override
                         public void run() {
-                            Toast.makeText(LoginActivity.this, "保存账号异常: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                            if (isFinishing() || isDestroyed() || generation != accountSaveGeneration) return;
+                            accountSaveInFlight = false;
+                            Toast.makeText(LoginActivity.this, "保存账号失败，请检查网关后重试", Toast.LENGTH_SHORT).show();
                         }
                     });
                 }
@@ -1831,6 +1799,9 @@ public class LoginActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        accountSaveGeneration++;
+        workBuddyGeneration++;
+        accountSaveInFlight = false;
         raccoonOAuthGeneration++;
         RaccoonAuthorizationFlow raccoonFlow = raccoonAuthorizationFlow;
         raccoonAuthorizationFlow = null;

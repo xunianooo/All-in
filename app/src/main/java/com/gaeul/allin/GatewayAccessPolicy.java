@@ -17,8 +17,13 @@ final class GatewayAccessPolicy {
                 || "/backend-api/codex/models".equals(path);
     }
     static boolean management(String path) { return path != null && ("/api".equals(path) || path.startsWith("/api/")) && !"/api/health".equals(path); }
+    static boolean staticRoute(String path) {
+        return "/".equals(path) || "/index.html".equals(path) || "/dashboard.html".equals(path) || "/licenses.html".equals(path)
+                || "/icon.png".equals(path) || "/favicon.ico".equals(path) || "/favicon.png".equals(path)
+                || (path != null && path.matches("/provider-icons/[a-z0-9_-]+[.](svg|png)"));
+    }
     static boolean publicRoute(String path) {
-        return "/".equals(path) || "/index.html".equals(path) || "/dashboard.html".equals(path)
+        return "/".equals(path) || "/index.html".equals(path) || "/dashboard.html".equals(path) || "/licenses.html".equals(path)
                 || "/icon.png".equals(path) || "/favicon.ico".equals(path) || "/favicon.png".equals(path)
                 || "/auth/callback".equals(path) || "/api/health".equals(path)
                 || (path != null && path.matches("/provider-icons/[a-z0-9_-]+\\.(svg|png)"));

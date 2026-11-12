@@ -51,3 +51,12 @@ assert.equal(view('minimax-code','m',{context:1048576}).text,'1M'); assert(!view
 assert(!html.includes("('🎉 ' + data.message)"));
 
 assert.equal(view('minimax-code','m',{contextWindow:512000}).text,'500K');
+
+// WorkBuddy has no invented stale snapshot and no raw implementation error on the page.
+cache.workbuddy=ctx.billingSnapshot(null,{ok:true,models:{},accounts:[{accountId:'a',name:'one',errorKind:'not_provided'},{accountId:'b',name:'two',errorKind:'key_not_supported'}]},1000);
+parent=node();ctx.renderProviderBilling(parent,'workbuddy');
+const wbText=parent.children[1].children.map(n=>n.textContent).join(' ');
+assert(!wbText.includes('not_provided'));assert(!wbText.includes('上次快照'));assert(wbText.includes('静态 Key'));
+cache.workbuddy=ctx.billingSnapshot(null,{ok:true,models:{},accounts:[{accountId:'a',name:'one',allowance:{kind:'allowance',scope:'account',unit:'credits',remaining:0,windows:[]}}]},1000);
+parent=node();ctx.renderProviderBilling(parent,'workbuddy');assert(parent.children[1].children.some(n=>n.textContent.includes('剩余 0 积分')));
+console.log('WorkBuddy allowance UI regression PASS');

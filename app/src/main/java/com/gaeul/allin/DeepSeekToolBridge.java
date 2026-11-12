@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.util.*;
 import java.util.regex.*;
 
@@ -87,6 +87,6 @@ public final class DeepSeekToolBridge {
     }
     private static boolean validObject(String s){return validJson(s)&&s.trim().startsWith("{");}
     private static boolean validJson(String s){try{new Strict(s).run();return true;}catch(RuntimeException e){return false;}}
-    /** Strict JSON syntax: org.json's Android parser accepts non-JSON extensions. */
+    /** Strict JSON syntax: com.gaeul.allin.json's Android parser accepts non-JSON extensions. */
     private static final class Strict {final String s;int i;Strict(String s){this.s=s;}void ws(){while(i<s.length()&&" \t\r\n".indexOf(s.charAt(i))>=0)i++;}void fail(){throw new IllegalArgumentException();}boolean take(char c){ws();if(i<s.length()&&s.charAt(i)==c){i++;return true;}return false;}void run(){value(0);ws();if(i!=s.length())fail();}void value(int depth){if(depth>128)fail();ws();if(i>=s.length())fail();char c=s.charAt(i);if(c=='"'){str();return;}if(c=='{'){i++;if(take('}'))return;do{ws();str();if(!take(':'))fail();value(depth+1);if(take('}'))return;}while(take(','));fail();}else if(c=='['){i++;if(take(']'))return;do{value(depth+1);if(take(']'))return;}while(take(','));fail();}else {int st=i;while(i<s.length()&&",]} \t\r\n".indexOf(s.charAt(i))<0)i++;String t=s.substring(st,i);if(!t.equals("true")&&!t.equals("false")&&!t.equals("null")&&!t.matches("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"))fail();}}void str(){if(i>=s.length()||s.charAt(i++)!='"')fail();while(i<s.length()){char c=s.charAt(i++);if(c=='"')return;if(c<32)fail();if(c=='\\'){if(i>=s.length())fail();c=s.charAt(i++);if(c=='u'){for(int j=0;j<4;j++)if(i>=s.length()||Character.digit(s.charAt(i++),16)<0)fail();}else if("\"\\/bfnrt".indexOf(c)<0)fail();}}fail();}}
 }

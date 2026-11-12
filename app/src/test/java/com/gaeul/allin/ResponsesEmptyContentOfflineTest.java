@@ -2,8 +2,8 @@ package com.gaeul.allin;
 
 import fi.iki.elonen.NanoHTTPD;
 import java.nio.file.Files;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Regression: a valid tool-only Chat reply may contain an empty content string. */
 public final class ResponsesEmptyContentOfflineTest {

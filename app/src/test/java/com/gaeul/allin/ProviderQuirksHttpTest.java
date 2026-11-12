@@ -2,7 +2,7 @@ package com.gaeul.allin;
 import java.net.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.*;
 import java.nio.file.*;
 import java.lang.reflect.*;

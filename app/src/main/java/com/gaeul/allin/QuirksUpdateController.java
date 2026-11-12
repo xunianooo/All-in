@@ -9,7 +9,7 @@ import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 import java.util.concurrent.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** One controller per process. check() is synchronous and must run off the UI thread. */
 final class QuirksUpdateController {

@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -403,7 +403,7 @@ public final class CatPawToolBridge {
         Object parsed;
         try {
             new BoundedStrictJson(raw).run();
-            org.json.JSONTokener tokener = new org.json.JSONTokener(raw);
+            com.gaeul.allin.json.JSONTokener tokener = new com.gaeul.allin.json.JSONTokener(raw);
             parsed = tokener.nextValue();
             if (tokener.nextClean() != 0) return result;
         } catch (Exception e) { return result; }

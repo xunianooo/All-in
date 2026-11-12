@@ -11,6 +11,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -21,6 +22,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: '155.0.8059.41'
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
@@ -34,42 +39,11 @@ jobs:
           if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat offlineTests --no-daemon }
           else { ./gradlew offlineTests --no-daemon }
       - name: Dashboard setup and routing regressions
+        env:
+          ALLIN_CHROME: ${{ steps.chrome.outputs.chrome-path }}
         shell: bash
         run: |
-          node tests/dashboard-setup-key.cjs
-          node tests/dashboard-back-navigation.cjs
-          node tests/dashboard-endpoint-probe.cjs
-          node tests/dashboard-model-diagnostics.cjs
-          node tests/dashboard-gift-safety.cjs
-          node tests/dashboard-model-names.cjs
-          node tests/dashboard-model-billing.cjs
-          node tests/dashboard-routing-audit.cjs
-          node tests/dashboard-exposed.cjs
-          node tests/dashboard-background.cjs
-          node tests/dashboard-background-experiment.cjs
-          node tests/dashboard-heatmap.cjs
-          node tests/dashboard-live-status.cjs
-          node tests/dashboard-provider-management.cjs
-          node tests/dashboard-network.cjs
-          node tests/dashboard-usage-routing.cjs
-          node tests/dashboard-outbound.cjs
-          node tests/dashboard-resilience.cjs
-          node tests/dashboard-diagnostics.cjs
-          node tests/dashboard-combined.cjs
-          node tests/dashboard-q2.cjs
-          node tests/dashboard-image-body.cjs
-          node tests/dashboard-trae.cjs
-          node tests/dashboard-account-ops.cjs
-          node tests/dashboard-loomy-sync.cjs
-          node tests/dashboard-failover-save.cjs
-          node tests/dashboard-gateway-access.cjs
-          node tests/dashboard-listen-plan.cjs
-          node tests/dashboard-management-boundary.cjs
-          node tests/dashboard-minimax-pools.cjs
-          node tests/dashboard-workbuddy-harness.cjs
-          node tests/trae-login-recovery.cjs
-          node scripts/beta-dashboard-xss.cjs
-          node tests/dashboard-legacy-key-migration.cjs
+          node scripts/run-dashboard-regressions.cjs
       - name: Fresh setup HTTP integration
         shell: pwsh
         run: |

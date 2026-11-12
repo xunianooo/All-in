@@ -4,7 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 public class ProviderQuirksOfflineTest {
     static void check(boolean x){if(!x)throw new AssertionError();}
-    static void reject(String s)throws Exception{try{ProviderQuirks.parse(s.getBytes(StandardCharsets.UTF_8));throw new AssertionError("accepted: "+s);}catch(IllegalArgumentException|org.json.JSONException expected){}}
+    static void reject(String s)throws Exception{try{ProviderQuirks.parse(s.getBytes(StandardCharsets.UTF_8));throw new AssertionError("accepted: "+s);}catch(IllegalArgumentException|com.gaeul.allin.json.JSONException expected){}}
     static final String WB_CHAT="https://copilot.tencent.com/v2/chat/completions";
     static final String WB_NATIVE="https://copilot.tencent.com/v1/messages";
     static final String CHAT_ALL="{\"User-Agent\":\"A\",\"X-Requested-With\":\"XMLHttpRequest\",\"X-Product\":\"SaaS\","
@@ -198,7 +198,7 @@ public class ProviderQuirksOfflineTest {
     }
     static void rejectBytes(byte[] bytes) throws Exception {
         try{ProviderQuirks.parse(bytes);throw new AssertionError("accepted "+bytes.length+" bytes");}
-        catch(IllegalArgumentException|org.json.JSONException expected){}
+        catch(IllegalArgumentException|com.gaeul.allin.json.JSONException expected){}
     }
 
     /**

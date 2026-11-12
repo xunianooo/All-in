@@ -52,10 +52,42 @@ final class LocalBridge {
      * 发一个请求并返回响应正文（不解析状态码）。
      * 失败返回 null —— 调用方原本的 try/catch 语义保持不变。
      */
-    static String request(String method, String pathAndQuery, String body, int timeoutMs) {
+    static final class Result {
+        final int status; final String body,transportError;
+        Result(int status,String body,String error){this.status=status;this.body=body;this.transportError=error;}
+        static Result failure(String kind){return new Result(0,"",kind);}
+        boolean accountSaved() {
+            if (status < 200 || status >= 300 || !transportError.isEmpty()) return false;
+            try {
+                com.gaeul.allin.json.JSONTokener parser = new com.gaeul.allin.json.JSONTokener(body);
+                Object parsed = parser.nextValue();
+                if (!(parsed instanceof com.gaeul.allin.json.JSONObject) || parser.nextClean() != 0) return false;
+                com.gaeul.allin.json.JSONObject value = (com.gaeul.allin.json.JSONObject) parsed;
+                Object id = value.opt("id");
+                if (!Boolean.TRUE.equals(value.opt("ok")) || !(id instanceof String)
+                        || ((String) id).trim().isEmpty() || ((String) id).length() > 512) return false;
+                for (char c : ((String) id).toCharArray()) if (c < 32 || c == 127) return false;
+                return true;
+            } catch (Exception bad) { return false; }
+        }
+        String accountFailureMessage() {
+            // Never echo an authentication response, token, or transport exception text into the UI.
+            if (!transportError.isEmpty()) return "未收到完整保存确认，请检查网关连接后重试";
+            if (status == 401 || status == 403) return "本地管理身份校验失败，请返回首页后重新登录";
+            if (status == 409) return "账号已存在或正在处理，请检查账号池后重试";
+            if (status == 400 || status == 422) return "凭据无效或信息不完整，请重新完成官方授权";
+            if (status >= 500) return "网关保存失败，账号尚未确认入池，请重试";
+            return "未获得有效入池确认，请检查账号池后重试";
+        }
+    }
+    static Result postResult(String path,String body){return requestResult("POST",path,body,20000);}
+    static String request(String method,String path,String body,int timeoutMs){
+        Result r=requestResult(method,path,body,timeoutMs);return r.transportError.isEmpty()?r.body:null;
+    }
+    static Result requestResult(String method, String pathAndQuery, String body, int timeoutMs) {
         Socket socket = null;
         try {
-            String m = (method == null || method.isEmpty()) ? "GET" : method.toUpperCase();
+            String m = (method == null || method.isEmpty()) ? "GET" : method.toUpperCase(java.util.Locale.ROOT);
             String path = (pathAndQuery == null || pathAndQuery.isEmpty()) ? "/" : pathAndQuery;
             if (path.charAt(0) != '/') path = "/" + path;
             byte[] payload = (body == null) ? new byte[0] : body.getBytes("UTF-8");
@@ -93,24 +125,35 @@ final class LocalBridge {
             byte[] tmp = new byte[8192];
             int n;
             while ((n = is.read(tmp)) > 0) {
-                buf.write(tmp, 0, n);
+                if(buf.size()+n>8*1024*1024)return Result.failure("response_too_large");
+                buf.write(tmp,0,n);
             }
             byte[] all = buf.toByteArray();
 
             // 拆 header / body（按 ISO-8859-1 处理，避免多字节字符破坏偏移）
             String raw = new String(all, "ISO-8859-1");
             int split = raw.indexOf("\r\n\r\n");
-            if (split < 0) return null;
+            if(split<0)return Result.failure("invalid_response");
             String headerPart = raw.substring(0, split);
             byte[] bodyBytes = new byte[all.length - (split + 4)];
             System.arraycopy(all, split + 4, bodyBytes, 0, bodyBytes.length);
 
-            if (headerPart.toLowerCase().contains("transfer-encoding: chunked")) {
-                bodyBytes = dechunk(bodyBytes);
+            String crlf=new String(new char[]{13,10});
+            String[] statusLine=headerPart.split(crlf,2)[0].split(" ",3);
+            if(statusLine.length<2 || !statusLine[0].matches("HTTP/1[.][01]"))return Result.failure("invalid_status");
+            int status=Integer.parseInt(statusLine[1]);
+            if(status<100 || status>599)return Result.failure("invalid_status");
+            if(headerPart.toLowerCase(java.util.Locale.ROOT).contains("transfer-encoding: chunked"))bodyBytes=dechunk(bodyBytes);
+            else {
+                long declared=-1;
+                for(String line:headerPart.split(crlf))if(line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:")){
+                    if(declared>=0)return Result.failure("invalid_response");declared=Long.parseLong(line.substring(15).trim());
+                    if(declared<0 || declared!=bodyBytes.length)return Result.failure("incomplete_response");
+                }
             }
-            return new String(bodyBytes, "UTF-8");
+            return new Result(status,new String(bodyBytes,"UTF-8"),"");
         } catch (Throwable e) {
-            return null;
+            return Result.failure(e.getClass().getSimpleName());
         } finally {
             closeQuietly(socket);
         }
@@ -304,28 +347,18 @@ final class LocalBridge {
         }
     }
 
-    private static byte[] dechunk(byte[] data) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        int pos = 0;
-        while (pos < data.length) {
-            int nl = indexOfCrLf(data, pos);
-            if (nl < 0) break;
-            String sizeStr = new String(data, pos, nl - pos).trim();
-            int semi = sizeStr.indexOf(';');
-            if (semi > 0) sizeStr = sizeStr.substring(0, semi);
-            int size;
-            try {
-                size = Integer.parseInt(sizeStr, 16);
-            } catch (Throwable e) {
-                break;
-            }
-            if (size <= 0) break;
-            pos = nl + 2;
-            int end = Math.min(pos + size, data.length);
-            out.write(data, pos, end - pos);
-            pos = end + 2;
+    private static byte[] dechunk(byte[] data) throws java.io.IOException {
+        ByteArrayOutputStream out=new ByteArrayOutputStream();int pos=0;
+        while(pos<data.length){
+            int nl=indexOfCrLf(data,pos);if(nl<0)throw new java.io.IOException("incomplete chunk");
+            String text=new String(data,pos,nl-pos,"US-ASCII").trim();int semi=text.indexOf(';');if(semi>=0)text=text.substring(0,semi);
+            int size;try{size=Integer.parseInt(text,16);}catch(Exception bad){throw new java.io.IOException("invalid chunk");}
+            if(size<0)throw new java.io.IOException("invalid chunk");pos=nl+2;
+            if(size==0){if(indexOfCrLf(data,pos)<0)throw new java.io.IOException("incomplete trailer");return out.toByteArray();}
+            if(size>data.length-pos-2 || data[pos+size]!=13 || data[pos+size+1]!=10)throw new java.io.IOException("incomplete chunk");
+            out.write(data,pos,size);pos+=size+2;
         }
-        return out.toByteArray();
+        throw new java.io.IOException("missing terminal chunk");
     }
 
     private static int indexOfCrLf(byte[] data, int from) {

@@ -4,7 +4,7 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.GZIPOutputStream;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Synthetic transports; no socket or credentials. */
 public final class QoderStreamOfflineTest {

@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-import org.json.JSONTokener;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONTokener;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -67,7 +67,7 @@ public final class QoderTextTools {
     private JSONObject makeCall(String name, JSONObject args) throws IOException {
         if (name == null || name.trim().isEmpty() || schema(name) == null) throw error("undeclared text tool");
         try { bound(args.toString()); return new JSONObject().put("name", name).put("args", args.toString()); }
-        catch (org.json.JSONException e) { throw error("invalid tool call"); }
+        catch (com.gaeul.allin.json.JSONException e) { throw error("invalid tool call"); }
     }
     private Object strict(String s) throws IOException {
         bound(s);
@@ -111,7 +111,7 @@ public final class QoderTextTools {
                 boolean ok=type.equals("object") ? parsed instanceof JSONObject : type.equals("array") ? parsed instanceof JSONArray : type.equals("boolean") ? parsed instanceof Boolean : type.equals("number") ? parsed instanceof Number : type.equals("integer") ? parsed instanceof Number && ((Number)parsed).doubleValue()==Math.rint(((Number)parsed).doubleValue()) : type.equals("null") && parsed==JSONObject.NULL;
                 if(!ok) throw error("XML parameter does not match declared type");
             }
-            try { args.put(key,parsed); } catch (org.json.JSONException e) { throw error("invalid XML parameter"); }
+            try { args.put(key,parsed); } catch (com.gaeul.allin.json.JSONException e) { throw error("invalid XML parameter"); }
             pos=at+end.length();
         }
         // Validate the combined result too, including nesting and encoded size.

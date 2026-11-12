@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.util.*;
 public class TraeProtocolOfflineTest {
  static void check(boolean b){if(!b)throw new AssertionError();}

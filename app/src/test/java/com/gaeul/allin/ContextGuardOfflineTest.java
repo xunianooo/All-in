@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Standalone offline regression tests; run via test/offline/run-context-guard.sh. */
 public final class ContextGuardOfflineTest {

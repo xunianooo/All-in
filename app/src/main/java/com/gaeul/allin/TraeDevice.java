@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.security.*;
 import java.security.spec.*;
 import java.nio.charset.StandardCharsets;

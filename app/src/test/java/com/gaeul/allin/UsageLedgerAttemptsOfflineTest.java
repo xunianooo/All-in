@@ -4,8 +4,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.util.Calendar;
 import java.util.TimeZone;
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
 
 public class UsageLedgerAttemptsOfflineTest {
     static void eq(long got,long want,String what) { if(got!=want) throw new AssertionError(what+": "+got+" != "+want); }

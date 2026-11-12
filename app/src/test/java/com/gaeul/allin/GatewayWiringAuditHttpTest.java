@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.NanoHTTPD;
 import java.io.*;
 import java.net.*;
@@ -164,7 +164,7 @@ public final class GatewayWiringAuditHttpTest {
                 new VendorPolicyGatewayHttpTest.Reply(200,"application/json",VendorPolicyGatewayHttpTest.CHAT));
             VendorPolicyGatewayHttpTest.Gateway gateway=new VendorPolicyGatewayHttpTest.Gateway(
                     VendorPolicyGatewayHttpTest.config(VendorPolicyGatewayHttpTest.provider("zcode","openai","https://open.bigmodel.cn/api/paas/v4",model)),upstream,false)) {
-            org.json.JSONObject body=VendorPolicyGatewayHttpTest.body("zcode/"+model,false);
+            com.gaeul.allin.json.JSONObject body=VendorPolicyGatewayHttpTest.body("zcode/"+model,false);
             if("explicit".equals(mode)) body.put("max_tokens",7333);
             else if("explicit-above-catalog".equals(mode)) body.put("max_tokens",200000);
             else body.remove("max_tokens");

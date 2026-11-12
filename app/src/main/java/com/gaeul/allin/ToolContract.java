@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.math.BigDecimal;
 
 /** Strict structural validation only; never rewrites tool IDs or argument fragments. */

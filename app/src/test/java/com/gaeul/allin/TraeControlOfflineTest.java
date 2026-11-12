@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.lang.reflect.*;
 
 public final class TraeControlOfflineTest {

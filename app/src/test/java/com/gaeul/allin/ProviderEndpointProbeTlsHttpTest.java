@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import javax.net.ssl.*;
 import java.io.*;
 import java.net.*;

@@ -458,7 +458,7 @@ public class MainActivity extends Activity {
             if("file".equals(u.getScheme())) {
                 String path=u.getPath();
                 return (u.getAuthority()==null || u.getAuthority().isEmpty()) && path!=null
-                        && ("/android_asset/dashboard.html".equals(path) || "/android_asset/icon.png".equals(path)
+                        && ("/android_asset/dashboard.html".equals(path) || "/android_asset/licenses.html".equals(path) || "/android_asset/icon.png".equals(path)
                             || path.matches("/android_asset/provider-icons/[a-z0-9_-]+\\.(svg|png)"));
             }
             return false;
@@ -612,10 +612,10 @@ public class MainActivity extends Activity {
                 fos = new java.io.FileOutputStream(out, false);
                 fos.write(csv.getBytes("UTF-8"));
                 fos.flush();
-                return "{\"ok\":true,\"path\":" + org.json.JSONObject.quote(out.getAbsolutePath())
+                return "{\"ok\":true,\"path\":" + com.gaeul.allin.json.JSONObject.quote(out.getAbsolutePath())
                         + ",\"size\":" + out.length() + "}";
             } catch (Throwable e) {
-                return "{\"ok\":false,\"error\":" + org.json.JSONObject.quote(
+                return "{\"ok\":false,\"error\":" + com.gaeul.allin.json.JSONObject.quote(
                         e.getClass().getSimpleName() + ": " + e.getMessage()) + "}";
             } finally {
                 try {
@@ -642,8 +642,8 @@ public class MainActivity extends Activity {
                 request = BridgeRequestValidator.validate(method, pathAndQuery);
             } catch (IllegalArgumentException rejected) {
                 evalJs(webView, "window.__allInStreamEnd && window.__allInStreamEnd("
-                        + org.json.JSONObject.quote(reqId) + ",400,"
-                        + org.json.JSONObject.quote("bridge request rejected: "
+                        + com.gaeul.allin.json.JSONObject.quote(reqId) + ",400,"
+                        + com.gaeul.allin.json.JSONObject.quote("bridge request rejected: "
                                 + rejected.getMessage()) + ")");
                 return;
             }
@@ -656,17 +656,17 @@ public class MainActivity extends Activity {
                                 @Override
                                 public boolean onLine(String line) {
                                     evalJs(view, "window.__allInStreamChunk && window.__allInStreamChunk("
-                                            + org.json.JSONObject.quote(reqId) + ","
-                                            + org.json.JSONObject.quote(line) + ")");
+                                            + com.gaeul.allin.json.JSONObject.quote(reqId) + ","
+                                            + com.gaeul.allin.json.JSONObject.quote(line) + ")");
                                     return true;
                                 }
 
                                 @Override
                                 public void onDone(int status, String error) {
                                     evalJs(view, "window.__allInStreamEnd && window.__allInStreamEnd("
-                                            + org.json.JSONObject.quote(reqId) + ","
+                                            + com.gaeul.allin.json.JSONObject.quote(reqId) + ","
                                             + status + ","
-                                            + org.json.JSONObject.quote(error == null ? "" : error) + ")");
+                                            + com.gaeul.allin.json.JSONObject.quote(error == null ? "" : error) + ")");
                                 }
                             });
                 }
@@ -702,8 +702,8 @@ public class MainActivity extends Activity {
                 public void run() {
                     String result = doRequest(method, pathAndQuery, body);
                     final String script = "__allInBridgeDone("
-                            + org.json.JSONObject.quote(reqId) + ","
-                            + org.json.JSONObject.quote(result) + ")";
+                            + com.gaeul.allin.json.JSONObject.quote(reqId) + ","
+                            + com.gaeul.allin.json.JSONObject.quote(result) + ")";
                     final WebView view = webView;
                     if (view != null) {
                         view.post(new Runnable() {
@@ -727,7 +727,7 @@ public class MainActivity extends Activity {
         /** 请求行被校验器拒绝时回给面板的固定结构；此时不会建立 socket，也不会碰网关。 */
         private String bridgeRejected(String reason) {
             try {
-                org.json.JSONObject ret = new org.json.JSONObject();
+                com.gaeul.allin.json.JSONObject ret = new com.gaeul.allin.json.JSONObject();
                 ret.put("status", 400);
                 ret.put("body", "");
                 ret.put("error", "bridge request rejected: " + reason);
@@ -831,13 +831,13 @@ public class MainActivity extends Activity {
                     text = new String(bodyBytes, "UTF-8");
                 }
 
-                org.json.JSONObject ret = new org.json.JSONObject();
+                com.gaeul.allin.json.JSONObject ret = new com.gaeul.allin.json.JSONObject();
                 ret.put("status", status);
                 ret.put("body", text);
                 return ret.toString();
             } catch (Throwable t) {
                 try {
-                    org.json.JSONObject ret = new org.json.JSONObject();
+                    com.gaeul.allin.json.JSONObject ret = new com.gaeul.allin.json.JSONObject();
                     ret.put("status", 0);
                     ret.put("body", "");
                     ret.put("error", String.valueOf(t));
@@ -916,8 +916,8 @@ public class MainActivity extends Activity {
             byte[] buf = new byte[4096];
             int n;
             while ((n = in.read(buf)) != -1) bo.write(buf, 0, n);
-            org.json.JSONObject c = new org.json.JSONObject(new String(bo.toByteArray(), "UTF-8"));
-            org.json.JSONObject server = c.optJSONObject("server");
+            com.gaeul.allin.json.JSONObject c = new com.gaeul.allin.json.JSONObject(new String(bo.toByteArray(), "UTF-8"));
+            com.gaeul.allin.json.JSONObject server = c.optJSONObject("server");
             return server == null ? "" : server.optString("authKey", "").trim();
         } catch (Exception e) {
             return "";

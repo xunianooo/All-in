@@ -15,8 +15,9 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 29
-        versionName '1.2.23-test'
+        versionCode 32
+        versionName '1.2.26-test'
+        testInstrumentationRunner 'com.gaeul.allin.RepairInstrumentation'
     }
 
     signingConfigs {
@@ -38,10 +39,14 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Opt-in device testing must never replace the user's installed package or accounts.
+            if (project.hasProperty('isolatedTestInstall')) applicationIdSuffix '.repairtest'
+        }
         release {
             // 代码大量使用反射，禁用 R8 裁剪/混淆
             minifyEnabled false
-            signingConfig signingConfigs.release
+            signingConfig project.hasProperty('unsignedRelease') ? null : signingConfigs.release
         }
     }
 
@@ -51,9 +56,9 @@ android {
     }
 
     lint {
-        // 迁移期先不把 lint 当门禁
-        checkReleaseBuilds false
-        abortOnError false
+        // Release builds must pass lint; suppressions need a local, documented reason.
+        checkReleaseBuilds true
+        abortOnError true
     }
 }
 
@@ -64,10 +69,21 @@ dependencies {
 // ===== 原有 main() 风格离线测试：不改测试代码，用 JavaExec 驱动 =====
 // 测试文件原样放在 src/test/java，断言失败抛 AssertionError 即任务失败
 configurations { offlineTest }
-dependencies { offlineTest 'org.nanohttpd:nanohttpd:2.3.1' }
+dependencies {
+    offlineTest 'org.nanohttpd:nanohttpd:2.3.1'
+    // Windows-only durable rename for offline tests; not an Android implementation dependency.
+    offlineTest 'net.java.dev.jna:jna:5.17.0'
+}
 
 // 保留原有 9 个套件，并运行网关、Responses 和首次设置回归测试。
 def offlineTestMains = [
+        'com.gaeul.allin.WorkBuddyAllowanceRegressionTest',
+        'com.gaeul.allin.KeepAliveScheduleOfflineTest',
+        'com.gaeul.allin.ReleaseRepairOfflineTest',
+        'com.gaeul.allin.IngressBudgetRegressionTest',
+        'fi.iki.elonen.AllInRawBodyDeadlineTest',
+        'com.gaeul.allin.MultiAccountGatewayOfflineTest',
+        'com.gaeul.allin.WorkBuddyMultiAccountRegressionTest',
         'com.gaeul.allin.AntigravityClientOfflineTest',
         'com.gaeul.allin.AccountOpsGatewayOfflineTest',
         'com.gaeul.allin.GatewayAccessCatalogOfflineTest',
@@ -157,6 +173,7 @@ def offlineTestMains = [
         'com.gaeul.allin.ModelBillingMetadataOfflineTest',
         'com.gaeul.allin.MiniMaxModelMetadataOfflineTest',
         'com.gaeul.allin.ProviderAllowanceOfflineTest',
+        'com.gaeul.allin.MiniMaxAllowanceRegressionTest',
         'com.gaeul.allin.CatPawCatalogHttpTest',
         'com.gaeul.allin.ProviderBillingGatewayHttpTest',
         'com.gaeul.allin.ProviderBudgetParityGatewayHttpTest',
@@ -364,15 +381,17 @@ tasks.register('nativeAnthropicHttpTests', JavaExec) {
 }
 tasks.named('streamingHttpTests') { dependsOn 'nativeAnthropicHttpTests' }
 
-// Every JavaExec uses the real lazy on-disk privacy scope, isolated from user data.
+// Every JavaExec owns an isolated scope and a finalizer, including failure/timeout paths.
 tasks.withType(JavaExec).configureEach {
+    timeout = java.time.Duration.ofSeconds(120)
+    jvmArgs '-Dfile.encoding=UTF-8', '-Dsun.stdout.encoding=UTF-8', '-Dsun.stderr.encoding=UTF-8'
     doFirst {
-        def privateScope = java.nio.file.Files.createTempDirectory('allin-privacy-test-').toFile()
+        def parent = layout.buildDirectory.dir('private-test-scopes').get().asFile
+        parent.mkdirs()
+        def privateScope = java.nio.file.Files.createTempDirectory(parent.toPath(), 'scope-').toFile()
         systemProperty 'allin.test.privateDir', privateScope.absolutePath
+        systemProperty 'java.io.tmpdir', privateScope.absolutePath
         extensions.extraProperties.set('privacyTestScope', privateScope)
-    }
-    doLast {
-        if (extensions.extraProperties.has('privacyTestScope')) delete extensions.extraProperties.get('privacyTestScope')
     }
 }
 tasks.register('commercialFailoverHttpTests', JavaExec) {
@@ -427,19 +446,20 @@ tasks.named('streamingHttpTests') { dependsOn 'patienceRoutingHttpTests' }
     tasks.named('streamingHttpTests') { dependsOn taskName }
 }
 
-// Compile the bundled org.json first so javac resolves its unchecked JSONException
-// before Android's boot classpath, including on clean and incremental builds.
-def bundledJsonClasses = layout.buildDirectory.dir('bundled-json-classes')
-tasks.register('compileBundledJson', JavaCompile) {
-    source = fileTree('src/main/java/org/json') { include '**/*.java' }
-    classpath = files()
-    destinationDirectory = bundledJsonClasses
-    sourceCompatibility = '1.8'
-    targetCompatibility = '1.8'
-}
-tasks.withType(JavaCompile).configureEach {
-    if (name == 'compileReleaseJavaWithJavac') {
-        dependsOn 'compileBundledJson'
-        doFirst { options.bootstrapClasspath = files(bundledJsonClasses, options.bootstrapClasspath) }
+// Source and fixture text must have the same UTF-8 meaning on Windows and Unix.
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+
+// Finalizer registration must be outside configureEach (Gradle 9 forbids container mutation there).
+gradle.projectsEvaluated {
+    tasks.withType(JavaExec).toList().each { testTask ->
+        def cleanup = tasks.register("${testTask.name}PrivateScopeCleanup") {
+            doLast {
+                def props = testTask.extensions.extraProperties
+                if (props.has('privacyTestScope')) delete props.get('privacyTestScope')
+            }
+        }
+        testTask.finalizedBy cleanup
     }
 }
+
+// JSON lives in com.gaeul.allin.json: never override Android boot classes.

@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.util.*;
 import java.io.IOException;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public class QoderTextToolsOfflineTest {
     static JSONArray tools() throws Exception {

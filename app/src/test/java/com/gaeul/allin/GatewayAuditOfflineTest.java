@@ -7,7 +7,7 @@ import java.net.*;
 import java.nio.file.*;
 import java.lang.reflect.*;
 import java.util.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class GatewayAuditOfflineTest {
     static final class CountingSource extends ByteArrayInputStream {

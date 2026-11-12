@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Qoder's credits, read from an account's usage envelope as Qoder's own panel counts them.

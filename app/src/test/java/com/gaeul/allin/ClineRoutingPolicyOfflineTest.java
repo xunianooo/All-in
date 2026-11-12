@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class ClineRoutingPolicyOfflineTest {
     private static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }

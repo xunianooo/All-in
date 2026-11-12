@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.security.Signature;
 import java.nio.charset.StandardCharsets;
 public class TraeDeviceOfflineTest {

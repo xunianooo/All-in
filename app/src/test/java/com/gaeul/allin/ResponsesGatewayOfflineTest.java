@@ -7,7 +7,7 @@ import java.lang.reflect.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.atomic.*;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public final class ResponsesGatewayOfflineTest {
     static void check(boolean v,String m) { if(!v)throw new AssertionError(m); }

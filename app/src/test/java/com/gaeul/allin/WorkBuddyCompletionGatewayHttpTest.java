@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** WorkBuddy stream-to-nonstream status, synthetic upstream and no vendor calls. */
 public final class WorkBuddyCompletionGatewayHttpTest {

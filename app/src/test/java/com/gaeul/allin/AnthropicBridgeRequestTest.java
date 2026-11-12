@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Isolated request conversion regression tests. Uses only synthetic JSON fixtures. */
 public final class AnthropicBridgeRequestTest {
@@ -31,7 +31,7 @@ public final class AnthropicBridgeRequestTest {
                 .put("top_p", JSONObject.NULL)
                 .put("stream", JSONObject.NULL)
                 .put("stop_sequences", JSONObject.NULL)
-                .put("messages", new org.json.JSONArray().put(new JSONObject().put("role", "user").put("content", "hi")));
+                .put("messages", new com.gaeul.allin.json.JSONArray().put(new JSONObject().put("role", "user").put("content", "hi")));
         JSONObject converted = AnthropicBridge.requestToOpenAI(unset);
         check(!converted.has("temperature") && !converted.has("top_p"), "null sampling must stay unset");
         check(!converted.has("stream") && !converted.has("stop"), "null stream/stop must stay unset");
@@ -39,7 +39,7 @@ public final class AnthropicBridgeRequestTest {
         JSONObject kept = AnthropicBridge.requestToOpenAI(new JSONObject().put("temperature", 0.3).put("top_p", 0.9));
         check(Math.abs(kept.getDouble("temperature") - 0.3) < 1e-9, "temperature preserved");
         check(Math.abs(kept.getDouble("top_p") - 0.9) < 1e-9, "top_p preserved");
-        for (Object bad : new Object[] {"0.5", Boolean.TRUE, new org.json.JSONArray().put(1)}) {
+        for (Object bad : new Object[] {"0.5", Boolean.TRUE, new com.gaeul.allin.json.JSONArray().put(1)}) {
             rejects(new JSONObject().put("temperature", bad), "temperature must be a number", "temperature");
             rejects(new JSONObject().put("top_p", bad), "top_p must be a number", "top_p");
         }
@@ -71,7 +71,7 @@ public final class AnthropicBridgeRequestTest {
                 + "{\"type\":\"thinking\",\"thinking\":\"plan\",\"signature\":\"sig\"},"
                 + "{\"type\":\"redacted_thinking\",\"data\":\"opaque\"},"
                 + "{\"type\":\"text\",\"text\":\"answer\"}]}]}");
-        org.json.JSONArray messages = AnthropicBridge.requestToOpenAI(thinking).getJSONArray("messages");
+        com.gaeul.allin.json.JSONArray messages = AnthropicBridge.requestToOpenAI(thinking).getJSONArray("messages");
         check("answer".equals(messages.getJSONObject(0).getString("content")), "native-only thinking must not hide text");
         String[] badSystem = {"{\"system\":{\"type\":\"text\",\"text\":\"x\"}}", "{\"system\":[{\"type\":\"image\",\"source\":{}}]}",
                 "{\"system\":[42]}", "{\"system\":7}"};

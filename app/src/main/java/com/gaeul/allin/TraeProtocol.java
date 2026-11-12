@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.io.IOException;
 import java.util.*;
 import java.util.regex.*;
@@ -55,7 +55,7 @@ public final class TraeProtocol {
 
     private static String required(JSONObject o,String k) throws IOException { Object v=o.opt(k); if(!(v instanceof String)||((String)v).trim().isEmpty()) throw bad("missing "+k); return (String)v; }
     private static String requiredString(String value,String label) throws IOException { if(value==null||value.trim().isEmpty())throw bad("missing "+label); return value; }
-    // org.json's parser is deliberately permissive. Validate JSON grammar before using it.
+    // com.gaeul.allin.json's parser is deliberately permissive. Validate JSON grammar before using it.
     private static final class JsonCheck {
         final String s; int p; JsonCheck(String s){this.s=s;}
         void ws(){while(p<s.length() && " \t\r\n".indexOf(s.charAt(p))>=0)p++;}

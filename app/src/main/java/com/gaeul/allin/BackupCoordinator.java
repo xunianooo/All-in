@@ -2,8 +2,8 @@ package com.gaeul.allin;
 
 import java.security.MessageDigest;
 import java.util.Arrays;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Restore backend owns quiescing, CAS and the complete atomic commit/rollback transaction.

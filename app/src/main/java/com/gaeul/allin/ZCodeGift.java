@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -615,7 +615,7 @@ final class ZCodeGift {
     private static final ZCodeGiftBusyPolicy.BusyHold giftBusyHold = new ZCodeGiftBusyPolicy.BusyHold();
     static String safeBusinessCode(String body) {
         try {
-            org.json.JSONTokener parser=new org.json.JSONTokener(body);
+            com.gaeul.allin.json.JSONTokener parser=new com.gaeul.allin.json.JSONTokener(body);
             Object parsed=parser.nextValue();if(!(parsed instanceof JSONObject)||parser.nextClean()!=0)return null;
             JSONObject json=(JSONObject)parsed, error=json.optJSONObject("error");
             Object root=json.opt("code"), nested=error==null?null:error.opt("code");
@@ -669,7 +669,7 @@ final class ZCodeGift {
                 .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                 .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
                 .decode(java.nio.ByteBuffer.wrap(data)).toString();
-            org.json.JSONTokener tokener=new org.json.JSONTokener(text);
+            com.gaeul.allin.json.JSONTokener tokener=new com.gaeul.allin.json.JSONTokener(text);
             Object obj=tokener.nextValue();
             if (!(obj instanceof JSONObject) || tokener.nextClean()!=0) return null;
             return text;

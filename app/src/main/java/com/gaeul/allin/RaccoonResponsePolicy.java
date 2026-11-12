@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Raccoon's response side, as the community plugin shapes it: the model a client asked

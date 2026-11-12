@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.util.Iterator;
 
 /** Separate total request lifetime from the window for starting safe candidate attempts.
@@ -42,7 +42,7 @@ final class RequestTiming {
         out.remove("resting"); // Runtime status is never persisted as configuration.
         if (!out.has("enabled")) out.put("enabled", true);
         if (!out.has("maxTargets")) out.put("maxTargets", 3);
-        if (!out.has("targets")) out.put("targets", new org.json.JSONArray());
+        if (!out.has("targets")) out.put("targets", new com.gaeul.allin.json.JSONArray());
         return out;
     }
     static JSONObject merge(JSONObject stored, JSONObject patch) {

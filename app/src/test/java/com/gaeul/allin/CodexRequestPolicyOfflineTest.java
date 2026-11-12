@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.NanoHTTPD;
 import java.io.*;
 import java.net.*;
@@ -239,7 +239,8 @@ public final class CodexRequestPolicyOfflineTest {
     }
     static void clearFixtureRest() throws Exception {
         java.lang.reflect.Field field=GatewayServer.class.getDeclaredField("RESTS");field.setAccessible(true);
-        ((Map<?,?>)field.get(null)).remove("codex/m");
+        ((Map<?,?>)field.get(null)).keySet().removeIf(key -> "codex/m".equals(key)
+                || key instanceof String && ((String)key).startsWith("codex/m/"));
     }
     static void replayBoundary(boolean drop,int status,String response,int expectedSecond) throws Exception {
         clearFixtureRest();

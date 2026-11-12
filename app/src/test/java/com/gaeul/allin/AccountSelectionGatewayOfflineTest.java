@@ -2,8 +2,8 @@ package com.gaeul.allin;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import fi.iki.elonen.NanoHTTPD;
 
 /** Synthetic credentials and fake gift transport only; no provider network. */

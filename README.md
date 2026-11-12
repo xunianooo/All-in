@@ -6,7 +6,9 @@ All In 将不同供应商的账号、API 密钥和模型集中到一个本地服
 
 项目由 [Gaeul](https://github.com/xunianooo) 开发。All In 参考并移植了 Magpie 和社区插件的部分设计与实现；感谢原项目及各位贡献者，详见下方[致谢](#致谢)。
 
-> 当前仓库版本为 **1.2.23-test**（versionCode 29），是供真机验证的测试版本。供应商服务、客户端协议和系统后台策略都可能变化，现有测试不能代表所有账号、模型和设备均已验证。正式发布版本请以仓库的 Releases 页面为准。
+> 当前仓库版本为 **1.2.26-test**（versionCode 32），是供真机验证的测试版本。供应商服务、客户端协议和系统后台策略都可能变化，现有测试不能代表所有账号、模型和设备均已验证。正式发布版本请以仓库的 Releases 页面为准。
+
+最新变更与验证范围见 [1.2.26-test 发布说明](docs/RELEASE_1.2.26-test.md)。
 
 ## All In 能做什么
 
@@ -27,7 +29,7 @@ All In 将不同供应商的账号、API 密钥和模型集中到一个本地服
 - **账号与订阅类**：ZCode、WorkBuddy、Trae CN、CatPaw、小浣熊 Raccoon、Qoder CN、Cline、Codex、Antigravity、GitHub Copilot、MiniMax Code、DeepSeek 网页版。
 - **API Key 或其他配置方式**：WorkBuddy AI、Loomy、DeepSeek、SiliconFlow、OpenAI、Anthropic、OpenRouter、腾讯混元。
 
-登录方式、模型、可用功能和额度由对应供应商决定。部分适配依赖网页或社区协议，可能随上游更新而失效；Loomy 等供应商可能需要手动配置已有会话或凭据。请以应用内提示和供应商实际状态为准。
+登录方式、模型、可用功能和额度由对应供应商决定。部分适配依赖网页或社区协议，可能随上游更新而失效；Loomy 支持手机验证码登录与已有会话凭据；不同供应商的登录入口以面板实际支持为准。请以应用内提示和供应商实际状态为准。
 
 默认配置还包含 AgentMore、文心网页、Meoo、Runable、当贝和 Tabbit 的占位入口。这些入口不代表已经完成推理协议接入。
 

@@ -4,7 +4,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import fi.iki.elonen.NanoHTTPD;
 
 public final class LoomyInferenceGatewayHttpTest {

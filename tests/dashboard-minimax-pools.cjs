@@ -28,12 +28,7 @@ providerBillingCache['minimax-code']=billingSnapshot(providerBillingCache['minim
 root.replaceChildren(); renderProviderBilling(root,'minimax-code');
 check(root.textContent.includes('刷新失败，显示上次快照')&&root.textContent.includes('上次快照')&&root.textContent.includes('other'),'stale snapshot');
 document.body.dataset.result='PASS';`;
-const dir=fs.mkdtempSync(path.join(os.tmpdir(),'minimax-ui-'));
-try {
- const file=path.join(dir,'test.html');
- fs.writeFileSync(file,`<!doctype html><html><body><main id="root"></main><script>${functions}\ntry {${test}} catch(e) {document.body.dataset.result='FAIL';document.body.dataset.error=e.message}</script></body></html>`);
- const result=spawnSync('chromium',['--headless','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--dump-dom','file://'+file],{encoding:'utf8',timeout:30000});
- if(result.error) throw result.error;
- if(result.status!==0 || !result.stdout.includes('data-result="PASS"')) throw Error('Chromium UI test failed: '+result.stdout+'\n'+result.stderr);
- console.log('MiniMax model pools Chromium DOM PASS');
-} finally {fs.rmSync(dir,{recursive:true,force:true});}
+const fixtureHtml=`<!doctype html><html><body><main id="root"></main><script>${functions}\ntry {${test}} catch(e) {document.body.dataset.result='FAIL';document.body.dataset.error=e.message}</script></body></html>`;
+const out=require('./browser-fixture.cjs').dom(fixtureHtml);
+if(!out.includes('data-result="PASS"'))throw Error('MiniMax DOM regression failed: '+out);
+console.log('MiniMax model pools Chromium DOM PASS');

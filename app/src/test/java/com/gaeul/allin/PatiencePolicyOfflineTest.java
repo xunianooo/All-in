@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 import java.nio.file.*;
 import java.io.*;
 import fi.iki.elonen.NanoHTTPD;

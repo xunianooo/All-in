@@ -5,7 +5,7 @@ import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import javax.net.ssl.SSLException;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * 失败分层与分类的离线回归。

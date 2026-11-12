@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Coordinates refreshes for accounts sharing this instance. No persistence is performed here. */
 public final class AccountTokenCoordinator {

@@ -3,7 +3,7 @@ package com.gaeul.allin;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Queue;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class RaccoonAccountServiceOfflineTest {
     static class Mock implements RaccoonAccountService.Transport {

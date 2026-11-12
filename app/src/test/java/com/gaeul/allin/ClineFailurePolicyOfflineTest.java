@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * 夹具逐条对齐上游 opencode-cline-auth（第一事实源）：

@@ -137,7 +137,7 @@ final class BackupActivityController {
         }
         activity.runOnUiThread(() -> {
             synchronized (ownership) { if (destroyed || pendingPreview != preview) return; }
-            org.json.JSONObject s = preview.summary;
+            com.gaeul.allin.json.JSONObject s = preview.summary;
             final boolean damaged = preview.currentDamaged;
             // The snapshot slot only knows its newest generation; after a damaged-configuration
             // restore it still holds an older one, so say so instead of offering it silently.

@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -367,7 +367,7 @@ final class ResponsesBridge {
     }
     static JSONObject chatToResponses(JSONObject chat, String model) throws Exception {
         try { return chatToResponsesChecked(chat, model); }
-        catch (org.json.JSONException e) { throw new IllegalArgumentException("Invalid Chat request: " + e.getMessage(), e); }
+        catch (com.gaeul.allin.json.JSONException e) { throw new IllegalArgumentException("Invalid Chat request: " + e.getMessage(), e); }
     }
     private static JSONObject chatToResponsesChecked(JSONObject chat, String model) throws Exception {
         checkKeys(chat,new String[]{"model","messages","stream","stream_options","user","safety_identifier","max_tokens","max_completion_tokens","temperature","top_p","parallel_tool_calls","metadata","prompt_cache_key","service_tier","reasoning_effort","tools","tool_choice","response_format","n"});

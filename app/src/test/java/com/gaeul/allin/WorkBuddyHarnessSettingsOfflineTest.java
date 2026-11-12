@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
 import java.util.Map;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** The automatic policy must not expose the retired manual settings API. */
 public final class WorkBuddyHarnessSettingsOfflineTest {

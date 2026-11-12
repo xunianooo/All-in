@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public class ResponsesBridgeAuditTest {
     static void check(boolean b, String message) { if (!b) throw new AssertionError(message); }

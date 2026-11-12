@@ -1,8 +1,8 @@
 package com.gaeul.allin;
 
 import fi.iki.elonen.NanoHTTPD;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;

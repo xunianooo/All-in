@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Request-local wiring surface for WorkBuddy Chat gateways. */
 public final class WorkBuddyChatGatewayAdapter {

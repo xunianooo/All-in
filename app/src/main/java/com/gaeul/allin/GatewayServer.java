@@ -6,8 +6,8 @@ import fi.iki.elonen.NanoHTTPD.IHTTPSession;
 import fi.iki.elonen.NanoHTTPD.Response;
 import fi.iki.elonen.NanoHTTPD.Response.Status;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
@@ -750,6 +750,15 @@ public class GatewayServer extends NanoHTTPD {
         for (String key : new String[]{"access", "token", "refresh", "expires"}) c.remove(key);
         return c;
     }
+    private static String[] tokenFields(String provider) {
+        return "workbuddy".equals(provider) || "workbuddy-ai".equals(provider) ? WorkBuddyAuth.ROTATING_FIELDS
+                : new String[]{"access","token","refresh","expires"};
+    }
+    private static JSONObject tokenNonCredentials(String provider,JSONObject account) throws Exception {
+        JSONObject copy=new JSONObject(account.toString());
+        for(String field:tokenFields(provider))copy.remove(field);
+        return copy;
+    }
     /** A refresh the gateway refuses because the one-use value cannot be protected. */
     static class RefreshBlocked extends IOException {
         RefreshBlocked(String message) { super(message); }
@@ -1039,12 +1048,13 @@ public class GatewayServer extends NanoHTTPD {
         }
         // Throws only when the live file was not replaced, so callers can tell "not written" apart
         // from "written but possibly not durable" instead of guessing.
-        AtomicConfigFile.write(file, text.toString());
-        try { syncRefreshFenceDirectory(file.getAbsoluteFile().getParentFile()); }
+        boolean metadataDurable=AtomicConfigFile.writeFence(file, text.toString());
+        try { syncRefreshFenceDirectory(file.getAbsoluteFile().getParentFile(),metadataDurable); }
         catch (IOException notDurable) { return FENCE_PERSISTED_UNSYNCED; }
         return FENCE_PERSISTED;
     }
-    private static void syncRefreshFenceDirectory(File directory) throws IOException {
+    private static void syncRefreshFenceDirectory(File directory) throws IOException { syncRefreshFenceDirectory(directory,false); }
+    private static void syncRefreshFenceDirectory(File directory,boolean metadataDurable) throws IOException {
         if (directory == null) return;
         Runnable hook = refreshFenceSyncHookForTests;
         if (hook != null) {
@@ -1052,6 +1062,7 @@ public class GatewayServer extends NanoHTTPD {
             try { hook.run(); }
             catch (RuntimeException injected) { throw new IOException("refresh fence directory sync failed", injected); }
         }
+        if (metadataDurable) return; // The actual MoveFileExW call succeeded with WRITE_THROUGH.
         if (AtomicConfigFile.isAndroidRuntime(System.getProperty("java.vm.name", ""))) {
             try {
                 java.io.FileDescriptor fd = android.system.Os.open(directory.getAbsolutePath(), android.system.OsConstants.O_RDONLY, 0);
@@ -1317,6 +1328,7 @@ public class GatewayServer extends NanoHTTPD {
         if (provider == null || failure == null) return false;
         if ("qoder_cn".equals(provider)) return QoderAuth.refreshDefinitelyNotSent(failure);
         if ("antigravity".equals(provider)) return AntigravityAuth.provablyNotSent(failure);
+        if ("workbuddy".equals(provider) || "workbuddy-ai".equals(provider)) return WorkBuddyAuth.definitelyNotSent(failure);
         if (RaccoonRefreshService.PROVIDER.equals(provider)) return RaccoonRefreshSend.releasesReservation(failure);
         return false;
     }
@@ -1363,8 +1375,11 @@ public class GatewayServer extends NanoHTTPD {
     private static final ThreadLocal<String> ROUTE_SIGN_IN_HINT = new ThreadLocal<String>();
 
     private JSONObject ensureStoredToken(String provider, JSONObject account, String failedAccess) throws Exception {
-        if (!"github-copilot".equals(provider) && !"antigravity".equals(provider))
+        if (!"github-copilot".equals(provider) && !"antigravity".equals(provider)
+                && !"workbuddy".equals(provider) && !"workbuddy-ai".equals(provider))
             throw new IllegalArgumentException("unsupported token provider");
+        if (("workbuddy".equals(provider) || "workbuddy-ai".equals(provider)) && !"oauth".equals(account.optString("type")))
+            return new JSONObject(account.toString());
         final long epoch = affinityEpoch;
         final JSONObject[] readObject=new JSONObject[1];
         final String id = storedTokenIdentity(account);
@@ -1386,7 +1401,7 @@ public class GatewayServer extends NanoHTTPD {
                     if (backupRetired || epoch != affinityEpoch || current == null || current!=readObject[0]
                             || storedAccess(candidate).isEmpty() || !jsonEquivalent(current,expected)
                             || !key.equals(storedTokenIdentity(candidate))
-                            || !jsonEquivalent(tokenNonCredentials(expected),tokenNonCredentials(candidate))) {
+                            || !jsonEquivalent(tokenNonCredentials(p,expected),tokenNonCredentials(p,candidate))) {
                         // The exchange happened; only a known rotation is settled as spent.
                         settleRefreshFence(p, commitValue, rotated);
                         // 这一代账号已被换掉：为它记下的待写轮换不再属于任何账号。
@@ -1395,8 +1410,15 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     JSONObject copy = new JSONObject(configJson.toString());
                     JSONObject dest = storedTokenAccount(copy, p, key);
-                    for (String name : new String[]{"access", "token", "refresh", "expires"}) {
+                    for (String name : tokenFields(p)) {
                         if (candidate.has(name)) dest.put(name, candidate.get(name)); else dest.remove(name);
+                    }
+                    if ("workbuddy".equals(p) || "workbuddy-ai".equals(p)) {
+                        JSONObject cp=null; JSONArray ps=copy.optJSONArray("providers");
+                        for(int i=0;ps!=null && i<ps.length();i++){JSONObject row=ps.optJSONObject(i);if(row!=null && p.equals(row.optString("id")))cp=row;}
+                        if(cp!=null){JSONArray oldAccounts=new JSONArray(cp.optJSONArray("accounts").toString());
+                            for(int i=0;i<oldAccounts.length();i++)if(key.equals(storedTokenIdentity(oldAccounts.optJSONObject(i))))oldAccounts.put(i,expected);
+                            AccountPoolPolicy.synchronizeKeys(cp,oldAccounts);}
                     }
                     try { AtomicConfigFile.write(configFile, copy.toString(2)); }
                     catch (Exception writeFailure) {
@@ -1427,7 +1449,8 @@ public class GatewayServer extends NanoHTTPD {
         finishPendingRotation(provider, id, store);
         AccountTokenCoordinator.Refresher hook = tokenRefreshForTests;
         AccountTokenCoordinator.Refresher delegate = hook != null ? hook : (snapshot, force) ->
-            "github-copilot".equals(provider) ? CopilotAuth.refreshCandidate(snapshot) : AntigravityAuth.refreshCandidate(snapshot);
+            "github-copilot".equals(provider) ? CopilotAuth.refreshCandidate(snapshot)
+                : "antigravity".equals(provider) ? AntigravityAuth.refreshCandidate(snapshot) : WorkBuddyAuth.refreshCandidate(provider,snapshot);
         // Write-ahead only where an exchange can spend the value: such a value is fenced before it
         // leaves the process, so a crash cannot lose the knowledge that it may already be spent.
         // A value upstream keeps across the exchange (Copilot's GitHub token, Google's refresh
@@ -1460,7 +1483,7 @@ public class GatewayServer extends NanoHTTPD {
                 throw crash;
             }
         };
-        JSONObject result = tokenCoordinator().ensure(provider, id, "github-copilot".equals(provider)?300000L:180000L, failedAccess, store, refresh);
+        JSONObject result = tokenCoordinator().ensure(provider, id, "github-copilot".equals(provider)?300000L:("workbuddy".equals(provider) || "workbuddy-ai".equals(provider)?60000L:180000L), failedAccess, store, refresh);
         synchronized (this) {
             JSONObject current=storedTokenAccount(configJson,provider,id);
             if (backupRetired || epoch != affinityEpoch || current==null || result==null
@@ -2228,6 +2251,15 @@ public class GatewayServer extends NanoHTTPD {
     public volatile long lastMaskAt = 0;
 
     private final AtomicInteger wbRoundRobin = new AtomicInteger(0);
+    private volatile java.util.concurrent.ConcurrentHashMap<String,java.util.concurrent.atomic.AtomicLong> accountTurns;
+    private int nextAccountIndex(String provider,int size) {
+        if(size<1)throw new IllegalArgumentException("empty account pool");
+        if(accountTurns==null)synchronized(this){if(accountTurns==null)accountTurns=new java.util.concurrent.ConcurrentHashMap<>();}
+        java.util.concurrent.atomic.AtomicLong n=accountTurns.get(provider);
+        if(n==null){java.util.concurrent.atomic.AtomicLong created=new java.util.concurrent.atomic.AtomicLong();java.util.concurrent.atomic.AtomicLong prior=accountTurns.putIfAbsent(provider,created);n=prior==null?created:prior;}
+        return (int)Math.floorMod(n.getAndIncrement(),(long)size);
+    }
+
 
     /** Qoder 进行中的登录流程（flowId -> Flow），进程内保存即可 */
         /** Cline (cline.bot) 进行中的设备流登录（flowId -> Flow） */
@@ -2336,6 +2368,13 @@ public class GatewayServer extends NanoHTTPD {
         case "cline": return ProviderAllowance.fromCline(ClineAuth.fetchUsage(token, !"api".equals(account.optString("type", "oauth"))));
         case "github-copilot": return ProviderAllowance.fromCopilot(CopilotAuth.fetchAllowance(account.optString("refresh", "")));
         case "catpaw": return ProviderAllowance.fromCatPaw(CatPawAuth.balance(token));
+        case "qoder_cn": {
+            String device = account.optString("deviceToken", "");
+            if (device.isEmpty()) device = account.optString("token", "");
+            JSONObject usage = QoderUsage.read(device, 8000L, this::openVendorConnection);
+            return ProviderAllowance.fromQoder(usage, System.currentTimeMillis());
+        }
+
         case "raccoon": {
             String id=account.optString("id",""); if(id.isEmpty()) throw new IOException("Raccoon account unavailable");
             JSONObject fresh=ensureRaccoonToken(id,null,0); if(fresh==null) throw new IOException("Raccoon account unavailable");
@@ -2353,6 +2392,25 @@ public class GatewayServer extends NanoHTTPD {
             return new JSONObject().put("kind","allowance").put("scope","account").put("unit","credits")
                     .put("remaining",remaining).put("observedAt",System.currentTimeMillis()).put("windows",new JSONArray());
         }
+        case "workbuddy":
+        case "workbuddy-ai": {
+            if(!WorkBuddyAllowance.eligible(account)) throw new WorkBuddyAllowance.Failure("key_not_supported",false);
+            JSONObject fresh=ensureStoredToken(provider,account,null), result;
+            billingAdoptWorkBuddyRefresh(account,fresh);
+            try { result=WorkBuddyAllowance.fetch(provider,fresh,this::openVendorConnection); }
+            catch(WorkBuddyAllowance.Failure refused) {
+                if(!refused.invalidToken || !"oauth".equals(fresh.optString("type")) || fresh.optString("refresh","").isEmpty())throw refused;
+                fresh=ensureStoredToken(provider,fresh,storedAccess(fresh));
+                billingAdoptWorkBuddyRefresh(account,fresh);
+                result=WorkBuddyAllowance.fetch(provider,fresh,this::openVendorConnection);
+            }
+            synchronized(this) {
+                JSONObject current=storedTokenAccount(configJson,provider,storedTokenIdentity(account));
+                if(current==null || !jsonEquivalent(current,fresh))throw new IOException("WorkBuddy account changed");
+                billingAdoptWorkBuddyRefresh(account,current);
+            }
+            return result;
+        }
         case "trae-cn": return fetchTraeAllowance(account);
         case "loomy": {
             LoomyAuth.Wallets w=loomyApi().usage(token);
@@ -2366,7 +2424,7 @@ public class GatewayServer extends NanoHTTPD {
         }
         case "minimax-code": {
             MiniMaxLifecycle.Lease lease=miniLease(account,false,null);
-            JSONObject result=ProviderAllowance.fromMiniMax(MiniMaxAuth.fetchAllowance(lease.credentials.access,account.optString("opGroupId",account.optString("groupId",""))));
+            JSONObject result=MiniMaxAllowance.fetch(lease.credentials.access,account.optString("opGroupId",account.optString("groupId","")),this::openVendorConnection);
             synchronized(this) { JSONObject current=miniAccount(configJson,lease.id);
                 if(!minimaxLifecycle().isCurrent(lease) || current==null) throw new IOException("account changed");
                 billingAdoptRefresh(account,current); }
@@ -2454,6 +2512,18 @@ public class GatewayServer extends NanoHTTPD {
                 if(resets instanceof String && ((String)resets).matches("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z")) clean.put("resetsAt",resets);
                 windows.put(clean); continue;
             }
+            if("workbuddy".equals(provider) || "workbuddy-ai".equals(provider) || "qoder_cn".equals(provider)) {
+                if(!"credits".equals(unit) || !"credits".equals(w.optString("unit")))continue;
+                Object r=w.opt("remaining"), t=w.opt("total");
+                if(!(r instanceof Number))continue;
+                double left=((Number)r).doubleValue(); if(!Double.isFinite(left) || left<0)continue;
+                JSONObject clean=new JSONObject().put("name",name).put("remaining",left).put("unit","credits");
+                if(t instanceof Number) { double total=((Number)t).doubleValue();
+                    if(!Double.isFinite(total) || total<0 || (total==0 && !"qoder_cn".equals(provider)) || left>total)continue;
+                    clean.put("total",total); if(total>0) clean.put("remainingPercent",100*left/total);
+                }
+                windows.put(clean);continue;
+            }
             Object v=w.opt("remainingPercent");
             if("loomy".equals(provider) && !(v instanceof Number) && "daily".equals(name) && w.opt("remaining") instanceof Number) {
                 double amount=((Number)w.opt("remaining")).doubleValue();
@@ -2469,7 +2539,7 @@ public class GatewayServer extends NanoHTTPD {
         }
         out.put("windows",windows); Object observed=raw.opt("observedAt");
         if(observed instanceof Number && ((Number)observed).longValue()>0) out.put("observedAt",observed);
-        JSONArray pools="minimax-code".equals(provider) && "percent".equals(unit) ? safeModelPools(raw.optJSONArray("modelPools")) : new JSONArray();
+        JSONArray pools="minimax-code".equals(provider) ? safeModelPools(raw.optJSONArray("modelPools")) : new JSONArray();
         if(pools.length()>0) out.put("modelPools",pools);
         return out.has("remaining") || windows.length()>0 || pools.length()>0 || traeUnlimited ? out : null;
     }
@@ -2479,6 +2549,10 @@ public class GatewayServer extends NanoHTTPD {
         for(String field:fields) { before.remove(field); after.remove(field); }
         if(!jsonEquivalent(before,after)) throw new IOException("account changed");
         for(String field:fields) { snapshot.remove(field); if(current.has(field)) snapshot.put(field,current.opt(field)); }
+    }
+    private static void billingAdoptWorkBuddyRefresh(JSONObject snapshot,JSONObject current) throws Exception {
+        if(!jsonEquivalent(tokenNonCredentials("workbuddy",snapshot),tokenNonCredentials("workbuddy",current)))throw new IOException("WorkBuddy account changed");
+        for(String field:tokenFields("workbuddy")) { snapshot.remove(field); if(current.has(field))snapshot.put(field,current.opt(field)); }
     }
     private synchronized boolean billingAccountCurrent(String provider, JSONObject original) {
         JSONObject p=getProviderById(provider); if(p==null || !p.optBoolean("enabled",true)) return false;
@@ -2538,7 +2612,7 @@ public class GatewayServer extends NanoHTTPD {
             models.put(model,clean);
         }
         JSONArray results=new JSONArray(), accounts=provider.optJSONArray("accounts");
-        boolean supported=java.util.Arrays.asList("codex","cline","github-copilot","catpaw","raccoon","trae-cn","minimax-code","loomy").contains(id);
+        boolean supported=java.util.Arrays.asList("codex","qoder_cn","cline","github-copilot","catpaw","raccoon","trae-cn","minimax-code","loomy","workbuddy","workbuddy-ai").contains(id);
         for(int i=0;accounts!=null && i<accounts.length();i++) {
             if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
             JSONObject a=accounts.optJSONObject(i); if(!qoderEnabled(a)) continue;
@@ -2558,6 +2632,7 @@ public class GatewayServer extends NanoHTTPD {
                 } catch(Exception e) { item.put("errorKind","unavailable"); }
             } else if(!supported && billingTransport==null) item.put("errorKind",java.util.Arrays.asList("qoder_cn","workbuddy","workbuddy-ai","raccoon","trae-cn","trae-international","loomy","antigravity").contains(id)?"not_provided":"unsupported");
             else try { JSONObject allowance=safeAllowance(id,fetchBillingAllowance(id,a)); if(allowance==null) item.put("errorKind","unknown"); else item.put("allowance",allowance); }
+            catch(WorkBuddyAllowance.Failure e) { item.put("errorKind",e.kind); }
             catch(Exception e) { item.put("errorKind","unavailable"); }
             if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
             if(billingAccountCurrent(id,a)) results.put(item);
@@ -4370,7 +4445,7 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     /** 首启向导的状态：要不要跑向导、当前口令是不是弱口令、权限与自检此刻的真实情况 */
-    private JSONObject buildSetupStatus() throws org.json.JSONException {
+    private JSONObject buildSetupStatus() throws com.gaeul.allin.json.JSONException {
         JSONObject ret = new JSONObject();
         ret.put("ok", true);
 
@@ -4697,7 +4772,8 @@ public class GatewayServer extends NanoHTTPD {
     protected boolean useGzipWhenAccepted(Response response) {
         // NanoHTTPD applies this policy AFTER serve(). Its gzip body writer does
         // not flush between events; compressing SSE would hold live content.
-        return !isEventStream(response) && super.useGzipWhenAccepted(response);
+        return !(response != null && response.getData() instanceof HeadBody)
+                && !isEventStream(response) && super.useGzipWhenAccepted(response);
     }
 
     // Lazy initialisation also supports the existing isolated JVM fixtures.
@@ -4719,10 +4795,24 @@ public class GatewayServer extends NanoHTTPD {
         // legacy /responses aliases; no method-based gap in recovery protection.
         return GatewayAccessPolicy.model(uri);
     }
+    private static final class HeadBody extends ByteArrayInputStream {
+        HeadBody() { super(new byte[0]); }
+    }
     @Override
     public Response serve(IHTTPSession session) {
         try (NetworkPolicy.Scope ignored = NetworkPolicy.use(NetworkPolicy.capture())) {
-            return serveWithNetworkScope(session);
+            Response response=serveWithNetworkScope(session);
+            if(response!=null && session.getMethod()==Method.HEAD && GatewayAccessPolicy.staticRoute(session.getUri())) {
+                // NanoHTTPD 2.3.1 writes fixed-length HEAD bodies. Keep GET metadata, but hand its
+                // writer an empty stream and never generate a gzip trailer for this HEAD request.
+                InputStream body=response.getData();
+                if(body!=null)try{body.close();}catch(IOException ignoredClose){}
+                response.setData(new HeadBody());response.setChunkedTransfer(false);
+            }
+            return response;
+        } finally {
+            releaseIngressAllocation();
+            BODY_ERROR.remove();
         }
     }
 
@@ -4733,6 +4823,13 @@ public class GatewayServer extends NanoHTTPD {
             return newFixedLengthResponse(Status.FORBIDDEN,"application/json","{\"error\":{\"message\":\"Untrusted request origin or Host\"}}");
         if (!GatewayAccessPolicy.known(session.getUri()))
             return newFixedLengthResponse(Status.NOT_FOUND,"application/json","{\"error\":{\"message\":\"Unknown gateway route\"}}");
+        if (GatewayAccessPolicy.staticRoute(session.getUri()) && session.getMethod()!=Method.GET
+                && session.getMethod()!=Method.HEAD && session.getMethod()!=Method.OPTIONS) {
+            Response rejected=errorResponse(405,"Static resources accept GET or HEAD only");
+            rejected.addHeader("Allow","GET, HEAD");
+            rejected.closeConnection(true);
+            return rejected;
+        }
         if ("/api/health".equals(session.getUri())) {
             if (!isLocalRequest(session)) return newFixedLengthResponse(Status.FORBIDDEN, "text/plain", "Loopback only");
             if (session.getMethod() != Method.GET) return newFixedLengthResponse(Status.METHOD_NOT_ALLOWED, "text/plain", "GET required");
@@ -4770,12 +4867,17 @@ public class GatewayServer extends NanoHTTPD {
                 try { streaming=new JSONObject(raw).optBoolean("stream",false); } catch(Exception ignored) { }
                 if(streaming) {
                     final String prepared=raw;
+                    final IngressBody.Handoff ingress = new IngressBody.Handoff(BODY_ALLOCATION.get());
+                    BODY_ALLOCATION.remove();
+                    request.onClose(ingress::cancelPending);
                     String protocol="/v1/messages".equals(session.getUri())?"anthropic":GatewayAccessPolicy.responses(session.getUri())?"responses":"chat";
                     try {
                         fi.iki.elonen.AllInHeldResponse held=new fi.iki.elonen.AllInHeldResponse(() -> {
+                            IngressBody.Result owned = ingress.begin();
+                            if (owned == null) throw new IOException("Prepared request cancelled");
                             REQUEST_CONTEXT.set(request); PREPARED_BODY.set(prepared); RESILIENCE_SCOPE.set(resilience);
                             try(NetworkPolicy.Scope scope=NetworkPolicy.use(request.network)) { request.check(); return serveTrackedRequest(session); }
-                            finally { REQUEST_CONTEXT.remove(); PREPARED_BODY.remove(); RESILIENCE_SCOPE.remove(); clearUsageThreadState(); }
+                            finally { ingress.finish(); REQUEST_CONTEXT.remove(); PREPARED_BODY.remove(); RESILIENCE_SCOPE.remove(); BODY_ERROR.remove(); clearUsageThreadState(); }
                         },heldWorkers(),3000,3000,() -> request.cancel("held response cancelled"),request::isCancelled,protocol,request::businessWritten);
                         request.onClose(held::signalCancellation);
                         String origin=session.getHeaders()==null?null:session.getHeaders().get("origin");
@@ -4943,9 +5045,18 @@ public class GatewayServer extends NanoHTTPD {
                 return resp;
             }
 
+            if ("/licenses.html".equals(uri)) {
+                try(InputStream in=context.getAssets().open("licenses.html");ByteArrayOutputStream out=new ByteArrayOutputStream()) {
+                    byte[] buffer=new byte[4096];int n;
+                    while((n=in.read(buffer))!=-1) {if(out.size()+n>2*1024*1024)throw new IOException("License asset too large");out.write(buffer,0,n);}
+                    Response response=newFixedLengthResponse(Status.OK,"text/html; charset=UTF-8",out.toString("UTF-8"));
+                    response.addHeader("X-Content-Type-Options","nosniff");addCorsHeaders(response);return response;
+                }
+            }
+
             // 供应商图标仅允许单层、受限字符的文件名。
             if (uri.startsWith("/provider-icons/")) {
-                if ("GET".equals(method) && uri.matches("/provider-icons/[a-z0-9_-]+\\.(svg|png)")) {
+                if (("GET".equals(method) || "HEAD".equals(method)) && uri.matches("/provider-icons/[a-z0-9_-]+\\.(svg|png)")) {
                     try {
                         InputStream is = context.getAssets().open(uri.substring(1));
                         Response resp = newFixedLengthResponse(Status.OK,
@@ -7214,126 +7325,14 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
 
-            // 4. WorkBuddy 官方网页登录初始化 API: /api/auth/workbuddy/init-login
-            if ("/api/auth/workbuddy/init-login".equals(uri)) {
-                Map<String, List<String>> params = session.getParameters();
-                String region = (params.containsKey("region") && !params.get("region").isEmpty())
-                        ? params.get("region").get(0) : "cn";
-
-                String baseUrl = "global".equalsIgnoreCase(region)
-                        ? "https://www.workbuddy.ai"
-                        : "https://copilot.tencent.com";
-
-                String stateUrl = baseUrl + "/v2/plugin/auth/state?platform=CLI";
-                HttpURLConnection conn = NetworkPolicy.openHttp(stateUrl);
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(15000);
-                conn.setRequestProperty("Content-Type", "application/json");
-
-            OutputStream os = conn.getOutputStream();
-                os.write("{}".getBytes("UTF-8"));
-                os.flush();
-                os.close();
-
-                if (conn.getResponseCode() >= 200 && conn.getResponseCode() < 400) {
-                    BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = br.readLine()) != null) sb.append(line);
-                    br.close();
-
-                    JSONObject upstreamRes = new JSONObject(sb.toString());
-                    JSONObject data = upstreamRes.optJSONObject("data");
-                    if (data != null) {
-                        JSONObject ret = new JSONObject();
-                        ret.put("ok", true);
-                        ret.put("state", data.optString("state"));
-                        ret.put("authUrl", data.optString("authUrl"));
-                        ret.put("baseUrl", baseUrl);
-                        return jsonResponse(ret);
-                    }
-                }
-                return errorResponse(500, "获取官方授权链接失败");
+            // Both entrypoints share the official login/account verification and durable save path.
+            if ("/api/auth/workbuddy/init-login".equals(uri) || "/api/auth/workbuddy-ai/init-login".equals(uri)) {
+                if (!"GET".equals(method)) return errorResponse(405,"GET required");
+                return beginWorkBuddyLogin(session);
             }
-
-            // 5. WorkBuddy 登录状态轮询 API: /api/auth/workbuddy/poll-login
-            if ("/api/auth/workbuddy/poll-login".equals(uri)) {
-                Map<String, List<String>> params = session.getParameters();
-                String state = params.containsKey("state") ? params.get("state").get(0) : "";
-                String baseUrl = params.containsKey("baseUrl") ? params.get("baseUrl").get(0) : "https://copilot.tencent.com";
-
-                if (state.isEmpty()) return errorResponse(400, "Missing state");
-
-                String tokenUrl = baseUrl + "/v2/plugin/auth/token?state=" + URLEncoder.encode(state, "UTF-8");
-                HttpURLConnection conn = NetworkPolicy.openHttp(tokenUrl);
-                conn.setRequestMethod("GET");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(10000);
-
-                int respCode = conn.getResponseCode();
-                InputStream is = (respCode >= 200 && respCode < 400) ? conn.getInputStream() : conn.getErrorStream();
-                BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) sb.append(line);
-                br.close();
-
-                JSONObject resJson = new JSONObject(sb.toString());
-                int code = resJson.optInt("code", -1);
-
-                // code == 0 说明用户已在网页扫码或登录成功！
-                if (code == 0) {
-                    JSONObject data = resJson.optJSONObject("data");
-                    String token = "";
-                    String refreshToken = "";
-                    String username = "WorkBuddy用户";
-
-                    if (data != null) {
-                        token = data.optString("accessToken", "");
-                        if (token.isEmpty()) token = data.optString("access_token", "");
-                        if (token.isEmpty()) token = data.optString("token", "");
-
-                        refreshToken = data.optString("refreshToken", "");
-                        if (refreshToken.isEmpty()) refreshToken = data.optString("refresh_token", "");
-
-                        username = data.optString("name", "");
-                        if (username.isEmpty()) username = data.optString("nickname", "");
-                        if (username.isEmpty()) username = data.optString("nickName", "");
-                        if (username.isEmpty()) username = data.optString("userId", "WorkBuddy用户");
-                    } else {
-                        token = resJson.optString("accessToken", "");
-                        if (token.isEmpty()) token = resJson.optString("access_token", "");
-                        if (token.isEmpty()) token = resJson.optString("token", "");
-                    }
-
-                    if (!token.isEmpty()) {
-                        // 自动加入账号池；写入失败不能报成功，否则用户看不到账号也没收到错误
-                        String wbAccId = addWorkBuddyAccount(username, token);
-                        if (!accountAddSucceeded(wbAccId)) {
-                            JSONObject ret = new JSONObject();
-                            ret.put("ok", false);
-                            ret.put("status", "save-failed");
-                            ret.put("error", "登录已成功，但账号配置写入失败，未加入账号池，请重试");
-                            return jsonResponse(ret);
-                        }
-
-                        JSONObject ret = new JSONObject();
-                        ret.put("ok", true);
-                        ret.put("status", "success");
-                        ret.put("username", username);
-                        ret.put("token", token);
-                        return jsonResponse(ret);
-                    }
-                }
-
-                // 仍在等待用户登录
-                JSONObject ret = new JSONObject();
-                ret.put("ok", true);
-                ret.put("status", "pending");
-                ret.put("msg", resJson.optString("msg", "waiting"));
-                return jsonResponse(ret);
+            if ("/api/auth/workbuddy/poll-login".equals(uri) || "/api/auth/workbuddy-ai/poll-login".equals(uri)) {
+                if (!"GET".equals(method)) return errorResponse(405,"GET required");
+                return pollWorkBuddyLogin(session);
             }
 
             if("/api/auth/raccoon/oauth-add".equals(uri)) {
@@ -7393,7 +7392,7 @@ public class GatewayServer extends NanoHTTPD {
                     }
                 }
 
-                String accId = addProviderAccount(customProv, name, token);
+                String accId = addProviderAccount(customProv, name, token, force);
                 if (!accountAddSucceeded(accId)) {
                     JSONObject failed = new JSONObject();
                     failed.put("ok", false);
@@ -7418,6 +7417,7 @@ public class GatewayServer extends NanoHTTPD {
                 String postData = rawBody;
                 JSONObject req = new JSONObject(postData);
                 String removeId = req.optString("id", "");
+                if(removeId.trim().isEmpty())return errorResponse(400,"Missing account id");
 
                 if ("trae-cn".equals(targetProv)) {
                     try { return jsonResponse(traeControl().remove(removeId)); } catch(Exception e) { return errorResponse(500,"Trae 账号移除保存失败"); }
@@ -7432,7 +7432,8 @@ public class GatewayServer extends NanoHTTPD {
                     return jsonResponse(new JSONObject().put("ok",true));
                 }
                 synchronized(this) {
-                JSONArray providers = configJson.optJSONArray("providers");
+                JSONObject staged=new JSONObject(configJson.toString());
+                JSONArray providers = staged.optJSONArray("providers");
                 if (providers != null) {
                     for (int i = 0; i < providers.length(); i++) {
                         JSONObject p = providers.getJSONObject(i);
@@ -7442,17 +7443,17 @@ public class GatewayServer extends NanoHTTPD {
                             JSONArray accounts = p.optJSONArray("accounts");
                             if (accounts != null) {
                                 JSONArray newAccs = new JSONArray();
-                                JSONArray newKeys = new JSONArray();
+
                                 for (int j = 0; j < accounts.length(); j++) {
                                     JSONObject a = accounts.getJSONObject(j);
                                     if (!removeId.equals(a.optString("id"))) {
                                         newAccs.put(a);
-                                        newKeys.put(a.optString("token"));
+
                                     }
                                 }
                                 p.put("accounts", newAccs);
-                                p.put("keys", newKeys);
-                                saveConfig(configJson);
+                                AccountPoolPolicy.synchronizeKeys(p,accounts);
+                                try{persistConfigStrict(staged);}catch(IOException failed){return errorResponse(500,"账号移除未保存，原账号池保持不变");}
                             }
                         }
                     }
@@ -7483,6 +7484,7 @@ public class GatewayServer extends NanoHTTPD {
                     return jsonResponse(new JSONObject().put("ok",true).put("provider",provId).put("count",modes.length()).put("models",modes).put("message","网页模式别名，非云端模型目录"));
                 }
                 if ("qoder_cn".equals(provId)) return syncQoderCatalog(new JSONObject(prov.toString()));
+                if ("workbuddy".equals(provId) || "workbuddy-ai".equals(provId)) return syncWorkBuddyCatalog(provId);
                 if ("loomy".equals(provId)) {
                     JSONObject expected=new JSONObject(prov.toString()), chosen=null;
                     JSONArray as=expected.optJSONArray("accounts");
@@ -8260,7 +8262,7 @@ public class GatewayServer extends NanoHTTPD {
 
         } catch (PrivacyMasker.PrivacyException privacyFailure) {
             return errorResponse(503, "Privacy masking unavailable");
-        } catch (org.json.JSONException je) {
+        } catch (com.gaeul.allin.json.JSONException je) {
             // 空 body / 非法 JSON 是调用方的问题，不该报 500，也不该把 Java 异常信息回给客户端
             return errorResponse(400, "请求体不是合法 JSON: " + je.getMessage());
         } catch (Exception e) {
@@ -8283,10 +8285,11 @@ public class GatewayServer extends NanoHTTPD {
      */
     private synchronized String addClineAccount(ClineAuth.SignIn si, String accName) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
 
             JSONObject cp = null;
@@ -8319,7 +8322,7 @@ public class GatewayServer extends NanoHTTPD {
                 cp.put("accounts", accounts);
             }
 
-            String accId = "cline_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("cline_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("type", "oauth");
@@ -8331,16 +8334,17 @@ public class GatewayServer extends NanoHTTPD {
             if (si.uid != null && !si.uid.isEmpty()) acc.put("uid", si.uid);
             if (si.email != null && !si.email.isEmpty()) acc.put("email", si.email);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
+            acc=AccountPoolPolicy.upsert(cp,acc,"cline");
+            accId=acc.optString("id");
 
             JSONArray keys = cp.optJSONArray("keys");
             if (keys == null) {
                 keys = new JSONArray();
                 cp.put("keys", keys);
             }
-            keys.put(si.access);
 
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             return accId;
         } catch (Exception e) {
             e.printStackTrace();
@@ -8351,10 +8355,11 @@ public class GatewayServer extends NanoHTTPD {
     /** GitHub Copilot 账号入池：refresh 存 GitHub 长期 token，access 存 Copilot 短期 token */
     private synchronized String addCopilotAccount(CopilotAuth.SignIn si, String accName) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
             JSONObject cp = null;
             for (int i = 0; i < providers.length(); i++) {
@@ -8384,7 +8389,7 @@ public class GatewayServer extends NanoHTTPD {
                 accounts = new JSONArray();
                 cp.put("accounts", accounts);
             }
-            String accId = "copilot_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("copilot_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("type", "oauth");
@@ -8395,8 +8400,9 @@ public class GatewayServer extends NanoHTTPD {
             acc.put("token", si.copilotToken == null ? "" : si.copilotToken);
             acc.put("expires", si.expires);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+            acc=AccountPoolPolicy.upsert(cp,acc,"github-copilot");
+            accId=acc.optString("id");
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             // 同上：刚登录换来的 GitHub token 是厂商给的当前值，之前的「已作废」记录不再成立。
             if (si.githubToken != null && !si.githubToken.isEmpty())
                 resolveRefreshFence("github-copilot", si.githubToken);
@@ -8463,10 +8469,11 @@ public class GatewayServer extends NanoHTTPD {
     /** MiniMax Code 账号入池：access + refresh（refresh 一次性，刷新后必须立刻落盘） */
     private synchronized String addMiniMaxAccount(MiniMaxAuth.SignIn si, String accName) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
             JSONObject mp = null;
             for (int i = 0; i < providers.length(); i++) {
@@ -8496,7 +8503,7 @@ public class GatewayServer extends NanoHTTPD {
                 accounts = new JSONArray();
                 mp.put("accounts", accounts);
             }
-            String accId = "minimax_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("minimax_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("type", "oauth");
@@ -8505,9 +8512,11 @@ public class GatewayServer extends NanoHTTPD {
             acc.put("token", si.access == null ? "" : si.access);
             acc.put("refresh", si.refresh == null ? "" : si.refresh);
             acc.put("expires", si.expires);
+            if(si.userId!=null && !si.userId.isEmpty())acc.put("uid",si.userId);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+            acc=AccountPoolPolicy.upsert(mp,acc,"minimax-code");
+            accId=acc.optString("id");
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             return accId;
         } catch (Exception e) {
             e.printStackTrace();
@@ -8517,10 +8526,11 @@ public class GatewayServer extends NanoHTTPD {
 
     private synchronized String addQoderAccount(QoderAuth.SignIn si, String accName) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
 
             JSONObject qp = null;
@@ -8550,7 +8560,7 @@ public class GatewayServer extends NanoHTTPD {
                 qp.put("accounts", accounts);
             }
 
-            String accId = "qd_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("qd_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("name", accName);
@@ -8564,12 +8574,13 @@ public class GatewayServer extends NanoHTTPD {
             acc.put("machineId", si.machineId == null ? "" : si.machineId);
             acc.put("expiresAt", si.expiresAt);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
+            acc=AccountPoolPolicy.upsert(qp,acc,"qoder_cn");
+            accId=acc.optString("id");
 
             // 登录成功后顺手拉一次账号自己的模型清单（连同每个模型的 config）
             try {
                 JSONObject meta = new JSONObject();
-                org.json.JSONArray ms = QoderAuth.fetchModels(si, meta);
+                com.gaeul.allin.json.JSONArray ms = QoderAuth.fetchModels(si, meta);
                 if (ms != null && ms.length() > 0) {
                     acc.put("models", new JSONArray(ms.toString()));
                     acc.put("modelMeta", new JSONObject(meta.toString()));
@@ -8578,7 +8589,7 @@ public class GatewayServer extends NanoHTTPD {
             } catch (Exception ignored) {
             }
 
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             return accId;
         } catch (Exception e) {
             e.printStackTrace();
@@ -8594,10 +8605,11 @@ public class GatewayServer extends NanoHTTPD {
     private synchronized String addZCodeKey(String site, String key, String plan, String account,
                                             String jwt, String device) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
 
             JSONObject zc = null;
@@ -8668,12 +8680,12 @@ public class GatewayServer extends NanoHTTPD {
                     patched = true;
                 }
                 if (patched) {
-                    if (!saveConfig(configJson)) throw new IOException("配置保存失败，重复账号未更新");
+                    if (!saveConfig(staged)) throw new IOException("配置保存失败，重复账号未更新");
                 }
                 return zcDup.optString("id", "zc_dup");
             }
 
-            String accId = "zc_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("zc_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("name", zcName);
@@ -8684,9 +8696,10 @@ public class GatewayServer extends NanoHTTPD {
             if (device != null && !device.isEmpty()) acc.put("device", device);
             if (plan != null && !plan.isEmpty()) acc.put("plan", plan);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
+            acc=AccountPoolPolicy.upsert(zc,acc,"zcode");
+            accId=acc.optString("id");
 
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             return accId;
         } catch (Exception e) {
             e.printStackTrace();
@@ -8694,78 +8707,112 @@ public class GatewayServer extends NanoHTTPD {
         }
     }
 
+    private volatile java.util.concurrent.ConcurrentHashMap<String,WorkBuddyLogin.Flow> workBuddyFlows;
+    private synchronized java.util.concurrent.ConcurrentHashMap<String,WorkBuddyLogin.Flow> workBuddyFlows() {
+        if (workBuddyFlows==null) workBuddyFlows=new java.util.concurrent.ConcurrentHashMap<>();
+        return workBuddyFlows;
+    }
+    private WorkBuddyLogin.Api workBuddyLoginApi() {
+        return (provider,method,path,headers,body) -> WorkBuddyLogin.call(provider,method,path,headers,body,this::openVendorConnection);
+    }
+    private static String queryValue(IHTTPSession session,String key,String fallback) {
+        Map<String,List<String>> params=session.getParameters();
+        List<String> values=params==null?null:params.get(key);
+        return values==null || values.size()!=1?fallback:values.get(0);
+    }
+    private Response beginWorkBuddyLogin(IHTTPSession session) {
+        String region=queryValue(session,"region","cn");
+        String provider=session.getUri().contains("workbuddy-ai") || "global".equals(region)?"workbuddy-ai":"workbuddy";
+        if (!"cn".equals(region) && !"global".equals(region)) return errorResponse(400,"Unsupported WorkBuddy region");
+        java.util.concurrent.ConcurrentHashMap<String,WorkBuddyLogin.Flow> flows=workBuddyFlows();
+        long now=System.currentTimeMillis();
+        for (Map.Entry<String,WorkBuddyLogin.Flow> entry:flows.entrySet())
+            if (entry.getValue().deadline<=now) flows.remove(entry.getKey(),entry.getValue());
+        if (flows.size()>=32) return errorResponse(429,"Too many pending WorkBuddy sign-ins");
+        try {
+            WorkBuddyLogin.Flow flow=WorkBuddyLogin.begin(provider,workBuddyLoginApi());
+            if (flows.putIfAbsent(flow.state,flow)!=null) return errorResponse(409,"WorkBuddy login state already exists");
+            return jsonResponse(new JSONObject().put("ok",true).put("state",flow.state).put("authUrl",flow.authUrl)
+                    .put("baseUrl",WorkBuddyAuth.origin(provider)).put("deadline",flow.deadline));
+        } catch (Exception failed) { return errorResponse(502,"无法取得 WorkBuddy 官方授权链接，请重试"); }
+    }
+    private Response pollWorkBuddyLogin(IHTTPSession session) {
+        String state=queryValue(session,"state","");
+        if (state.isEmpty() || state.length()>4096) return errorResponse(400,"Missing or invalid login state");
+        WorkBuddyLogin.Flow flow=workBuddyFlows().get(state);
+        if (flow==null || System.currentTimeMillis()>=flow.deadline) {
+            if(flow!=null)workBuddyFlows().remove(state,flow);
+            return errorResponse(410,"WorkBuddy 登录流程已过期，请重新发起");
+        }
+        String base=queryValue(session,"baseUrl",WorkBuddyAuth.origin(flow.provider));
+        if (!WorkBuddyAuth.origin(flow.provider).equals(base)) return errorResponse(400,"Untrusted WorkBuddy login origin");
+        synchronized (flow) {
+            try {
+                JSONObject account=WorkBuddyLogin.poll(flow,workBuddyLoginApi());
+                if (flow.savedId==null) {
+                    if(!account.has("models"))try {
+                        JSONObject meta=new JSONObject();List<String> found=fetchOfficialModels(flow.provider,storedAccess(account),account,meta);
+                        JSONArray models=new JSONArray();for(String model:found)models.put(model);
+                        stampCatalog(meta);normalizeCatalog(flow.provider,meta);account.put("models",models).put("modelMeta",meta);
+                        flow.account=new JSONObject(account.toString());
+                    } catch(Exception unavailable) { /* Valid credentials still save; the UI can sync the catalog later. */ }
+                    flow.savedId=addWorkBuddyAccount(flow.provider,account);
+                }
+                else synchronized(this) {
+                    if(storedTokenAccount(configJson,flow.provider,"id:"+flow.savedId)==null)
+                        return errorResponse(409,"该登录流程已完成，账号已被移除或停用，请重新发起");
+                }
+                return jsonResponse(new JSONObject().put("ok",true).put("status","success").put("id",flow.savedId)
+                        .put("username",account.optString("name","WorkBuddy")));
+            } catch (WorkBuddyLogin.ApiFailure answer) {
+                if (answer.pending()) return jsonResponse(new JSONObject().put("ok",true).put("status","pending"));
+                return errorResponse(502,"WorkBuddy 官方身份确认失败，请重新授权");
+            } catch (Exception failed) {
+                return jsonResponse(new JSONObject().put("ok",false).put("status","save-failed")
+                        .put("error","身份未确认或账号未保存，请检查官方账号选择后重试；不会覆盖已有账号"));
+            }
+        }
+    }
     private synchronized String addWorkBuddyAccount(String name, String token) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
-            if (providers == null) {
-                providers = new JSONArray();
-                configJson.put("providers", providers);
+            JSONObject imported=new JSONObject().put("name",name).put("token",token)
+                    .put("type",token.startsWith("ck_") || token.startsWith("pt_")?"api":"token");
+            return addWorkBuddyAccount("workbuddy",imported);
+        } catch(Exception failed) { return "wb_err"; }
+    }
+    private synchronized String addWorkBuddyAccount(String provider, JSONObject incoming) throws Exception {
+        String origin=WorkBuddyAuth.origin(provider);
+        WorkBuddyLogin.enterpriseValue(incoming);
+        if (storedAccess(incoming).trim().isEmpty()) throw new IOException("WorkBuddy returned no credential");
+        if ("oauth".equals(incoming.optString("type")) && incoming.optString("uid","").trim().isEmpty())
+            throw new IOException("WorkBuddy identity is not verified");
+        JSONObject staged=new JSONObject(configJson.toString());
+        JSONArray providers=staged.optJSONArray("providers");
+        if(providers==null){providers=new JSONArray();staged.put("providers",providers);}
+        JSONObject target=null;
+        for(int i=0;i<providers.length();i++) {
+            JSONObject candidate=providers.optJSONObject(i);
+            if(candidate!=null && provider.equals(candidate.optString("id"))) {
+                if(target!=null)throw new IOException("Ambiguous WorkBuddy provider");
+                target=candidate;
             }
-
-            JSONObject wbProvider = null;
-            for (int i = 0; i < providers.length(); i++) {
-                JSONObject p = providers.getJSONObject(i);
-                if ("workbuddy".equals(p.optString("id"))) {
-                    wbProvider = p;
-                    break;
-                }
-            }
-
-            if (wbProvider == null) {
-                wbProvider = new JSONObject();
-                wbProvider.put("id", "workbuddy");
-                wbProvider.put("name", "WorkBuddy (免Key订阅池)");
-                wbProvider.put("baseUrl", "https://copilot.tencent.com/v1");
-                wbProvider.put("protocol", "openai");
-                wbProvider.put("enabled", true);
-                JSONArray models = new JSONArray();
-                models.put("deepseek-v3");
-                models.put("deepseek-r1");
-                models.put("claude-3-5-sonnet");
-                models.put("claude-3-7-sonnet");
-                models.put("gpt-4o");
-                models.put("gpt-4o-mini");
-                models.put("hunyuan-t1");
-                models.put("hunyuan-standard");
-                models.put("hunyuan-code");
-                models.put("default");
-                wbProvider.put("models", models);
-                wbProvider.put("keys", new JSONArray());
-                wbProvider.put("accounts", new JSONArray());
-                providers.put(wbProvider);
-            }
-
-            JSONArray accounts = wbProvider.optJSONArray("accounts");
-            if (accounts == null) {
-                accounts = new JSONArray();
-                wbProvider.put("accounts", accounts);
-            }
-
-            // 网页登录自动入池：同一个账号重复登录时不再重复写池，直接复用已有条目
-            JSONObject wbDup = findDuplicateAccount(wbProvider, name, token);
-            if (wbDup != null) return wbDup.optString("id", "wb_dup");
-
-            String accId = "wb_" + System.currentTimeMillis();
-            JSONObject acc = new JSONObject();
-            acc.put("id", accId);
-            acc.put("name", name);
-            acc.put("token", token);
-            acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
-
-            JSONArray keys = wbProvider.optJSONArray("keys");
-            if (keys == null) {
-                keys = new JSONArray();
-                wbProvider.put("keys", keys);
-            }
-            keys.put(token);
-
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
-            return accId;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return "wb_err";
         }
+        if(target==null) {
+            target=new JSONObject().put("id",provider).put("name","workbuddy-ai".equals(provider)?"WorkBuddy AI":"WorkBuddy")
+                    .put("baseUrl",origin+"/v2").put("protocol","openai").put("enabled",true)
+                    .put("models",new JSONArray().put("workbuddy-ai".equals(provider)?"default-model":"auto"))
+                    .put("keys",new JSONArray()).put("accounts",new JSONArray());
+            providers.put(target);
+        }
+        JSONObject account=new JSONObject(incoming.toString());
+        account.put("id",AccountPoolPolicy.newId("wb_")).put("addedAt",System.currentTimeMillis());
+        JSONObject saved=AccountPoolPolicy.upsert(target,account,provider);
+        // The login Flow retains its candidate on failure; do not publish a phantom pool slot.
+        GatewayAccessCatalog.preserveAccountScope(configJson,staged);
+        persistConfigStrict(staged);
+        String refresh=saved.optString("refresh","");
+        if(!refresh.isEmpty())try{resolveRefreshFence(provider,refresh);}catch(Exception ignored){}
+        return saved.optString("id");
     }
 
     /**
@@ -8784,13 +8831,22 @@ public class GatewayServer extends NanoHTTPD {
         return IngressBody.DEFAULT_LIMIT;
     }
 
+    private static final ThreadLocal<IngressBody.Result> BODY_ALLOCATION = new ThreadLocal<>();
+    private static void releaseIngressAllocation() {
+        IngressBody.Result result = BODY_ALLOCATION.get();
+        BODY_ALLOCATION.remove();
+        if (result != null) result.close();
+    }
+
     private String readUtf8Body(IHTTPSession session) {
         BODY_ERROR.remove();
+        releaseIngressAllocation();
         // The socket reader has its own 5s idle timeout. Do not close a buffered
         // input on the watchdog thread: some implementations block close behind read.
         IngressBody.Result result = IngressBody.read(session.getInputStream(), session.getHeaders(),
                 session.getMethod() == null ? null : session.getMethod().name(), bodyLimitBytes(), REQUEST_CONTEXT.get());
-        if (!result.ok()) BODY_ERROR.set(result);
+        if (!result.ok()) { BODY_ERROR.set(result); result.close(); }
+        else BODY_ALLOCATION.set(result);
         return result.text;
     }
 
@@ -9620,7 +9676,7 @@ public class GatewayServer extends NanoHTTPD {
                                     sawFinish = true;finishedChoices.add(choiceIndex);
                                 }
                             }
-                        } catch (org.json.JSONException ignored) {}
+                        } catch (com.gaeul.allin.json.JSONException ignored) {}
                     }
                 }
 
@@ -9907,7 +9963,14 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private static void beginUsage(String prov, String reqModel, String upModel) {
+        beginUsage(prov, reqModel, upModel, null);
+    }
+    private static void beginUsage(String prov, String reqModel, String upModel, JSONObject account) {
         UsageLedger.Row r = new UsageLedger.Row();
+        String accountId = account == null ? "" : account.optString("id", "");
+        boolean safeAccountId = accountId.length() <= 256;
+        for (int i = 0; i < accountId.length(); i++) if (accountId.charAt(i) < 32 || accountId.charAt(i) == 127) safeAccountId = false;
+        if (safeAccountId) r.accountId = accountId;
         r.recentUsageLease = ATTEMPT_LEASE.get();
         LogicalRequest logical = LOGICAL.get();
         if (logical != null) {
@@ -10168,6 +10231,8 @@ public class GatewayServer extends NanoHTTPD {
             throw new IOException("config persistence failed", rejected);
         }
         try {
+            Runnable writeHook=configWriteHookForTests;
+            if(writeHook!=null)writeHook.run();
             AtomicConfigFile.write(configFile, serialized);
         } catch (Exception writeFailure) {
             throw new IOException("config persistence failed", writeFailure);
@@ -10952,7 +11017,8 @@ public class GatewayServer extends NanoHTTPD {
             long nextRetryAt=0;
             List<RouteTarget> remaining = new ArrayList<RouteTarget>(roundCandidates);
             java.util.Set<String> triedRefs = new java.util.HashSet<String>();
-            for (int ci = 0; ci < maxTargets && !remaining.isEmpty(); ci++) {
+            java.util.Set<String> logicalTargets=new java.util.HashSet<>();
+            for (int ci = 0; !remaining.isEmpty(); ci++) {
                 RecentUsageScheduler.Lease selectedLease = null;
                 RouteTarget target;
                 RouteTarget preferredRoute=null;
@@ -10977,7 +11043,7 @@ public class GatewayServer extends NanoHTTPD {
                     List<RouteTarget> resting = new ArrayList<RouteTarget>();
                     for (RouteTarget candidate : remaining) {
                         String ref = recentRef(candidate);
-                        if (triedRefs.contains(ref)) continue;
+                        if (triedRefs.contains(restKeyOf(candidate))) continue;
                         JSONObject provider = getProviderById(candidate.providerId);
                         if (provider == null || !provider.optBoolean("enabled", true)) continue;
                         boolean availableCredential = candidate.commercialCandidates == null;
@@ -11011,9 +11077,14 @@ public class GatewayServer extends NanoHTTPD {
                     if(!outboundReady(target)) for(RouteTarget candidate:remaining) if(outboundReady(candidate)) { target=candidate; break; }
                 }
                 final String chosenRef = recentRef(target);
-                triedRefs.add(chosenRef);
+                if(!logicalTargets.contains(chosenRef)) {
+                    if(logicalTargets.size()>=maxTargets){remaining.remove(target);if(selectedLease!=null)selectedLease.cancel();continue;}
+                    logicalTargets.add(chosenRef);
+                }
+                triedRefs.add(restKeyOf(target));
                 if (usageStrategy) {
-                    for (java.util.Iterator<RouteTarget> it = remaining.iterator(); it.hasNext();) if (chosenRef.equals(recentRef(it.next()))) it.remove();
+                    String chosenAccount=restKeyOf(target);
+                    for (java.util.Iterator<RouteTarget> it = remaining.iterator(); it.hasNext();) if (chosenAccount.equals(restKeyOf(it.next()))) it.remove();
                 } else remaining.remove(target);
                 lastTarget = target;
                 boolean commercial = target.commercialCandidates != null;
@@ -11476,7 +11547,7 @@ public class GatewayServer extends NanoHTTPD {
     // 失败只让候选"休息"一段时间并排到队尾，不永久拉黑；
     // 上下文超长这类换谁都一样的原因不重试，直接还给 agent 让它自己 compact。
 
-    /** 休息表：key = provider/model，value = 解禁时间戳与状态码 */
+    /** 休息表按供应商、模型、端点和账号隔离，单账号配额失败不拖累整个池。 */
     private static final java.util.concurrent.ConcurrentHashMap<String, long[]> RESTS =
             new java.util.concurrent.ConcurrentHashMap<String, long[]>();
     /** 配额类（429/402）：冷却久一点，避免刚被拒就再撞 */
@@ -11486,7 +11557,8 @@ public class GatewayServer extends NanoHTTPD {
 
     private static String restKeyOf(RouteTarget t) {
         if (t == null) return "";
-        return t.providerId + "/" + t.upstreamModel;
+        return t.providerId + "/" + t.upstreamModel + "/" + CredentialIdentity.credential(
+                t.providerId,t.baseUrl,null,t.account,t.apiKey);
     }
 
     private boolean isResting(RouteTarget t) {
@@ -12005,7 +12077,7 @@ public class GatewayServer extends NanoHTTPD {
             }
         } catch (Throwable ignored) {
         }
-        beginUsage(target.providerId, requestedModel, target.upstreamModel);
+        beginUsage(target.providerId, requestedModel, target.upstreamModel, target.account);
         if(target.commercialCandidates!=null) RequestDiagnostics.coverTransport(U_ROW.get());
 
         WorkBuddyHarnessPolicy.Report harnessReport=null;
@@ -12018,6 +12090,20 @@ public class GatewayServer extends NanoHTTPD {
         // survives the 401 replay loop and is read from the finally block.
         boolean raccoonSignInRenewed=false;
         try {
+            if (("workbuddy".equals(target.providerId) || "workbuddy-ai".equals(target.providerId))
+                    && target.account!=null && "oauth".equals(target.account.optString("type"))) {
+                try {
+                    target.account=ensureStoredToken(target.providerId,target.account,null);
+                    target.apiKey=storedAccess(target.account);
+                    if(target.apiKey.isEmpty())throw new IOException("WorkBuddy account unavailable");
+                    if(target.account.has("models"))target.catalogMetadata=target.account.optJSONObject("modelMeta");
+                } catch(Exception unavailable) {
+                    out.status=unavailable instanceof RefreshBlocked?401:503;
+                    out.body="WorkBuddy 账号续期未确认，本次请求未发送；请检查账号状态或重新授权";
+                    out.response=errorResponse(out.status,out.body);
+                    return out;
+                }
+            }
             // 每个候选独立一份请求体，避免改动互相污染
             JSONObject payload = new JSONObject(payloadIn.toString());
             payload.put("model", target.upstreamModel);
@@ -12408,6 +12494,9 @@ public class GatewayServer extends NanoHTTPD {
             if (okStatus) { compat.response(statusCode, null); break; }
             WorkBuddyError error = readWorkBuddyError(conn, target, out);
             preReadError = error.safe;
+            // Only a complete, structured capacity rejection proves no inference ran.
+            // All ambiguous responses and signature/enterprise 400 paths retain markSent's fence.
+            if(error.complete && PatiencePolicy.rejection(target.providerId,statusCode,error.safe)) out.stopFallback=false;
             JSONObject candidate = null;
             if (error.complete && statusCode == 400 && (request == null || request.mayContinueAfterRejection()))
                 candidate = compat.next(statusCode, error.raw);
@@ -12695,7 +12784,7 @@ public class GatewayServer extends NanoHTTPD {
             // A 2xx body must still be one complete JSON object. A broken socket
             // can otherwise produce HTTP 200 with a syntactically truncated payload.
             try {
-                org.json.JSONTokener parser = new org.json.JSONTokener(rawResponse);
+                com.gaeul.allin.json.JSONTokener parser = new com.gaeul.allin.json.JSONTokener(rawResponse);
                 Object value = parser.nextValue();
                 if (!(value instanceof JSONObject) || parser.nextClean() != 0) throw new IOException("Invalid upstream JSON");
             } catch (Exception invalid) { return failedProtocolAttempt(out); }
@@ -13266,7 +13355,7 @@ public class GatewayServer extends NanoHTTPD {
             absorbUsage(U_ROW.get(), body.optJSONObject("usage"));
             JSONObject detail = body.optJSONObject("error");
             if (detail != null) absorbUsage(U_ROW.get(), detail.optJSONObject("usage"));
-        } catch (org.json.JSONException ignored) { }
+        } catch (com.gaeul.allin.json.JSONException ignored) { }
     }
 
     private static void closeGiftStream(ZCodeGift.Stream stream) {
@@ -14608,9 +14697,9 @@ public class GatewayServer extends NanoHTTPD {
             }
 
             out.stopFallback=true;
-            org.json.JSONArray msgs = payload.optJSONArray("messages");
-            if (msgs == null) msgs = new org.json.JSONArray();
-            org.json.JSONArray tools = payload.optJSONArray("tools");
+            com.gaeul.allin.json.JSONArray msgs = payload.optJSONArray("messages");
+            if (msgs == null) msgs = new com.gaeul.allin.json.JSONArray();
+            com.gaeul.allin.json.JSONArray tools = payload.optJSONArray("tools");
 
             JSONObject catProvider=getProviderById("catpaw");
             JSONObject catMeta=catProvider==null?null:catProvider.optJSONObject("modelMeta");
@@ -14779,12 +14868,26 @@ public class GatewayServer extends NanoHTTPD {
         String selectedKey = "";
         JSONArray keys = chosenProvider.optJSONArray("keys");
         boolean commercial = isCommercialProvider(chosenProvider);
-        if (!commercial && keys != null && keys.length() > 0) {
-            int idx = Math.abs(wbRoundRobin.getAndIncrement() % keys.length());
-            selectedKey = keys.optString(idx);
+        String chosenId=chosenProvider.optString("id");
+        JSONArray poolAccounts=chosenProvider.optJSONArray("accounts");
+        boolean accountPoolOwns=!commercial && ((poolAccounts!=null && poolAccounts.length()>0)
+                || (("workbuddy".equals(chosenId) || "workbuddy-ai".equals(chosenId)) && keys!=null && keys.length()>0));
+        if (!commercial && !accountPoolOwns && keys != null && keys.length() > 0) {
+            selectedKey = keys.optString(nextAccountIndex(chosenId,keys.length()));
         }
-
-        if ("zcode".equals(chosenProvider.optString("id")) && selectedKey.trim().isEmpty()) return null;
+        JSONObject pooledAccount=null;
+        if(accountPoolOwns && !java.util.Arrays.asList("raccoon","loomy","trae-cn","qoder_cn","cline","catpaw","antigravity","github-copilot","minimax-code").contains(chosenId)
+                && !"deepseek-web".equals(chosenProvider.optString("protocol"))) {
+            ArrayList<JSONObject> eligible=new ArrayList<>(AccountPoolPolicy.routingAccounts(chosenProvider));
+            if("workbuddy".equals(chosenId) || "workbuddy-ai".equals(chosenId)) {
+                final String wanted=mName;
+                final boolean scoped=chosenProvider.optBoolean("accessAccountCatalogScoped",false) || GatewayAccessCatalog.hasAccountCatalog(poolAccounts);
+                eligible.removeIf(a -> (scoped || a.has("models")) && !qoderAccountLists(a,wanted));
+            }
+            if(eligible.isEmpty())return null;
+            pooledAccount=eligible.get(nextAccountIndex(chosenId,eligible.size()));selectedKey=storedAccess(pooledAccount);
+        }
+        if ("zcode".equals(chosenId) && selectedKey.trim().isEmpty()) return null;
         RouteTarget route = new RouteTarget();
         route.providerId = chosenProvider.optString("id");
         route.baseUrl = chosenProvider.optString("baseUrl", "https://api.deepseek.com/v1");
@@ -14793,6 +14896,11 @@ public class GatewayServer extends NanoHTTPD {
         route.isAnthropic = "anthropic".equalsIgnoreCase(chosenProvider.optString("protocol"));
         route.protocol = chosenProvider.optString("protocol", route.isAnthropic ? "anthropic" : "openai");
         route.catalogMetadata = chosenProvider.optJSONObject("modelMeta");
+        route.account=pooledAccount;
+        if(pooledAccount!=null && "zcode".equals(chosenId) && !pooledAccount.optString("site","").isEmpty())
+            route.baseUrl=ZCodeAuth.baseOf(pooledAccount.optString("site"));
+        if(pooledAccount!=null && ("workbuddy".equals(chosenId) || "workbuddy-ai".equals(chosenId)) && pooledAccount.has("models"))
+            route.catalogMetadata=pooledAccount.optJSONObject("modelMeta");
         if (commercial) {
             route.commercialCandidates = CommercialKeyPool.list(keys);
             if (route.commercialCandidates.isEmpty()) return null;
@@ -14805,7 +14913,7 @@ public class GatewayServer extends NanoHTTPD {
                 if(qoderEnabled(account) && !storedAccess(account).isEmpty()) eligible.add(account);
             }
             if(!eligible.isEmpty()) {
-                JSONObject account=eligible.get((wbRoundRobin.getAndIncrement() & 0x7fffffff)%eligible.size());
+                JSONObject account=eligible.get(nextAccountIndex(route.providerId,eligible.size()));
                 route.account=account; route.apiKey=storedAccess(account);
                 String stableId=account.optString("id","");
                 if(!stableId.isEmpty()) {
@@ -14825,7 +14933,7 @@ public class GatewayServer extends NanoHTTPD {
                 if (GatewayAccessCatalog.loomyAccountUsable(a, mName, scoped, System.currentTimeMillis())) eligible.add(a);
             }
             if (eligible.isEmpty()) return null;
-            route.account = eligible.get((wbRoundRobin.getAndIncrement() & 0x7fffffff) % eligible.size());
+            route.account = eligible.get(nextAccountIndex(route.providerId,eligible.size()));
             route.apiKey = route.account.optString("token", "");
             return route;
         }
@@ -14847,7 +14955,7 @@ public class GatewayServer extends NanoHTTPD {
                 }
             }
             if (eligible.isEmpty()) return null;
-            route.account = eligible.get((wbRoundRobin.getAndIncrement() & 0x7fffffff) % eligible.size());
+            route.account = eligible.get(nextAccountIndex(route.providerId,eligible.size()));
             route.apiKey = route.account.optString("token", "");
             return route;
         }
@@ -14856,7 +14964,7 @@ public class GatewayServer extends NanoHTTPD {
             JSONArray accounts=chosenProvider.optJSONArray("accounts"); ArrayList<JSONObject> valid=new ArrayList<JSONObject>();
             for (int i=0;accounts!=null && i<accounts.length();i++) { JSONObject a=accounts.optJSONObject(i); if (a!=null && a.optBoolean("enabled",true) && !deepAccountToken(a).isEmpty()) valid.add(a); }
             if (valid.isEmpty()) return null;
-            route.account=valid.get((wbRoundRobin.getAndIncrement() & 0x7fffffff)%valid.size());
+            route.account=valid.get(nextAccountIndex(route.providerId,valid.size()));
             route.apiKey=deepAccountToken(route.account); return route;
         }
         if ("cline".equals(route.providerId) || "cline".equals(route.protocol)) {
@@ -14868,7 +14976,7 @@ public class GatewayServer extends NanoHTTPD {
                     if (a != null && a.optBoolean("enabled",true)) enabled.add(a);
                 }
                 if (!enabled.isEmpty()) {
-                    route.account=enabled.get((wbRoundRobin.getAndIncrement() & 0x7fffffff) % enabled.size());
+                    route.account=enabled.get(nextAccountIndex(route.providerId,enabled.size()));
                     route.apiKey=route.account.optString("token", "");
                 }
             } else if (accs != null && accs.length() > 0) {
@@ -14905,14 +15013,9 @@ public class GatewayServer extends NanoHTTPD {
                 || "antigravity".equals(route.protocol)) {
             // Qoder 的凭据在 accounts 里（token + uid + machineId），普通 key 不够
             JSONArray accs = chosenProvider.optJSONArray("accounts");
-            for (int i = 0; accs != null && i < accs.length(); i++) {
-                JSONObject a = accs.optJSONObject(i);
-                if (a != null && a.optBoolean("enabled", true) && !a.optString("token", "").trim().isEmpty()) {
-                    route.account = a;
-                    route.apiKey = a.optString("token", "");
-                    break;
-                }
-            }
+            ArrayList<JSONObject> eligible=new ArrayList<>();
+            for (int i = 0; accs != null && i < accs.length(); i++) {JSONObject a=accs.optJSONObject(i);if(a!=null && a.optBoolean("enabled",true) && !storedAccess(a).trim().isEmpty())eligible.add(a);}
+            if(!eligible.isEmpty()){route.account=eligible.get(nextAccountIndex(route.providerId,eligible.size()));route.apiKey=storedAccess(route.account);}
             if (route.account == null) return null;
         }
 
@@ -14920,14 +15023,15 @@ public class GatewayServer extends NanoHTTPD {
         if ("copilot".equals(route.protocol) || "minimax".equals(route.protocol)) {
             JSONArray accs = chosenProvider.optJSONArray("accounts");
             JSONObject acc = null;
+            ArrayList<JSONObject> eligibleAccounts=new ArrayList<>();
             for (int i = 0; accs != null && i < accs.length(); i++) {
                 JSONObject a = accs.optJSONObject(i);
                 if (a == null || !a.optBoolean("enabled", true)) continue;
                 if (a.optString("refresh", "").trim().isEmpty()
                         && a.optString("token", "").trim().isEmpty()) continue;
-                acc = a;
-                break;
+                eligibleAccounts.add(a);
             }
+            if(!eligibleAccounts.isEmpty())acc=eligibleAccounts.get(nextAccountIndex(route.providerId,eligibleAccounts.size()));
             if (acc == null) return null;
             route.account = acc;
             route.catalogMetadata = acc.optJSONObject("modelMeta") != null
@@ -15170,6 +15274,36 @@ public class GatewayServer extends NanoHTTPD {
         }
     }
 
+    /** Expand account-backed compatible routes without refreshing unused credentials. */
+    private List<RouteTarget> accountCandidates(RouteTarget selected) {
+        List<RouteTarget> result=new ArrayList<>();result.add(selected);
+        if(selected.account==null || selected.commercialCandidates!=null
+                || !java.util.Arrays.asList("openai","anthropic","responses","codex").contains(selected.protocol)
+                || java.util.Arrays.asList("raccoon","loomy","cline").contains(selected.providerId))return result;
+        JSONObject provider=getProviderById(selected.providerId);if(provider==null)return result;
+        List<JSONObject> slots=AccountPoolPolicy.routingAccounts(provider);
+        int start=-1;
+        String chosen=CredentialIdentity.credential(selected.providerId,selected.baseUrl,null,selected.account,selected.apiKey);
+        for(int i=0;i<slots.size();i++) {
+            JSONObject slot=slots.get(i);
+            if(chosen.equals(CredentialIdentity.credential(selected.providerId,selected.baseUrl,null,slot,storedAccess(slot)))){start=i;break;}
+        }
+        if(start<0)return result;
+        boolean workbuddy="workbuddy".equals(selected.providerId) || "workbuddy-ai".equals(selected.providerId);
+        boolean scoped=provider.optBoolean("accessAccountCatalogScoped",false) || GatewayAccessCatalog.hasAccountCatalog(provider.optJSONArray("accounts"));
+        for(int offset=1;offset<slots.size();offset++) {
+            JSONObject account=slots.get((start+offset)%slots.size());
+            if((account.has("models") || (workbuddy && scoped)) && !qoderAccountLists(account,selected.upstreamModel))continue;
+            RouteTarget target=new RouteTarget();target.providerId=selected.providerId;target.protocol=selected.protocol;
+            target.baseUrl=selected.baseUrl;target.upstreamModel=selected.upstreamModel;target.isAnthropic=selected.isAnthropic;
+            target.account=account;target.apiKey=storedAccess(account);
+            target.catalogMetadata=account.has("models")?account.optJSONObject("modelMeta"):selected.catalogMetadata;
+            if("zcode".equals(target.providerId) && !account.optString("site","").isEmpty())target.baseUrl=ZCodeAuth.baseOf(account.optString("site"));
+            result.add(target);
+        }
+        return result;
+    }
+
     private List<RouteTarget> resolveCandidates(String model) {
         List<String> refs = new ArrayList<String>();
         if (model != null && model.startsWith("group/") && !groupsEnabled()) {
@@ -15209,8 +15343,10 @@ public class GatewayServer extends NanoHTTPD {
         for (int i = 0; i < refs.size(); i++) {
             RouteTarget t = buildTarget(refs.get(i));
             if (t == null) continue;
-            if (t.commercialCandidates == null && isResting(t)) resting.add(t);
-            else awake.add(t);
+            for(RouteTarget candidate:accountCandidates(t)) {
+                if (candidate.commercialCandidates == null && isResting(candidate)) resting.add(candidate);
+                else awake.add(candidate);
+            }
         }
         awake.addAll(resting);          // 休息的排后面，但仍作为兜底
         return awake;
@@ -15512,6 +15648,63 @@ public class GatewayServer extends NanoHTTPD {
         return StandardModelCatalog.fetch(providerId, baseUrl, token, metaOut, this::openVendorConnection);
     }
 
+    private Response syncWorkBuddyCatalog(String providerId) {
+        try {
+            JSONObject snapshot;
+            synchronized(this) { snapshot=new JSONObject(getProviderById(providerId).toString()); }
+            for(JSONObject account:AccountPoolPolicy.routingAccounts(snapshot))
+                if("oauth".equals(account.optString("type")))ensureStoredToken(providerId,account,null);
+            synchronized(this) { snapshot=new JSONObject(getProviderById(providerId).toString()); }
+            List<JSONObject> slots=AccountPoolPolicy.routingAccounts(snapshot);
+            if(slots.isEmpty())return errorResponse(401,"请先登录账号或添加 API Key");
+            Map<String,JSONObject> observed=new java.util.LinkedHashMap<>();
+            java.util.LinkedHashSet<String> union=new java.util.LinkedHashSet<>();
+            JSONObject unionMeta=new JSONObject();
+            for(JSONObject account:slots) {
+                String id=account.optString("id","");
+                if(id.isEmpty()) {
+                    JSONArray original=snapshot.optJSONArray("accounts");
+                    for(int i=0;original!=null && i<original.length();i++)if(original.optJSONObject(i)==account)id="@legacy-account/"+i;
+                }
+                if(id.isEmpty() || observed.containsKey(id))throw new IOException("Ambiguous WorkBuddy account slots");
+                JSONObject meta=new JSONObject();
+                List<String> models=fetchOfficialModels(providerId,storedAccess(account),account,meta);
+                JSONArray list=new JSONArray();for(String model:models){list.put(model);union.add(model);}
+                stampCatalog(meta);normalizeCatalog(providerId,meta);
+                observed.put(id,new JSONObject().put("models",list).put("modelMeta",meta));
+                for(java.util.Iterator<String> names=meta.keys();names.hasNext();){String model=names.next();if(!unionMeta.has(model))unionMeta.put(model,meta.get(model));}
+            }
+            if(union.isEmpty())throw new IOException("Empty WorkBuddy catalog");
+            JSONArray models=new JSONArray();for(String model:union)models.put(model);
+            synchronized(this) {
+                JSONObject live=getProviderById(providerId);
+                if(live==null || !jsonEquivalent(live,snapshot))return errorResponse(409,"账号在同步期间已变化，请重试");
+                JSONObject staged=new JSONObject(configJson.toString()), target=null;
+                JSONArray providers=staged.optJSONArray("providers");
+                for(int i=0;i<providers.length();i++){JSONObject row=providers.optJSONObject(i);if(row!=null && providerId.equals(row.optString("id")))target=row;}
+                if(target==null)throw new IOException("Provider unavailable");
+                JSONArray accounts=target.optJSONArray("accounts");
+                JSONObject legacy=new JSONObject();
+                for(Map.Entry<String,JSONObject> item:observed.entrySet()) {
+                    JSONObject destination=null;
+                    for(int i=0;accounts!=null && i<accounts.length();i++){JSONObject row=accounts.optJSONObject(i);if(row!=null && item.getKey().equals(row.optString("id")))destination=row;}
+                    if(destination==null && item.getKey().startsWith("@legacy-account/")) {
+                        int index=Integer.parseInt(item.getKey().substring("@legacy-account/".length()));
+                        destination=accounts==null?null:accounts.optJSONObject(index);
+                        if(destination==null || !destination.optString("id","").isEmpty())throw new IOException("Legacy account changed");
+                    }
+                    if(destination!=null)destination.put("models",item.getValue().get("models")).put("modelMeta",item.getValue().get("modelMeta"));
+                    else legacy.put(item.getKey(),item.getValue());
+                }
+                target.put("legacyKeyCatalog",legacy).put("models",models).put("modelMeta",unionMeta).put("accessAccountCatalogScoped",true);
+                target.put("accessCatalogPool",GatewayAccessCatalog.poolFingerprint(target));
+                if(!saveConfig(staged))return errorResponse(500,"WorkBuddy 模型目录未保存，原目录保持不变");
+            }
+            return jsonResponse(new JSONObject().put("ok",true).put("provider",providerId).put("count",models.length()).put("models",models)
+                    .put("accounts",slots.size()).put("message","已按每个账号独立同步模型目录"));
+        } catch(Exception failed) {return errorResponse(502,"WorkBuddy 账号或模型目录同步失败，原目录保持不变");}
+    }
+
     private JSONObject getWorkBuddyProvider() {
         JSONArray providers = configJson.optJSONArray("providers");
         if (providers == null) return null;
@@ -15525,25 +15718,25 @@ public class GatewayServer extends NanoHTTPD {
     }
 
     private List<String> fetchOfficialModels(String token, JSONObject metaOut) throws IOException {
+        JSONObject selected=null, provider=getProviderById("workbuddy");
+        if(provider!=null)for(JSONObject account:AccountPoolPolicy.routingAccounts(provider))if(token.equals(storedAccess(account))) {
+            if(selected!=null)throw new IOException("WorkBuddy catalog requires explicit account scope");
+            selected=account;
+        }
+        return fetchOfficialModels("workbuddy",token,selected,metaOut);
+    }
+    private List<String> fetchOfficialModels(String provider,String token,JSONObject account,JSONObject metaOut) throws IOException {
         HttpURLConnection conn = null;
         try {
-            conn = openVendorConnection("https://copilot.tencent.com/v3/config");
+            String url=WorkBuddyAuth.origin(provider)+"/v3/config";
+            Map<String,String> identity=WorkBuddyPolicy.catalogHeaders(provider,url,token,account);
+            if(identity.isEmpty())throw new IOException("Invalid WorkBuddy catalog identity");
+            conn = openVendorConnection(url);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(15000);
-            conn.setRequestProperty("Authorization", "Bearer " + token);
-            conn.setRequestProperty("User-Agent", "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0");
-            conn.setRequestProperty("X-Requested-With", "XMLHttpRequest");
-            conn.setRequestProperty("X-Product", "SaaS");
-            conn.setRequestProperty("X-IDE-Type", "WorkBuddy");
-            conn.setRequestProperty("X-IDE-Name", "WorkBuddy");
-            conn.setRequestProperty("X-IDE-Version", "5.9.3");
-            conn.setRequestProperty("X-Agent-Intent", "craft");
-            conn.setRequestProperty("X-Agent-Purpose", "conversation");
-            conn.setRequestProperty("X-Agent-Type", "main");
-            conn.setRequestProperty("X-Auth-Refresh-Source", "workbuddy");
-            conn.setRequestProperty("Accept", "application/json");
+            for(Map.Entry<String,String> header:identity.entrySet())conn.setRequestProperty(header.getKey(),header.getValue());
             int status = conn.getResponseCode();
             if (status < 200 || status >= 300) throw new IOException();
             java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
@@ -15624,7 +15817,7 @@ public class GatewayServer extends NanoHTTPD {
 
     /**
      * 判断池内是否已经存在同一个账号。
-     * 判定标准：凭据 token 完全相同，或账号名相同（忽略大小写且非空）。
+     * 这里只判断相同凭据；昵称相同不是同一个账号的证据。
      * 返回命中的已有账号对象，没有则返回 null。
      */
     private JSONObject findDuplicateAccount(JSONObject prov, String name, String token) {
@@ -15633,15 +15826,12 @@ public class GatewayServer extends NanoHTTPD {
         if (accounts == null) return null;
 
         String t = token == null ? "" : token.trim();
-        String n = name == null ? "" : name.trim();
         for (int i = 0; i < accounts.length(); i++) {
             JSONObject a = accounts.optJSONObject(i);
             if (a == null) continue;
             String at = a.optString("token", "").trim();
-            String an = a.optString("name", "").trim();
             boolean sameToken = !t.isEmpty() && t.equals(at);
-            boolean sameName = !n.isEmpty() && n.equalsIgnoreCase(an);
-            if (sameToken || sameName) return a;
+            if (sameToken) return a;
         }
         return null;
     }
@@ -15651,7 +15841,7 @@ public class GatewayServer extends NanoHTTPD {
         JSONObject out = new JSONObject();
         try {
             String who = existing.optString("name", "未命名账号");
-            String msg = providerName + " 池内已经有同名同账号「" + who + "」了，本次未重复加入。";
+            String msg = providerName + " 池内已有相同凭据的账号「" + who + "」（昵称相同不会合并）。";
             out.put("ok", false);
             out.put("duplicate", true);
             out.put("code", "DUPLICATE_ACCOUNT");
@@ -15677,12 +15867,19 @@ public class GatewayServer extends NanoHTTPD {
         return resp;
     }
 
-    private synchronized String addProviderAccount(String providerId, String name, String token) {
+    private synchronized String addProviderAccount(String providerId,String name,String token) {return addProviderAccount(providerId,name,token,false);}
+    private synchronized String addProviderAccount(String providerId, String name, String token, boolean force) {
+        if("workbuddy".equals(providerId) || "workbuddy-ai".equals(providerId)) {
+            try { return addWorkBuddyAccount(providerId,new JSONObject().put("name",name).put("token",token)
+                    .put("type","workbuddy-ai".equals(providerId) || token.startsWith("ck_") || token.startsWith("pt_")?"api":"token")); }
+            catch(Exception rejected){return "err";}
+        }
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
 
             JSONObject targetProv = null;
@@ -15715,22 +15912,23 @@ public class GatewayServer extends NanoHTTPD {
                 targetProv.put("accounts", accounts);
             }
 
-            String accId = "acc_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("acc_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("name", name);
             acc.put("token", token);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
+            acc=AccountPoolPolicy.upsert(targetProv,acc,providerId);
+            accId=acc.optString("id");
 
             JSONArray keys = targetProv.optJSONArray("keys");
             if (keys == null) {
                 keys = new JSONArray();
                 targetProv.put("keys", keys);
             }
-            keys.put(token);
 
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             return accId;
         } catch (Exception e) {
             e.printStackTrace();
@@ -15744,10 +15942,11 @@ public class GatewayServer extends NanoHTTPD {
      */
     private synchronized String addCatPawAccount(String name, String token, String uid) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            JSONObject staged=new JSONObject(configJson.toString());
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
             JSONObject targetProv = null;
             for (int i = 0; i < providers.length(); i++) {
@@ -15772,14 +15971,15 @@ public class GatewayServer extends NanoHTTPD {
                 accounts = new JSONArray();
                 targetProv.put("accounts", accounts);
             }
-            String accId = "acc_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("acc_");
             JSONObject acc = new JSONObject();
             acc.put("id", accId);
             acc.put("name", name);
             acc.put("token", token);
             if (uid != null && !uid.isEmpty()) acc.put("uid", uid);
             acc.put("addedAt", System.currentTimeMillis());
-            accounts.put(acc);
+            acc=AccountPoolPolicy.upsert(targetProv,acc,"catpaw");
+            accId=acc.optString("id");
 
             JSONArray keys = targetProv.optJSONArray("keys");
             if (keys == null) {
@@ -15796,7 +15996,7 @@ public class GatewayServer extends NanoHTTPD {
             if (models == null || models.length() == 0) targetProv.put("models", CatPawAuth.modelList());
             targetProv.put("modelMeta", CatPawAuth.modelMeta());
 
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，账号未加入账号池");
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，账号未加入账号池");
             return accId;
         } catch (Exception e) {
             e.printStackTrace();
@@ -16475,7 +16675,7 @@ public class GatewayServer extends NanoHTTPD {
 
     private static String safeUpstreamErrorJson(String body, RouteTarget target) {
         try {
-            org.json.JSONTokener parser = new org.json.JSONTokener(body);
+            com.gaeul.allin.json.JSONTokener parser = new com.gaeul.allin.json.JSONTokener(body);
             Object parsed = parser.nextValue();
             if (!(parsed instanceof JSONObject) || parser.nextClean() != 0) throw new IOException("invalid JSON");
             return ((JSONObject) scrubErrorJson(parsed, target, 0)).toString();
@@ -16515,7 +16715,7 @@ public class GatewayServer extends NanoHTTPD {
                     .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                     .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
                     .decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString();
-            org.json.JSONTokener parser = new org.json.JSONTokener(body);
+            com.gaeul.allin.json.JSONTokener parser = new com.gaeul.allin.json.JSONTokener(body);
             Object parsed = parser.nextValue();
             if (!(parsed instanceof JSONObject) || parser.nextClean() != 0) return result;
             JSONObject json = (JSONObject) parsed;
@@ -17087,13 +17287,13 @@ public class GatewayServer extends NanoHTTPD {
                 cp.put("accounts", accounts);
             }
 
-            String accId = "codex_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("codex_");
             JSONObject targetAcc = null;
             for (int i = 0; i < accounts.length(); i++) {
                 JSONObject a = accounts.optJSONObject(i);
                 if (a != null) {
-                    if ((!info.accountId.isEmpty() && info.accountId.equals(a.optString("accountId")))
-                            || (!info.email.isEmpty() && info.email.equalsIgnoreCase(a.optString("email")))) {
+                    JSONObject identity=new JSONObject().put("accountId",info.accountId).put("email",info.email).put("authMode",info.authMode);
+                    if (AccountPoolPolicy.same(a,identity,"codex")) {
                         targetAcc = a;
                         accId = a.optString("id");
                         break;
@@ -17375,10 +17575,13 @@ public class GatewayServer extends NanoHTTPD {
     /** 把 Antigravity 账号写进供应商池（同邮箱覆盖，不重复堆） */
     private synchronized String addAntigravityAccount(JSONObject info, String accName) {
         try {
-            JSONArray providers = configJson.optJSONArray("providers");
+            // Preserve the existing one-shot-login recovery contract: a failed disk location
+            // must not discard the newly exchanged credential held by the login flow.
+            JSONObject staged=configJson;
+            JSONArray providers = staged.optJSONArray("providers");
             if (providers == null) {
                 providers = new JSONArray();
-                configJson.put("providers", providers);
+                staged.put("providers", providers);
             }
             JSONObject ap = null;
             for (int i = 0; i < providers.length(); i++) {
@@ -17416,7 +17619,7 @@ public class GatewayServer extends NanoHTTPD {
             String email = info.optString("email", "");
             String refresh = info.optString("refresh", "");
             JSONObject targetAcc = null;
-            String accId = "ag_" + System.currentTimeMillis();
+            String accId = AccountPoolPolicy.newId("ag_");
             for (int i = 0; i < accounts.length(); i++) {
                 JSONObject a = accounts.optJSONObject(i);
                 if (a == null) continue;
@@ -17439,7 +17642,7 @@ public class GatewayServer extends NanoHTTPD {
             java.util.Iterator<String> it = info.keys();
             while (it.hasNext()) {
                 String k = it.next();
-                targetAcc.put(k, info.opt(k));
+                if(!"id".equals(k) && !"addedAt".equals(k)) targetAcc.put(k, info.opt(k));
             }
             String shown = (accName != null && !accName.isEmpty()) ? accName : email;
             if (shown == null || shown.trim().isEmpty()) {
@@ -17496,7 +17699,7 @@ public class GatewayServer extends NanoHTTPD {
 
             // The one-shot login has already been spent by now: a save that did not land must be
             // reported, never returned as an account id the caller can celebrate.
-            if (!saveConfig(configJson)) throw new IOException("配置保存失败，Antigravity 账号未加入账号池");
+            if (!saveConfig(staged)) throw new IOException("配置保存失败，Antigravity 账号未加入账号池");
             // 登录刚换来这个 refresh 值：厂商本人证明它当前有效，所以之前把它记成「已作废」的
             // 记录不再成立（Google 对同一账号可能发回同一个值），这条账号的待写轮换也一并作废。
             if (!refresh.isEmpty()) {

@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.net.URI;
 import java.util.Iterator;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /** Cross-protocol image syntax. Validation scans encoded data without decoding it. */
 final class ImageContent {

@@ -438,10 +438,7 @@ function reset(){const b=bar(); if(b)b.remove(); toasts.length=0;
 })().catch(e=>{$('result').textContent='FAIL '+(e&&e.message?e.message:e)});
 <\/script></body></html>`;
 
-const file = '/tmp/allin-legacy-key-migration.html';
-fs.writeFileSync(file, harness);
-const out = cp.execFileSync('chromium', ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-  '--virtual-time-budget=5000', '--dump-dom', 'file://' + file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+const out=require('./browser-fixture.cjs').dom(harness,5000);
 const verdict = out.match(/<pre id="result">([\s\S]*?)<\/pre>/);
 assert(verdict, 'harness result element missing');
 assert.equal(verdict[1], 'PASS', verdict[1]);

@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 public final class TraeModelsOfflineTest {
  public static void main(String[] args)throws Exception {
   JSONObject batch=new JSONObject("{\"function_configs\":[{\"function\":\"chat_v3\",\"config_info_list\":[{\"config_name\":\"a\",\"context_window_tokens\":{\"dev\":100,\"max\":1000},\"model_detail_list\":[{\"model_name\":\"a__max\",\"max_tokens\":20}]},{\"config_name\":\"custom_model_1\"}]},{\"function\":\"solo_agent\",\"config_info_list\":[{\"config_name\":\"a\",\"multimodal\":true,\"reasoning_effort_config\":{\"options\":[\"light\",\"high\"]},\"model_detail_list\":[{\"model_name\":\"a__dev\",\"max_tokens\":10}]},{\"config_name\":\"b\"}]}]}");

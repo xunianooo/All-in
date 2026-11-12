@@ -5,7 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 /**
  * Qoder's account usage envelope, {displayMode, qoderUsage}, read as the vendored plugin reads it

@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.*;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class AtomicConfigFileOfflineTest {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }

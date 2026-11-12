@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.CodingErrorAction;
@@ -92,7 +92,7 @@ final class EncryptedConfigBackup {
         String s = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(data)).toString();
         new BoundedStrictJson(s).run();
-        org.json.JSONTokener tokener = new org.json.JSONTokener(s);
+        com.gaeul.allin.json.JSONTokener tokener = new com.gaeul.allin.json.JSONTokener(s);
         Object parsed = tokener.nextValue();
         if (!(parsed instanceof JSONObject) || tokener.nextClean() != 0) throw new IllegalArgumentException("config root");
         JSONObject root = (JSONObject) parsed;

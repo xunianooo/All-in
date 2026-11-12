@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public final class NativeAnthropicPolicyOfflineTest {
     interface Action { void run() throws Exception; }
@@ -66,12 +66,12 @@ public final class NativeAnthropicPolicyOfflineTest {
         JSONObject schema = maskedComplex.getJSONArray("tools").getJSONObject(0).getJSONObject("input_schema");
         check(schema.getString("type").equals("object") && schema.getJSONObject("properties").has("id"), "schema structure");
         JSONObject mixed = new JSONObject();
-        mixed.put("content", new org.json.JSONArray()
+        mixed.put("content", new com.gaeul.allin.json.JSONArray()
             .put(new JSONObject().put("type", "thinking").put("thinking", token).put("signature", token))
             .put(new JSONObject().put("type", "text").put("text", token))
             .put(new JSONObject().put("type", "tool_use").put("input", new JSONObject().put("id", token).put("type", token).put("data", token)))
             .put(new JSONObject().put("type", "future").put("payload", token)));
-        org.json.JSONArray mixedOut = new JSONObject(NativeAnthropicPolicy.unmaskResponse(mixed.toString(), session)).getJSONArray("content");
+        com.gaeul.allin.json.JSONArray mixedOut = new JSONObject(NativeAnthropicPolicy.unmaskResponse(mixed.toString(), session)).getJSONArray("content");
         check(mixedOut.getJSONObject(0).getString("signature").equals(token) && mixedOut.getJSONObject(0).getString("thinking").equals(token), "signed unchanged");
         check(mixedOut.getJSONObject(1).getString("text").equals("a@example.com"), "mixed text restored");
         check(mixedOut.getJSONObject(2).getJSONObject("input").getString("id").equals("a@example.com"), "mixed tool restored");

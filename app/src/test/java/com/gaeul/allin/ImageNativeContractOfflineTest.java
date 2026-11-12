@@ -1,5 +1,5 @@
 package com.gaeul.allin;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 public class ImageNativeContractOfflineTest {
  interface Action {void run() throws Exception;}

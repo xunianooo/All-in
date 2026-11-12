@@ -91,9 +91,8 @@ final class GatewayManagementCredential {
     }
 
     private static boolean privatePermissions(File file) {
-        return file.setReadable(false, false) && file.setWritable(false, false)
-                && file.setExecutable(false, false) && file.setReadable(true, true)
-                && file.setWritable(true, true);
+        try { PrivacyKeyStore.privateFile(file); return true; }
+        catch (java.io.IOException denied) { return false; }
     }
 
     private static String read(File file) throws Exception {

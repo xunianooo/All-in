@@ -5,7 +5,7 @@ import java.io.*;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPOutputStream;
-import org.json.*;
+import com.gaeul.allin.json.*;
 
 /** Synthetic loopback coverage, Java 8 and Android compatible. */
 public final class ZCodeGiftPolicyHttpTest {

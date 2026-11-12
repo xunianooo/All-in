@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 import fi.iki.elonen.NanoHTTPD;
-import java.io.*;import java.net.*;import java.nio.charset.StandardCharsets;import org.json.*;
+import java.io.*;import java.net.*;import java.nio.charset.StandardCharsets;import com.gaeul.allin.json.*;
 
 /** Real Nano socket delegating to a real GatewayServer with fake configuration. */
 public final class IngressGatewayHttpTest {

@@ -1,7 +1,7 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -18,6 +18,41 @@ public final class WorkBuddyPolicy {
     private static final byte[] SALT = new byte[32];
     static { new SecureRandom().nextBytes(SALT); }
     private WorkBuddyPolicy() {}
+
+    /** Account catalog authentication shares the selected account's scope, never client headers. */
+    public static Map<String,String> catalogHeaders(String provider,String url,String credential,JSONObject account) {
+        boolean ai="workbuddy-ai".equals(provider);
+        if(!ai && !"workbuddy".equals(provider))return Collections.emptyMap();
+        String host=ai?"www.workbuddy.ai":"copilot.tencent.com";
+        try {
+            URI u=new URI(url);
+            if(!"https".equalsIgnoreCase(u.getScheme()) || !host.equalsIgnoreCase(u.getHost()) || u.getPort()!=-1
+                    || u.getRawUserInfo()!=null || u.getRawQuery()!=null || u.getRawFragment()!=null || !"/v3/config".equals(u.getRawPath()))
+                return Collections.emptyMap();
+        } catch(Exception invalid) {return Collections.emptyMap();}
+        String key=credential==null?"":credential.trim();
+        if(!safe(key) || (credential!=null && !safe(credential)))return Collections.emptyMap();
+        String uid=accountHeaderValue(account,"uid"), domain=accountHeaderValue(account,"domain");
+        boolean oauth=account!=null && "oauth".equals(account.optString("type"));
+        boolean api=(ai && !oauth) || (account!=null && "api".equals(account.optString("type"))) || key.startsWith("ck_") || key.startsWith("pt_");
+        Map<String,String> out=new LinkedHashMap<>();out.put("Authorization","Bearer "+key);
+        if(api){out.put("X-API-Key",key);if(uid.isEmpty())uid="anonymous_"+key.substring(Math.max(0,key.length()-8));}
+        else out.put("X-Domain",domain.isEmpty()?host:domain);
+        if(!uid.isEmpty())out.put("X-User-Id",uid);
+        try {String enterprise=WorkBuddyLogin.enterpriseValue(account);if(!enterprise.isEmpty()){out.put("X-Enterprise-Id",enterprise);out.put("X-Tenant-Id",enterprise);}}
+        catch(java.io.IOException invalid){throw new IllegalArgumentException("Invalid WorkBuddy enterprise identity");}
+        out.put("User-Agent","WorkBuddy/5.9.3 "+(ai?"workbuddy-ai":"WorkBuddy")+"/5.9.3 CLI/2.165.0");
+        out.put("X-Requested-With","XMLHttpRequest");out.put("X-Product","SaaS");out.put("X-IDE-Type","WorkBuddy");
+        out.put("X-IDE-Name","WorkBuddy");out.put("X-IDE-Version","5.9.3");out.put("X-Agent-Intent","craft");
+        out.put("X-Agent-Purpose","conversation");out.put("X-Agent-Type","main");out.put("X-Auth-Refresh-Source","workbuddy");
+        out.put("Accept","application/json");out.put("Accept-Encoding","identity");
+        return out;
+    }
+    private static String accountHeaderValue(JSONObject account,String field) {
+        String raw=account==null?"":account.optString(field,"");
+        if(!raw.isEmpty() && !safe(raw))throw new IllegalArgumentException("Invalid WorkBuddy account identity");
+        return raw.trim();
+    }
 
     public static Map<String, String> headers(String provider, String url, String credential,
                                                JSONObject account, String explicitSession,
@@ -54,11 +89,23 @@ public final class WorkBuddyPolicy {
         } catch (Exception e) { return Collections.emptyMap(); }
         String key = credential == null ? "" : credential.trim();
         if (!safe(key)) return Collections.emptyMap();
-        String uid = value(account, "uid");
-        String domain = value(account, "domain");
-        boolean apiKey = ai || key.startsWith("ck_") || key.startsWith("pt_");
+        String uid = accountHeaderValue(account, "uid");
+        String domain = accountHeaderValue(account, "domain");
+        boolean oauth=account!=null && "oauth".equals(account.optString("type"));
+        boolean apiKey = (ai && !oauth) || (account!=null && "api".equals(account.optString("type")))
+                || key.startsWith("ck_") || key.startsWith("pt_");
         Map<String, String> h = new LinkedHashMap<>();
         h.put("Authorization", "Bearer " + key);
+        Object rawEnterprise=account==null?null:account.opt("enterpriseId");
+        if(rawEnterprise!=null && rawEnterprise!=JSONObject.NULL) {
+            if(!(rawEnterprise instanceof String)) throw new IllegalArgumentException("Invalid WorkBuddy enterprise identity");
+            if(!((String)rawEnterprise).isEmpty() && !safe((String)rawEnterprise)) throw new IllegalArgumentException("Invalid WorkBuddy enterprise identity");
+            String enterprise=((String)rawEnterprise).trim();
+            if(!enterprise.isEmpty()) {
+                if(!safe(enterprise)) throw new IllegalArgumentException("Invalid WorkBuddy enterprise identity");
+                h.put("X-Enterprise-Id",enterprise); h.put("X-Tenant-Id",enterprise);
+            }
+        }
         if (apiKey) {
             h.put("X-API-Key", key);
             if (uid.isEmpty()) uid = "anonymous_" + key.substring(Math.max(0, key.length() - 8));

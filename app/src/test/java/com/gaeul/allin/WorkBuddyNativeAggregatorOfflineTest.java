@@ -2,7 +2,7 @@ package com.gaeul.allin;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 public class WorkBuddyNativeAggregatorOfflineTest {
     static void check(boolean ok, String why) { if (!ok) throw new AssertionError(why); }

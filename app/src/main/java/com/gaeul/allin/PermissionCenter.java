@@ -5,7 +5,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 
 import java.lang.reflect.Method;
 

@@ -7,8 +7,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.TreeMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONArray;
+import com.gaeul.allin.json.JSONObject;
 
 /** Offline, lossless-in-shape aggregator for Anthropic Messages SSE events. */
 public final class WorkBuddyNativeAggregator {

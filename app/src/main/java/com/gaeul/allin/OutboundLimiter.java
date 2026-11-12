@@ -1,6 +1,6 @@
 package com.gaeul.allin;
 
-import org.json.JSONObject;
+import com.gaeul.allin.json.JSONObject;
 import java.util.*;
 
 /** Process-local outbound admission. Domain identifiers must be stable, non-secret opaque IDs. */
