@@ -373,7 +373,7 @@ public final class GatewayListenAddressOfflineTest {
         List<String> found = new ArrayList<String>();
         for (Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements(); ) {
             NetworkInterface intf = en.nextElement();
-            if (intf.isLoopback() != loopback) continue;
+            if (!intf.isUp() || intf.isLoopback() != loopback) continue;
             for (Enumeration<InetAddress> addresses = intf.getInetAddresses(); addresses.hasMoreElements(); ) {
                 InetAddress address = addresses.nextElement();
                 if (!(address instanceof Inet4Address) || address.isLinkLocalAddress()) continue;
@@ -382,6 +382,36 @@ public final class GatewayListenAddressOfflineTest {
             }
         }
         return found;
+    }
+
+    /** Independent kernel TCP control: never use NanoHTTPD or the listen plan to qualify a NIC. */
+    static boolean independentTcpReach(String ip) {
+        try (ServerSocket control = new ServerSocket()) {
+            control.bind(new InetSocketAddress("0.0.0.0", 0));
+            control.setSoTimeout(2000);
+            try (Socket client = new Socket()) {
+                client.connect(new InetSocketAddress(ip, control.getLocalPort()), 2000);
+                try (Socket accepted = control.accept()) {
+                    return accepted.getPort() == client.getLocalPort()
+                            && accepted.getInetAddress().equals(client.getLocalAddress());
+                }
+            }
+        } catch (Exception unavailable) {
+            System.out.println("NOTE: independent TCP control unavailable for " + ip + " (" + unavailable.getClass().getSimpleName() + ")");
+            return false;
+        }
+    }
+    static List<String> qualifiedLan(List<String> candidates, java.util.function.Predicate<String> control) {
+        List<String> out = new ArrayList<>();
+        for (String ip : candidates) if (control.test(ip)) out.add(ip);
+        return out;
+    }
+    static void fixtureQualification() {
+        List<String> candidates = java.util.Arrays.asList("192.0.2.10", "192.0.2.11");
+        List<String> actual = qualifiedLan(candidates, ip -> "192.0.2.11".equals(ip));
+        check(actual.size() == 1 && actual.get(0).equals("192.0.2.11"), "exclude only independently unreachable addresses");
+        check(qualifiedLan(candidates, ip -> true).equals(candidates), "keep every TCP-capable LAN witness");
+        check(qualifiedLan(candidates, ip -> false).isEmpty(), "a failed control never invents reachable LAN evidence");
     }
 
     static String httpGet(String ip, int port, int timeoutMillis) {
@@ -408,7 +438,7 @@ public final class GatewayListenAddressOfflineTest {
     }
 
     /** 在本机实测「这个 bind 主机到底能被谁连上」。 */
-    static void probeReach(String bindHost, String label, boolean expectLoopback, boolean expectLan) throws Exception {
+    static void probeReach(String bindHost, String label, boolean expectLoopback, boolean expectLan, List<String> lan) throws Exception {
         int port = freePort();
         Probe probe = new Probe(bindHost, port);
         try {
@@ -417,7 +447,7 @@ public final class GatewayListenAddressOfflineTest {
             check(expectLoopback ? reply != null && reply.startsWith("HTTP/1.1 200")
                             : reply == null,
                     label + ": 127.0.0.1 reachable=" + expectLoopback);
-            for (String ip : localIpv4(false)) {
+            for (String ip : lan) {
                 String lanReply = httpGet(ip, port, 2000);
                 check(expectLan ? lanReply != null && lanReply.startsWith("HTTP/1.1 200") : lanReply == null,
                         label + ": LAN " + ip + " reachable=" + expectLan);
@@ -426,32 +456,44 @@ public final class GatewayListenAddressOfflineTest {
     }
 
     static void socketSemantics() throws Exception {
+        List<String> candidates = localIpv4(false);
+        List<String> lan = qualifiedLan(candidates, GatewayListenAddressOfflineTest::independentTcpReach);
+        System.out.println("Observed LAN candidates: " + candidates + "; independently reachable witnesses: " + lan);
+        check(candidates.isEmpty() || !lan.isEmpty(), "No independent TCP-capable LAN address: fixture is inconclusive, not a listener failure or a pass");
+        fixtureQualification();
         // 1. 历史默认：回环与局域网都通（证明既有连接不受影响）。
         probeReach(GatewayServer.planListen("0.0.0.0", false, PORT, PORT).host,
-                "wildcard listener", true, true);
+                "wildcard listener", true, true, lan);
 
         // 2. 旧配置写 127.0.0.1：生效的仍必须是通配，局域网连接逐字不变。
         File dir = tempDir("allin-listen-socket-");
         GatewayServer.ListenPlan legacy = GatewayServer.planListen(
                 writeConfig(dir, "{\"server\":{\"host\":\"127.0.0.1\"},\"providers\":[]}"), PORT);
-        probeReach(legacy.host, "legacy 127.0.0.1 configuration (no silent cut)", true, true);
+        probeReach(legacy.host, "legacy 127.0.0.1 configuration (no silent cut)", true, true, lan);
 
         // 3. 显式 opt-in：只监听回环，局域网被关掉，App 自己的 127.0.0.1 照常。
         probeReach(GatewayServer.planListen("", true, PORT, PORT).host,
-                "explicit loopbackOnly listener", true, false);
+                "explicit loopbackOnly listener", true, false, lan);
 
         // 4. 损坏配置 fail-closed：同样只监听回环（不扩大暴露），且 127.0.0.1 仍然可达（恢复界面进得去）。
         GatewayServer.ListenPlan damaged = GatewayServer.planListen(
                 writeConfig(dir, "{ damaged"), PORT);
-        probeReach(damaged.host, "damaged configuration (fail-closed)", true, false);
+        probeReach(damaged.host, "damaged configuration (fail-closed)", true, false, lan);
 
         // 5. 负对照：本次修改之前的 super(port)（hostname=null）确实在局域网可达——被修掉的假象。
-        List<String> lan = localIpv4(false);
-        System.out.println("observed non-loopback IPv4: " + lan);
+        System.out.println("verified non-loopback IPv4 for negative controls: " + lan);
         if (lan.isEmpty()) {
             System.out.println("NOTE: no non-loopback IPv4 here; the negative control is not observed");
             return;
         }
+        boolean caught = false;
+        try { probeReach("127.0.0.1", "intentional incorrect wildcard", true, true, lan); }
+        catch (AssertionError expected) { caught = true; }
+        check(caught, "qualified witness must still detect a wildcard listener incorrectly restricted to loopback");
+        caught = false;
+        try { probeReach("0.0.0.0", "intentional exposed loopback-only", true, false, lan); }
+        catch (AssertionError expected) { caught = true; }
+        check(caught, "qualified witness must still detect an exposed loopback-only listener");
         int port = freePort();
         Probe before = new Probe((String) null, port);
         try {
