@@ -33,6 +33,11 @@ jobs:
       - name: Install Android SDK 37
         shell: pwsh
         run: sdkmanager --install "platforms;android-37.0"
+      - name: Listener socket semantics
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -eq "Windows") { ./gradlew.bat :app:offlineTest_GatewayListenAddressOfflineTest --no-daemon }
+          else { ./gradlew :app:offlineTest_GatewayListenAddressOfflineTest --no-daemon }
       - name: Offline tests
         shell: pwsh
         run: |

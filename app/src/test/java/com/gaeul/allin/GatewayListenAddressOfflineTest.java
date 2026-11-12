@@ -414,6 +414,59 @@ public final class GatewayListenAddressOfflineTest {
         check(qualifiedLan(candidates, ip -> false).isEmpty(), "a failed control never invents reachable LAN evidence");
     }
 
+    /** These probes have fixed-length bodies. A complete HTTP frame must not wait for TCP EOF. */
+    static String readFixedReply(InputStream in) throws Exception {
+        ByteArrayOutputStream reply = new ByteArrayOutputStream(); byte[] buffer = new byte[512];
+        while (reply.size() < 8192) {
+            int n;
+            try { n = in.read(buffer); }
+            catch (Exception failure) { throw new java.io.IOException("fixture read failed after " + reply.size() + " bytes", failure); }
+            if (n < 0) return null;
+            if (n == 0) continue;
+            reply.write(buffer, 0, n); if (reply.size() > 8192) return null;
+            String text = reply.toString("ISO-8859-1"); int end = text.indexOf("\r\n\r\n");
+            if (end < 0) continue;
+            String header = text.substring(0, end);
+            if (header.toLowerCase(java.util.Locale.ROOT).contains("\r\ntransfer-encoding:")) return null;
+            java.util.regex.Matcher length = java.util.regex.Pattern.compile("(?im)^content-length:\\s*([0-9]+)\\s*$").matcher(header);
+            if (!length.find()) return null;
+            long body;
+            try { body = Long.parseLong(length.group(1)); } catch (NumberFormatException bad) { return null; }
+            if (length.find() || body > 8192) return null;
+            long total = end + 4L + body; if (total > 8192) return null;
+            if (reply.size() == total) return text;
+            if (reply.size() > total) return null;
+        }
+        return null;
+    }
+    static void fixtureHttpFraming() throws Exception {
+        final byte[] frame = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".getBytes(StandardCharsets.ISO_8859_1);
+        final int[] reads = {0}; final java.io.ByteArrayInputStream bytes = new java.io.ByteArrayInputStream(frame);
+        InputStream resetsAfterComplete = new InputStream() {
+            public int read() throws java.io.IOException { throw new java.io.IOException("bulk reads only"); }
+            public int read(byte[] b, int off, int len) throws java.io.IOException {
+                if (reads[0]++ > 0) throw new java.net.SocketException("synthetic reset after complete frame");
+                return bytes.read(b, off, len);
+            }
+        };
+        check(readFixedReply(resetsAfterComplete).endsWith("\r\n\r\nok") && reads[0] == 1, "complete response does not read into a reset or wait for EOF");
+        check(readFixedReply(new java.io.ByteArrayInputStream(java.util.Arrays.copyOf(frame, frame.length - 1))) == null, "partial body never establishes reachability");
+        check(readFixedReply(new java.io.ByteArrayInputStream("HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\nok".getBytes(StandardCharsets.ISO_8859_1))) == null, "invalid length rejected");
+        check(readFixedReply(new java.io.ByteArrayInputStream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1))) != null, "known zero-length response is complete");
+    }
+    static void socketFailureDiagnostic(String ip, String reply) {
+        String first = reply == null ? "null" : reply.split("\r\n", 2)[0];
+        System.out.println("Unexpected fixture HTTP reply for " + ip + ": " + first);
+        for (java.util.Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
+            boolean relevant = false;
+            for (StackTraceElement frame : entry.getValue()) if (frame.getClassName().startsWith("fi.iki.elonen.NanoHTTPD") || frame.getClassName().startsWith("java.net.InetAddress")) relevant = true;
+            if (relevant) {
+                System.out.println("Fixture thread: " + entry.getKey().getName());
+                for (int i = 0; i < Math.min(10, entry.getValue().length); i++) System.out.println("  " + entry.getValue()[i]);
+            }
+        }
+    }
+
     static String httpGet(String ip, int port, int timeoutMillis) {
         Socket socket = new Socket();
         try {
@@ -424,13 +477,10 @@ public final class GatewayListenAddressOfflineTest {
                     .getBytes(StandardCharsets.UTF_8));
             out.flush();
             InputStream in = socket.getInputStream();
-            ByteArrayOutputStream reply = new ByteArrayOutputStream();
-            byte[] buffer = new byte[512];
-            int read;
-            // Drain the whole answer: closing on a half-read reply makes NanoHTTPD log a broken pipe.
-            while (reply.size() < 8192 && (read = in.read(buffer)) > 0) reply.write(buffer, 0, read);
-            return reply.size() == 0 ? "" : reply.toString("ISO-8859-1");
+            return readFixedReply(in);
         } catch (Exception unreachable) {
+            System.out.println("Fixture HTTP failure for " + ip + ": " + unreachable.getClass().getSimpleName() + ": " + unreachable.getMessage());
+            if (unreachable.getCause() != null) System.out.println("  cause: " + unreachable.getCause().getClass().getSimpleName());
             return null;
         } finally {
             try { socket.close(); } catch (Exception ignored) { }
@@ -449,8 +499,10 @@ public final class GatewayListenAddressOfflineTest {
                     label + ": 127.0.0.1 reachable=" + expectLoopback);
             for (String ip : lan) {
                 String lanReply = httpGet(ip, port, 2000);
-                check(expectLan ? lanReply != null && lanReply.startsWith("HTTP/1.1 200") : lanReply == null,
-                        label + ": LAN " + ip + " reachable=" + expectLan);
+                boolean observed = lanReply != null && lanReply.startsWith("HTTP/1.1 200") && lanReply.endsWith("\r\n\r\nok");
+                if (observed != expectLan) socketFailureDiagnostic(ip, lanReply);
+                check(expectLan ? observed : lanReply == null,
+                        label + ": LAN " + ip + " expected=" + expectLan + " actual=" + observed);
             }
         } finally { probe.stop(); }
     }
@@ -461,6 +513,7 @@ public final class GatewayListenAddressOfflineTest {
         System.out.println("Observed LAN candidates: " + candidates + "; independently reachable witnesses: " + lan);
         check(candidates.isEmpty() || !lan.isEmpty(), "No independent TCP-capable LAN address: fixture is inconclusive, not a listener failure or a pass");
         fixtureQualification();
+        fixtureHttpFraming();
         // 1. 历史默认：回环与局域网都通（证明既有连接不受影响）。
         probeReach(GatewayServer.planListen("0.0.0.0", false, PORT, PORT).host,
                 "wildcard listener", true, true, lan);
