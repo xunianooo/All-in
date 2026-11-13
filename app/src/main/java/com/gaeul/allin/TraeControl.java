@@ -110,15 +110,26 @@ public final class TraeControl implements AutoCloseable {
         long now=System.currentTimeMillis(); Iterator<Login> it=flows.values().iterator();
         while(it.hasNext()) { Login e=it.next(); if(now>e.flow.deadline+FLOW_RETENTION) { e.flow.close(); it.remove(); } }
     }
-    private synchronized JSONObject init(boolean fresh) throws Exception {
+    private JSONObject flowView(Login entry,boolean resumed) {
+        JSONObject view=entry.flow.view();
+        view.put("ok",true).put("resumed",resumed);
+        return view;
+    }
+    private synchronized JSONObject init(boolean fresh,String requestedId) throws Exception {
         live(); prune();
         if(fresh) {for(Login e:flows.values())e.flow.close();flows.clear();}
-        for(Login e:flows.values()) if("pending".equals(e.flow.status) && System.currentTimeMillis()<e.flow.deadline)
-            return new JSONObject().put("ok",true).put("url",e.flow.url).put("flowId",e.flow.flowId).put("status","pending").put("deadline",e.flow.deadline).put("resumed",true);
+        else if(!requestedId.isEmpty()) {
+            Login existing=flows.get(requestedId);
+            if(existing==null)return new JSONObject().put("ok",false).put("status","missing")
+                    .put("error","原授权记录已失效，请点击重新发起授权；不会自动创建另一条授权");
+            return flowView(existing,true);
+        }
+        for(Login e:flows.values()) if(("pending".equals(e.flow.status)||"binding".equals(e.flow.status)||"validating".equals(e.flow.status)) && System.currentTimeMillis()<e.flow.deadline)
+            return flowView(e,true);
         if(flows.size()>=4) throw new IOException("too many login flows");
-        TraeAuth.Flow f=TraeAuth.startLogin(NetworkPolicy.capture()); flows.put(f.flowId,new Login(f));
+        TraeAuth.Flow f=TraeAuth.startLogin(NetworkPolicy.capture()); Login entry=new Login(f); flows.put(f.flowId,entry);
         if(closed || host.retired()) { flows.remove(f.flowId); f.close(); throw new IOException("Trae control retired"); }
-        return new JSONObject().put("ok",true).put("url",f.url).put("flowId",f.flowId).put("status","pending").put("deadline",f.deadline).put("resumed",false);
+        return flowView(entry,false);
     }
     private synchronized Login findFlow(String id) throws Exception {
         live(); prune(); Login e=flows.get(id); return e;
@@ -133,7 +144,7 @@ public final class TraeControl implements AutoCloseable {
                 JSONObject existing=aa.optJSONObject(i);
                 if(existing!=null && uid.equals(existing.optString("uid",""))) { if(index>=0) throw new IOException("duplicate account uid"); index=i; }
             }
-            if(!result.optBoolean("bound",false) || !result.optString("refreshState", "").isEmpty()) throw new IOException("account binding incomplete");
+            if((!result.optBoolean("bound",false) && !TraeAuth.verifiedBrowserAccount(result)) || !result.optString("refreshState", "").isEmpty()) throw new IOException("account authorization incomplete");
             JSONObject a=copy(result); String id=index<0?"trae_"+UUID.randomUUID():aa.getJSONObject(index).optString("id","");
             if(id.isEmpty()) id="trae_"+UUID.randomUUID();
             a.put("id",id); a.put("generation",UUID.randomUUID().toString()); a.put("enabled",true);
@@ -161,6 +172,7 @@ public final class TraeControl implements AutoCloseable {
                 if("closed".equals(status)) status="failed";
                 JSONObject ret=new JSONObject().put("ok",true).put("flowId",id).put("status",status);
                 if(!entry.flow.error.isEmpty()) ret.put("error",entry.flow.error);
+                if(!entry.flow.errorCode.isEmpty()) ret.put("errorCode",entry.flow.errorCode);
                 return ret;
             }
             JSONObject result=entry.flow.takeResult();
@@ -171,7 +183,10 @@ public final class TraeControl implements AutoCloseable {
                 catch(Exception ignored) { }
                 live(); JSONObject safe=new JSONObject().put("id",aid).put("name",a.optString("name", ""));
                 JSONObject ret=new JSONObject().put("ok",true).put("flowId",id).put("status","ready").put("account",safe).put("keyId",aid);
-                if(!synced || !a.optBoolean("bound",false)) ret.put("hint",!a.optBoolean("bound",false)?"设备未绑定，请重新登录；请同步模型":"请同步模型");
+                ret.put("deviceBound",a.optBoolean("bound",false));ret.put("loginMode",a.optBoolean("bound",false)?"device":"browser");
+                String hint=a.optBoolean("bound",false)?"":"网页登录已验证；设备绑定未启用，部分功能以 Trae 实际权限为准";
+                if(!synced)hint+=(hint.isEmpty()?"":"；")+"请同步模型";
+                if(!hint.isEmpty())ret.put("hint",hint);
                 entry.response=ret; return copy(ret);
             } catch(Exception failed) {
                 entry.response=new JSONObject().put("ok",false).put("flowId",id).put("status","failed").put("error","保存账号失败，请重新登录");
@@ -219,7 +234,7 @@ public final class TraeControl implements AutoCloseable {
     private static String param(Map<String,String> params,String key) { String value=params==null?null:params.get(key); return value==null?"":value.trim(); }
     public JSONObject api(String path,Map<String,String> params,JSONObject body) throws Exception {
         live(); JSONObject b=body==null?new JSONObject():body;
-        if("/api/auth/trae-cn/init".equals(path)) return init("1".equals(param(params,"fresh")));
+        if("/api/auth/trae-cn/init".equals(path)) return init("1".equals(param(params,"fresh")),param(params,"flowId"));
         if("/api/auth/trae-cn/poll".equals(path)) return poll(param(params,"flowId"));
         if("/api/auth/trae-cn/sync-models".equals(path)) { String id=b.optString("accountId","").trim(); if(id.isEmpty()) id=param(params,"accountId"); return sync(id); }
         if("/api/trae/checkin-status".equals(path)) return checkin(param(params,"accountId"),false);

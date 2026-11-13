@@ -60,6 +60,7 @@ public class LoginActivity extends Activity {
     private String antigravityFlowId = "";
     private String traeFlowId = "";
     private String traeUrl = "";
+    private String traeLastError = "";
     private long traeDeadline;
     private volatile int traeGeneration;
     private volatile boolean traeActive = true;
@@ -593,7 +594,7 @@ public class LoginActivity extends Activity {
 
     // The generation belongs to this Activity; stale workers may never change a new flow.
     private boolean traeCurrent(int generation) {
-        return traeActive && generation == traeGeneration && !isFinishing();
+        return traeActive && generation == traeGeneration && !isFinishing() && !isDestroyed();
     }
 
     private void initTraeAuth() { initTraeAuth(false); }
@@ -601,16 +602,24 @@ public class LoginActivity extends Activity {
     private void initTraeAuth(boolean fresh) {
         final int generation = ++traeGeneration;
         android.content.SharedPreferences prefs = getSharedPreferences("magpie", MODE_PRIVATE);
-        boolean restoring = !prefs.getString("trae_flow_id", "").isEmpty()
-                && System.currentTimeMillis() - prefs.getLong("trae_flow_at", 0) < 5 * 60 * 1000L;
-        traeUrl = "";
+        if (fresh) clearTraeFlow();
+        traeFlowId = prefs.getString("trae_flow_id", "");
+        traeUrl = prefs.getString("trae_flow_url", "");
+        traeLastError = prefs.getString("trae_flow_error", "");
+        traeDeadline = prefs.getLong("trae_flow_at", 0) + 5 * 60 * 1000L;
+        final String restoringId = traeFlowId;
+        final boolean restoring = !restoringId.isEmpty();
         subtitleView.setText("正在申请 Trae 授权…");
         new Thread(scopedLoginTask(() -> {
             try {
-                String body = gatewayGet("http://127.0.0.1:3425/api/auth/trae-cn/init" + (fresh ? "?fresh=1" : ""));
+                String body = gatewayGet("http://127.0.0.1:3425/api/auth/trae-cn/init" + (fresh ? "?fresh=1" : restoring ? "?flowId=" + URLEncoder.encode(restoringId, "UTF-8") : ""));
                 if (body == null) throw new java.io.IOException("无法连接本机网关");
                 JSONObject result = new JSONObject(body);
-                if (!result.optBoolean("ok", false)) throw new java.io.IOException(result.optString("error", "初始化失败"));
+                if (!Boolean.TRUE.equals(result.opt("ok"))) {
+                    final String detail = result.optString("error", "Trae 授权初始化失败，请重新发起授权");
+                    mainHandler.post(() -> { if (traeCurrent(generation)) rememberTraeFailure(traeLastError.isEmpty() ? detail : traeLastError); });
+                    return;
+                }
                 final String id = result.optString("flowId", "");
                 final String url = result.optString("url", "");
                 if (id.isEmpty() || !validTraeUrl(url)) throw new java.io.IOException("授权链接无效");
@@ -625,14 +634,16 @@ public class LoginActivity extends Activity {
                     traeFlowId = id;
                     traeUrl = url;
                     traeDeadline = deadline;
-                    prefs.edit().putString("trae_flow_id", id).putLong("trae_flow_at", deadline - 5 * 60 * 1000L).apply();
+                    if (!resumed) traeLastError = "";
+                    prefs.edit().putString("trae_flow_id", id).putString("trae_flow_url", url)
+                            .putString("trae_flow_error", traeLastError).putLong("trae_flow_at", deadline - 5 * 60 * 1000L).apply();
                     subtitleView.setText("请在系统浏览器完成 Trae 登录，点此重新打开授权页");
                     subtitleView.setOnClickListener(v -> openTraeBrowser(traeUrl));
                     if (fresh || (!restoring && !resumed)) openTraeBrowser(url);
                     startTraePolling(generation, id, deadline);
                 });
             } catch (Exception e) {
-                mainHandler.post(() -> { if (traeCurrent(generation)) subtitleView.setText("Trae 登录初始化失败，请重新发起授权"); });
+                mainHandler.post(() -> { if (traeCurrent(generation)) rememberTraeFailure(traeLastError.isEmpty() ? "Trae 登录初始化失败，请检查本机网关后重新发起授权" : traeLastError); });
             }
         })).start();
     }
@@ -647,6 +658,7 @@ public class LoginActivity extends Activity {
     }
 
     private void openTraeBrowser(String url) {
+        if (!traeLastError.isEmpty()) { subtitleView.setText(traeLastError); return; }
         if (!validTraeUrl(url) || System.currentTimeMillis() >= traeDeadline) {
             subtitleView.setText("授权链接不可用或已过期，请重新发起授权");
             return;
@@ -659,12 +671,23 @@ public class LoginActivity extends Activity {
         traeFlowId = "";
         traeUrl = "";
         traeDeadline = 0;
-        getSharedPreferences("magpie", MODE_PRIVATE).edit().remove("trae_flow_id").remove("trae_flow_at").apply();
+        traeLastError = "";
+        getSharedPreferences("magpie", MODE_PRIVATE).edit().remove("trae_flow_id").remove("trae_flow_at")
+                .remove("trae_flow_url").remove("trae_flow_error").apply();
+    }
+
+    // Retain the original flow and failure across checks and Activity recreation.
+    // Only a deliberate fresh authorization or confirmed save clears this record.
+    private void rememberTraeFailure(String detail) {
+        String message = detail == null || detail.trim().isEmpty() ? "授权未完成，请重新发起授权" : detail;
+        traeLastError = message.length() > 600 ? message.substring(0, 600) : message;
+        getSharedPreferences("magpie", MODE_PRIVATE).edit().putString("trae_flow_error", traeLastError).apply();
+        subtitleView.setText(traeLastError);
     }
 
     private void checkTraeStatus() {
         if (traeFlowId.isEmpty()) {
-            subtitleView.setText("没有可检查的授权，请重新发起授权");
+            subtitleView.setText(traeLastError.isEmpty() ? "尚未发起授权，请点击重新发起授权" : traeLastError);
             return;
         }
         int generation = ++traeGeneration;
@@ -675,7 +698,10 @@ public class LoginActivity extends Activity {
     private void startTraePolling(final int generation, final String id, final long deadline) {
         new Thread(scopedLoginTask(() -> {
             int failures = 0;
-            while (traeCurrent(generation) && System.currentTimeMillis() < deadline) {
+            boolean firstCheck = true;
+            // A terminal result can still exist after the authorization deadline.
+            while (traeCurrent(generation) && (firstCheck || System.currentTimeMillis() < deadline)) {
+                firstCheck = false;
                 try {
                     String body = gatewayGet("http://127.0.0.1:3425/api/auth/trae-cn/poll?flowId=" + URLEncoder.encode(id, "UTF-8"));
                     if (body == null) throw new java.io.IOException("无法连接网关");
@@ -685,16 +711,21 @@ public class LoginActivity extends Activity {
                             || "expired".equals(status) || "closed".equals(status) || "missing".equals(status)
                             || "error".equals(status) || status.isEmpty()) {
                         final String detail = r.optString("error", r.optString("hint", "授权已失效"));
-                        mainHandler.post(() -> { if (traeCurrent(generation)) { clearTraeFlow(); subtitleView.setText("授权未完成：" + detail + "，请重新发起授权"); } });
+                        mainHandler.post(() -> { if (traeCurrent(generation)) rememberTraeFailure("授权未完成：" + detail); });
                         return;
                     }
                     failures = 0;
                     if ("ready".equals(status)) {
+                        if (!Boolean.TRUE.equals(r.opt("ok")) || !(r.opt("keyId") instanceof String) || r.optString("keyId", "").trim().isEmpty()) {
+                            mainHandler.post(() -> { if (traeCurrent(generation)) rememberTraeFailure("未收到有效的账号保存确认，请检查账号池后重新授权"); });
+                            return;
+                        }
                         final String hint = r.optString("hint", "");
                         mainHandler.post(() -> { if (traeCurrent(generation)) { clearTraeFlow(); Toast.makeText(this, "Trae 账号已入池" + (hint.isEmpty() ? "" : "：" + hint), Toast.LENGTH_LONG).show(); finish(); } });
                         return;
                     }
                     if ("binding".equals(status)) mainHandler.post(() -> { if (traeCurrent(generation)) subtitleView.setText("登录成功，正在绑定设备…"); });
+                    else if ("validating".equals(status)) mainHandler.post(() -> { if (traeCurrent(generation)) subtitleView.setText("设备绑定未启用，正在核验官方网页登录状态…"); });
                     else mainHandler.post(() -> { if (traeCurrent(generation)) subtitleView.setText("等待 Trae 授权，点此重新打开授权页"); });
                 } catch (Exception e) {
                     if (++failures >= 3) {
@@ -704,7 +735,7 @@ public class LoginActivity extends Activity {
                 }
                 try { Thread.sleep(2500); } catch (InterruptedException e) { return; }
             }
-            mainHandler.post(() -> { if (traeCurrent(generation)) { clearTraeFlow(); subtitleView.setText("授权等待超时，请重新发起授权"); } });
+            mainHandler.post(() -> { if (traeCurrent(generation)) rememberTraeFailure("授权等待超时，请重新发起授权"); });
         })).start();
     }
 

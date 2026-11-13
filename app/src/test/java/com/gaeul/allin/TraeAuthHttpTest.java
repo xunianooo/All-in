@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPOutputStream;
 import com.gaeul.allin.json.JSONObject;
 public class TraeAuthHttpTest {
+ static final String CRLF=new String(new char[]{13,10});
  static void ok(boolean v,String m){if(!v)throw new AssertionError(m);}
  static int call(int port,String request)throws Exception {try(Socket s=new Socket("127.0.0.1",port)){s.setSoTimeout(5000);s.getOutputStream().write(request.getBytes("UTF-8"));s.getOutputStream().flush();String line=new BufferedReader(new InputStreamReader(s.getInputStream(),"UTF-8")).readLine();return Integer.parseInt(line.split(" ")[1]);}}
  static URL callback(TraeAuth.Flow f)throws Exception{String q=new URL(f.url).getQuery();for(String p:q.split("&")){String[] x=p.split("=",2);if(x[0].equals("auth_callback_url"))return new URL(URLDecoder.decode(x[1],"UTF-8"));}throw new AssertionError();}
@@ -20,6 +21,9 @@ public class TraeAuthHttpTest {
    if(m.equals("gzip")){ByteArrayOutputStream o=new ByteArrayOutputStream();try(GZIPOutputStream g=new GZIPOutputStream(o)){g.write("{\"ok\":true}".getBytes(StandardCharsets.UTF_8));}b=o.toByteArray();extra="Content-Encoding: gzip\r\n";}
    else if(m.equals("large")){b=new byte[2*1024*1024+1];}
    else if(m.equals("reject")){status=400;b="{\"ResponseMetadata\":{\"Error\":{\"Code\":\"denied\"}}}".getBytes(StandardCharsets.UTF_8);mode="success";}
+   else if(m.equals("denied")){status=403;b="{\"ResponseMetadata\":{\"Error\":{\"Code\":\"10101\",\"Message\":\"synthetic-private-reason\"}}}".getBytes(StandardCharsets.UTF_8);}
+   else if(m.equals("badgateway")){status=502;b="<html>synthetic-private-reason</html>".getBytes(StandardCharsets.UTF_8);}
+   else if(m.equals("oddcode")){status=403;b="{\"code\":\"synthetic-private-reason\"}".getBytes(StandardCharsets.UTF_8);}
    else if(m.equals("redirect")){status=302;b=new byte[0];extra="Location: http://127.0.0.1:"+ss.getLocalPort()+"/redirected\r\n";}
    else {b="{\"Result\":{\"Token\":\"new\",\"RefreshToken\":\"newrefresh\",\"TokenExpireAt\":\"2026-11-06T01:02:03Z\"}}".getBytes(StandardCharsets.UTF_8);}
    OutputStream out=c.getOutputStream();out.write(("HTTP/1.1 "+status+" OK\r\nContent-Length: "+b.length+"\r\n"+extra+"Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(b);out.flush();}catch(Exception ignored){}}
@@ -27,7 +31,41 @@ public class TraeAuthHttpTest {
  }
  static JSONObject account()throws Exception{JSONObject a=TraeDevice.create();a.put("token","old");a.put("refresh","refresh");a.put("uid","123");return a;}
  static String enc(String s)throws Exception{return URLEncoder.encode(s,"UTF-8");}
+ static String response(int port,String request)throws Exception {
+  try(Socket s=new Socket("127.0.0.1",port)){
+   s.setSoTimeout(10000);s.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));s.getOutputStream().flush();
+   InputStream in=s.getInputStream();ByteArrayOutputStream h=new ByteArrayOutputStream();int x,match=0;int[] end={13,10,13,10};
+   while(h.size()<32768&&(x=in.read())>=0){h.write(x);match=x==end[match]?match+1:x==13?1:0;if(match==4)break;}
+   ok(match==4,"complete callback headers");String headers=h.toString("UTF-8");int length=-1;
+   for(String line:headers.split(CRLF))if(line.toLowerCase().startsWith("content-length:"))length=Integer.parseInt(line.substring(15).trim());
+   ok(length>=0&&length<32768,"bounded callback body");byte[] b=new byte[length];int n=0;
+   while(n<length){int read=in.read(b,n,length-n);ok(read>0,"complete callback body");n+=read;}
+   return headers+new String(b,StandardCharsets.UTF_8);
+  }
+ }
+ static void diagnosticCases()throws Exception {
+  ok(TraeAuth.consumerAuthHost("https://API.TRAE.COM.CN:443/").equals("https://api.trae.com.cn"),"canonical official auth host");
+  try{TraeAuth.consumerAuthHost("https://api.trae.cn.evil.example");throw new AssertionError("host accepted");}catch(TraeAuth.Failure expected){}
+  ok(!TraeAuth.bindingFailureMessage(new IOException("synthetic-private-reason")).contains("synthetic-private-reason"),"exception message redacted");
+  try(Fixture fixture=new Fixture()){
+   for(String mode:new String[]{"denied","badgateway","oddcode"}){
+    fixture.mode=mode;int before=fixture.count.get();TraeAuth.Flow f=TraeAuth.startLogin();
+    try {
+     int p=port(f);String path=callbackPath(f)+"&userJwt="+enc("{\"Token\":\"synthetic-token\",\"RefreshToken\":\"synthetic-refresh\"}")+"&userInfo="+enc("{\"UserID\":\"synthetic-user\"}");
+     String page=response(p,"GET "+path+" HTTP/1.1"+CRLF+"Host: 127.0.0.1:"+p+CRLF+CRLF);
+     ok(f.status.equals("failed")&&f.takeResult()==null,"failed bind never becomes account");
+     ok(page.contains("name=\"viewport\"")&&page.contains("Content-Type: text/html"),"mobile-readable callback");
+     ok(page.contains("Referrer-Policy: no-referrer")&&page.contains("default-src 'none'"),"private callback page");
+     ok(!page.contains("synthetic-")&&!f.view().toString().contains("synthetic-"),"no upstream body or credential in diagnostics");
+     String want=mode.equals("denied")?"HTTP_403_CODE_10101":mode.equals("badgateway")?"HTTP_502_NON_JSON":"HTTP_403_CODE_OTHER";
+     ok(page.contains(want)&&f.errorCode.contains(want),"specific safe diagnostic: "+mode);
+     ok(fixture.count.get()-before==(mode.equals("badgateway")?1:3),"unknown outcome never retried; definitive refusals only permit read-only verification");
+    }finally{f.close();}
+   }
+  }
+ }
  public static void main(String[] args)throws Exception {
+  diagnosticCases();
   for(String alias:new String[]{"https://api.trae.cn","https://api.trae.com.cn","api.trae.com.cn","https://api.trae.com.cn/"})ok(TraeAuth.consumerCallbackHost(alias,true),"consumer auth alias");
   for(String hostile:new String[]{"https://api.trae.com.cn.evil.example","https://api.trae.com.cn@evil.example","http://api.trae.com.cn","https://api.trae.com.cn:8443","https://api.trae.com.cn/path","https://api.trae.com.cn?x=1"})ok(!TraeAuth.consumerCallbackHost(hostile,true),"reject untrusted alias");
   ok(TraeAuth.expiry("2026-11-06T01:02:03Z")==1793926923000L,"ISO");ok(TraeAuth.expiry("2026-11-06T09:02:03+08:00")==1793926923000L,"offset");ok(TraeAuth.expiry("1793926923")==1793926923000L,"seconds");ok(TraeAuth.expiry("1793926923000")==1793926923000L,"milliseconds");

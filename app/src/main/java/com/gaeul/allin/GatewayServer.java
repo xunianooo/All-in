@@ -2307,14 +2307,14 @@ public class GatewayServer extends NanoHTTPD {
                 new JSONObject().put("require_usage",true).put("req_source",0),NetworkPolicy.capture(),REQUEST_CONTEXT.get());
         JSONArray packs=usage.optJSONArray("user_entitlement_pack_list");
         if(packs==null) throw new IOException("Trae usage response missing entitlement packs");
-        double limit=0, used=0; boolean unlimited=false; long soonest=0;
+        double limit=0, used=0; boolean unlimited=false, knownCreditLimit=false; long soonest=0;
         for(int i=0;i<packs.length();i++) {
             JSONObject pack=packs.optJSONObject(i); if(pack==null) continue;
             JSONObject base=pack.optJSONObject("entitlement_base_info"), quota=base==null?null:base.optJSONObject("quota");
             Double packLimit=traeUsageNumber(quota==null?null:quota.opt("credits_limit"));
             if(packLimit==null) continue;
             if(packLimit==-1d) unlimited=true;
-            else if(packLimit>=0) { limit+=packLimit; if(!Double.isFinite(limit)) throw new IOException("Trae usage total overflow"); }
+            else if(packLimit>=0) { knownCreditLimit=true; limit+=packLimit; if(!Double.isFinite(limit)) throw new IOException("Trae usage total overflow"); }
             JSONObject packUsage=pack.optJSONObject("usage");
             Double packUsed=traeUsageNumber(packUsage==null?null:packUsage.opt("credits_amount"));
             if(packUsed!=null && packUsed>0) { used+=packUsed; if(!Double.isFinite(used)) throw new IOException("Trae usage amount overflow"); }
@@ -2330,13 +2330,17 @@ public class GatewayServer extends NanoHTTPD {
         if(limit>0) {
             double percent=Math.max(0,Math.min(100,(used/limit)*100));
             JSONObject window=new JSONObject().put("name","Credits").put("used",traeUsageRound(percent))
-                    .put("amount",traeUsageRound(used)).put("limit",traeUsageRound(limit)).put("unit","credits");
+                    .put("amount",traeUsageRound(used)).put("limit",traeUsageRound(limit)).put("unit","credits")
+                    .put("remaining",traeUsageRound(Math.max(0,limit-used))).put("total",traeUsageRound(limit));
             if(soonest>0) {
                 java.text.SimpleDateFormat format=new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",java.util.Locale.US);
                 format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
                 window.put("resetsAt",format.format(new java.util.Date(soonest)));
             }
             allowance.put("windows",new JSONArray().put(window));
+        } else if(knownCreditLimit) {
+            // An explicit zero credit limit is known zero; an empty/feature-only pack list is unknown.
+            allowance.put("remaining",0);
         }
         return allowance;
     }
@@ -2507,9 +2511,14 @@ public class GatewayServer extends NanoHTTPD {
                 if(!(used instanceof Number) || !(amount instanceof Number) || !(total instanceof Number)) continue;
                 double usedPercent=((Number)used).doubleValue(), usedAmount=((Number)amount).doubleValue(), totalAmount=((Number)total).doubleValue();
                 if(!Double.isFinite(usedPercent) || usedPercent<0 || usedPercent>100 || !Double.isFinite(usedAmount) || usedAmount<0 || !Double.isFinite(totalAmount) || totalAmount<=0) continue;
-                JSONObject clean=new JSONObject().put("name",name).put("used",usedPercent).put("amount",usedAmount).put("limit",totalAmount).put("unit","credits");
+                Object declaredRemaining=w.opt("remaining");
+                if(w.has("remaining") && !(declaredRemaining instanceof Number))continue;
+                double left=declaredRemaining instanceof Number?((Number)declaredRemaining).doubleValue():Math.max(0,totalAmount-usedAmount);
+                if(!Double.isFinite(left) || left<0 || left>totalAmount)continue;
+                JSONObject clean=new JSONObject().put("name",name).put("used",usedPercent).put("amount",usedAmount).put("limit",totalAmount).put("unit","credits")
+                        .put("remaining",traeUsageRound(left)).put("total",totalAmount).put("remainingPercent",traeUsageRound(100-usedPercent));
                 Object resets=w.opt("resetsAt");
-                if(resets instanceof String && ((String)resets).matches("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z")) clean.put("resetsAt",resets);
+                if(resets instanceof String && ((String)resets).matches("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z")) clean.put("resetsAt",resets).put("resetAt",resets);
                 windows.put(clean); continue;
             }
             if("workbuddy".equals(provider) || "workbuddy-ai".equals(provider) || "qoder_cn".equals(provider)) {

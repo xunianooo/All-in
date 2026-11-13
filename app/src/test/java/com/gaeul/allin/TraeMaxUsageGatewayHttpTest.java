@@ -32,6 +32,7 @@ public final class TraeMaxUsageGatewayHttpTest {
         final AtomicInteger calls=new AtomicInteger();
         volatile String path="", requestBody="", authorization="", uid="";
         volatile Throwable failure;
+        volatile String usageOverride;
         final boolean usage;
 
         TraeFixture(boolean usage) throws Exception {
@@ -47,6 +48,7 @@ public final class TraeMaxUsageGatewayHttpTest {
                 if(session.getMethod()==Method.POST) session.parseBody(files);
                 requestBody=files.getOrDefault("postData",""); calls.incrementAndGet();
                 if(usage && USAGE_PATH.equals(path)) {
+                    if(usageOverride!=null)return newFixedLengthResponse(Response.Status.OK,"application/json; charset=UTF-8",usageOverride);
                     String json="{\"is_credits_billing\":false,\"user_entitlement_pack_list\":["
                             +"{\"entitlement_base_info\":{\"quota\":{\"credits_limit\":300},\"end_time\":1790000000},\"usage\":{\"credits_amount\":75}},"
                             +"{\"entitlement_base_info\":{\"quota\":{}},\"usage\":{}},"
@@ -178,7 +180,22 @@ public final class TraeMaxUsageGatewayHttpTest {
                                     &&"credits".equals(credits.optString("unit")),
                             "credits window aggregates pack usage and limits like the community reference");
                     check("2026-09-21T14:13:20.000Z".equals(credits.optString("resetsAt")),"earliest pack expiry is retained");
+                    check(credits.optDouble("remaining",-1)==300 && credits.optDouble("total",-1)==400 && credits.optDouble("remainingPercent",-1)==75,"Trae allowance normalizes actual remaining credits for the dashboard");
+                    check(credits.optString("resetAt").equals(credits.optString("resetsAt")),"reset time reaches the shared dashboard schema");
                     check(allowance.optLong("observedAt",0)>0,"usage snapshot records observation time");
+                    double[][] cases={{1.0051,0.0049,1.0},{100,150,0},{0,0,0}};
+                    for(double[] sample:cases) {
+                        upstream.usageOverride=new JSONObject().put("user_entitlement_pack_list",new JSONArray().put(new JSONObject().put("entitlement_base_info",new JSONObject().put("quota",new JSONObject().put("credits_limit",sample[0]))).put("usage",new JSONObject().put("credits_amount",sample[1])))).toString();
+                        JSONObject next=new JSONObject(http(gateway,"/api/providers/billing?provider=trae-cn","GET",null).body).getJSONArray("accounts").getJSONObject(0).getJSONObject("allowance");
+                        double remaining=next.has("remaining")?next.getDouble("remaining"):next.getJSONArray("windows").getJSONObject(0).optDouble("remaining",-1);
+                        check(Math.abs(remaining-sample[2])<0.0000001,"remaining is clamped and rounded after subtraction, including a known zero allowance");
+                    }
+                    upstream.usageOverride=new JSONObject().put("user_entitlement_pack_list",new JSONArray()).toString();
+                    JSONObject unknown=new JSONObject(http(gateway,"/api/providers/billing?provider=trae-cn","GET",null).body).getJSONArray("accounts").getJSONObject(0);
+                    check(!unknown.has("allowance") && "unknown".equals(unknown.optString("errorKind")),"missing credit packs are unknown, never invented zero");
+                    upstream.usageOverride=new JSONObject().put("user_entitlement_pack_list",new JSONArray().put(new JSONObject().put("entitlement_base_info",new JSONObject().put("quota",new JSONObject().put("credits_limit",-1))))).toString();
+                    JSONObject unlimited=new JSONObject(http(gateway,"/api/providers/billing?provider=trae-cn","GET",null).body).getJSONArray("accounts").getJSONObject(0).getJSONObject("allowance");
+                    check(unlimited.optBoolean("unlimited") && !unlimited.has("remaining"),"unlimited has no invented numeric balance");
                     check(upstream.failure==null,"mock billing fixture");
                 }
             } finally { TraeAuth.setFixtureBase(null); }

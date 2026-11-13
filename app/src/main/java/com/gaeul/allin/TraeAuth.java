@@ -5,7 +5,6 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.zip.GZIPInputStream;
 import java.security.MessageDigest;
 import java.math.BigInteger;
 import java.text.SimpleDateFormat;
@@ -49,62 +48,173 @@ public final class TraeAuth {
         h.put("x-uid",a.optString("uid","")); h.put("x-app-id","6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"); h.put("x-device-id",a.optString("deviceId","")); h.put("x-machine-id",a.optString("machineId","")); h.put("x-request-id",UUID.randomUUID().toString());
         h.put("x-app-version","0.1.69"); h.put("x-app-version-code","20260917"); h.put("x-ide-version","0.1.69"); h.put("x-ide-version-code","20260917"); h.put("x-ide-version-type","stable"); h.put("x-device-cpu","AMD"); h.put("x-device-brand",BRAND); h.put("x-device-type","windows"); h.put("x-os-version","Windows 10"); h.put("x-system-type","Windows"); return h;
     }
-    public static final class Failure extends IOException { public final String code; Failure(String code) { super(code); this.code=code; } }
+    public static final class Failure extends IOException {
+        public final String code, diagnostic;
+        final boolean bindingRejected;
+        Failure(String code) { this(code, ""); }
+        Failure(String code,String diagnostic) { this(code,diagnostic,false); }
+        Failure(String code,String diagnostic,boolean bindingRejected) { super(code); this.code=code; this.diagnostic=diagnostic; this.bindingRejected=bindingRejected; }
+    }
+    private static String networkDiagnostic(Exception e) {
+        if(e instanceof javax.net.ssl.SSLException)return "TLS";
+        if(e instanceof UnknownHostException)return "DNS";
+        if(e instanceof SocketTimeoutException)return "TIMEOUT";
+        if(e instanceof ConnectException || e instanceof NoRouteToHostException)return "CONNECT";
+        return "NETWORK_IO";
+    }
+    // No exception messages, URLs, headers, credential values or response bodies in diagnostics.
+    static String bindingDiagnostic(Exception e) {
+        String detail="LOCAL_ERROR";
+        if(e instanceof Failure) {
+            Failure f=(Failure)e;
+            if(!f.diagnostic.isEmpty())detail=f.diagnostic;
+            else if(Arrays.asList("requires_relogin","invalid_device","device_proof_failed","outcome_unknown","network_error","closed").contains(f.code))detail=f.code.toUpperCase(Locale.ROOT);
+            else if(f.code.startsWith("outbound_"))detail="OUTBOUND_LIMIT";
+        }
+        if(!detail.matches("[A-Z0-9_]{1,160}"))detail="LOCAL_ERROR";
+        return (e instanceof Failure && ((Failure)e).code.startsWith("browser_")?"TRAE_LOGIN_":"TRAE_BIND_")+detail;
+    }
+    static String bindingFailureMessage(Exception e) {
+        String code=e instanceof Failure?((Failure)e).code:"";
+        String message;
+        if(code.startsWith("browser_"))message="网页登录凭据未通过官方核验，账号尚未入池，请重新发起授权";
+        else if("requires_relogin".equals(code))message="Trae 拒绝本次设备绑定，账号尚未入池，请重新发起授权";
+        else if("invalid_device".equals(code)||"device_proof_failed".equals(code))message="本机设备签名未完成，账号尚未入池，请反馈诊断码";
+        else if("network_error".equals(code)||code.startsWith("outbound_"))message="设备绑定请求未能发出，请检查 All In 的网络设置后重新授权";
+        else message="设备绑定未完成，结果未知不会自动重试；账号尚未入池，请重新发起授权";
+        return message+" ["+bindingDiagnostic(e)+"]";
+    }
+    private static String responseDiagnostic(Response response) {
+        String code=businessCode(response.json);
+        return "HTTP_"+response.status+(response.json==null?"_NON_JSON":code.isEmpty()?"_NO_CODE":code.matches("[0-9]{1,6}")?"_CODE_"+code:"_CODE_OTHER");
+    }
     private static final class Response { int status; JSONObject json; }
     private static Response http(String url,String method,JSONObject body,Map<String,String> headers,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
-        if(network==null)network=NetworkPolicy.capture(); if(ctx!=null)ctx.check(); String fixture=fixtureBase; if(fixture!=null) { URL original=new URL(url); url=fixture+original.getFile(); }
+        if(network==null)network=NetworkPolicy.capture();if(ctx!=null)ctx.check();
+        String fixture=fixtureBase;if(fixture!=null){URL original=new URL(url);url=fixture+original.getFile();}
         OutboundLimiter.Result permit=LIMITER.await(Collections.singleton("trae-cn"),ctx==null?System.nanoTime()+20000000000L:ctx.deadlineNanos,ctx);
         if(permit.ticket==null)throw new Failure("outbound_"+permit.status.name().toLowerCase(Locale.ROOT));
-        HttpURLConnection c=null; boolean sent=false; ScheduledFuture<?> timeout=null;
-        long deadlineNanos=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);
-        if(ctx!=null)deadlineNanos=Math.min(deadlineNanos,ctx.deadlineNanos);
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);if(ctx!=null)deadline=Math.min(deadline,ctx.deadlineNanos);
+        final TraeHttpTransport wire=new TraeHttpTransport(network,ctx,deadline);
+        Runnable close=wire::close;if(ctx!=null)ctx.onClose(close);
+        ScheduledFuture<?> timeout=DEADLINES.schedule(close,Math.max(1,deadline-System.nanoTime()),TimeUnit.NANOSECONDS);
         try {
-            c=network.openHttp(url); if(ctx!=null)ctx.attach(c); final HttpURLConnection timedConnection=c;
-            timeout=DEADLINES.schedule(new Runnable(){public void run(){timedConnection.disconnect();}},Math.max(1,deadlineNanos-System.nanoTime()),TimeUnit.NANOSECONDS); c.setInstanceFollowRedirects(false); c.setConnectTimeout((int)Math.min(20000,ctx==null?20000:Math.max(1,ctx.remainingMillis()))); c.setReadTimeout((int)Math.min(20000,ctx==null?20000:Math.max(1,ctx.remainingMillis()))); c.setRequestMethod(method); c.setRequestProperty("Accept-Encoding","gzip"); c.setRequestProperty("Connection","close");
-            for(Map.Entry<String,String> e:headers.entrySet())c.setRequestProperty(e.getKey(),e.getValue());
-            if(body!=null) { byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8); if(bytes.length>MAX)throw new Failure("request_too_large"); c.setDoOutput(true); c.setFixedLengthStreamingMode(bytes.length); sent=true; permit.ticket.markSent(); try(OutputStream out=c.getOutputStream()){out.write(bytes);} }
-            if(body==null){sent=true;permit.ticket.markSent();} int status=c.getResponseCode(); if(timeout!=null){timeout.cancel(false);timeout=null;} InputStream in=status>=400?c.getErrorStream():c.getInputStream(); byte[] data=new byte[0];
-            if(in!=null) {
-                // Limit each underlying network read so a drip-fed body cannot hold a bulk
-                // read (including gzip's internal reads) beyond the absolute deadline.
-                final long bodyDeadline=deadlineNanos;
-                InputStream raw=in;
-                in=new FilterInputStream(raw) {
-                    @Override public int read() throws IOException {
-                        if(System.nanoTime()>=bodyDeadline)throw new SocketTimeoutException("deadline");
-                        return super.read();
-                    }
-                    @Override public int read(byte[] b,int off,int len) throws IOException {
-                        if(len==0)return 0;
-                        if(System.nanoTime()>=bodyDeadline)throw new SocketTimeoutException("deadline");
-                        return super.read(b,off,Math.min(len,Math.max(1,available())));
-                    }
-                };
-                if("gzip".equalsIgnoreCase(c.getContentEncoding()))in=new GZIPInputStream(in);
-                ByteArrayOutputStream out=new ByteArrayOutputStream(); byte[] buf=new byte[8192]; int n,total=0;
-                while(true) { if(ctx!=null)ctx.check(); long left=deadlineNanos-System.nanoTime(); if(left<=0)throw new SocketTimeoutException("deadline"); c.setReadTimeout((int)Math.max(1,Math.min(20000,TimeUnit.NANOSECONDS.toMillis(left)+1))); n=in.read(buf,0,Math.min(buf.length,Math.max(1,in.available()))); if(n==-1)break; total+=n; if(total>MAX)throw new Failure("response_too_large"); out.write(buf,0,n); }
-                data=out.toByteArray();
-                // Only close a fully consumed body; closing a partial HTTP body may drain it.
-                in.close();
-            }
-            Response r=new Response(); r.status=status; try {r.json=new JSONObject(new String(data,StandardCharsets.UTF_8));}catch(Exception e){r.json=null;} return r;
-        } catch(Failure e){throw e;} catch(Exception e){throw new Failure(sent?"outcome_unknown":"network_error");} finally {if(timeout!=null)timeout.cancel(false);if(c!=null){if(ctx!=null)ctx.detach(c);c.disconnect();}permit.ticket.close();}
+            byte[] request=body==null?null:body.toString().getBytes(StandardCharsets.UTF_8);
+            if(request!=null && request.length>MAX)throw new Failure("request_too_large");
+            byte[] data=wire.exchange(url,method,request,headers,MAX,()->permit.ticket.markSent());
+            Response r=new Response();r.status=wire.status;
+            try {com.gaeul.allin.json.JSONTokener parser=new com.gaeul.allin.json.JSONTokener(new String(data,StandardCharsets.UTF_8));Object value=parser.nextValue();r.json=value instanceof JSONObject && parser.nextClean()==0?(JSONObject)value:null;}
+            catch(Exception malformed){r.json=null;}
+            return r;
+        } catch(Failure failure){throw failure;}
+        catch(Exception failure) {
+            if("Qoder refresh: response body too large".equals(failure.getMessage()))throw new Failure("response_too_large");
+            throw new Failure(wire.sent?"outcome_unknown":"network_error",networkDiagnostic(failure));
+        } finally {
+            timeout.cancel(false);wire.close();if(ctx!=null)ctx.removeCleanup(close);permit.ticket.close();
+        }
     }
     private static JSONObject deviceInfo(JSONObject a,String platform,String version) throws Exception {
         JSONObject d=new JSONObject(); d.put("DeviceID",a.optString("deviceId")); d.put("MachineID",a.optString("machineId")); d.put("PlatformCode",platform); d.put("DeviceType","PC"); d.put("DeviceName",""); d.put("DeviceModel",""); d.put("ClientVersion",version); d.put("DevicePublicKey",a.optString("devicePublicKey")); d.put("DeviceBrand",BRAND); d.put("DeviceCPU","AMD"); d.put("OSInfo","Windows"); d.put("OSVersion","10.0.22631"); return d;
     }
-    public static JSONObject refresh(JSONObject account,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
-        TraeDevice.validate(account); String refresh=account.optString("refresh",""); if(refresh.isEmpty())throw new Failure("requires_relogin");
+    private static JSONObject bindDevice(JSONObject account,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
+        try { TraeDevice.validate(account); } catch(Exception invalid) { throw new Failure("invalid_device"); }
+        String authHost=consumerAuthHost(account.optString("authHost",""));
+        String refresh=account.optString("refresh",""); if(refresh.isEmpty())throw new Failure("requires_relogin");
+        String rejected="";
         String[] clients={"en1oxy7wnw8j9n","ono9krqynydwx5"}, platforms={"SOLO_PC","IDE_PC"}, versions={"0.1.64","3.3.99"};
-        for(int i=0;i<2;i++) { JSONObject b=new JSONObject(); b.put("ClientID",clients[i]); b.put("ClientSecret",""); b.put("RefreshToken",refresh); b.put("DeviceInfo",deviceInfo(account,platforms[i],versions[i])); b.put("DeviceProof",TraeDevice.proofOf(PATH,clients[i],refresh,account.optString("devicePrivateKey"))); b.put("IDEVersion",versions[i]);
+        for(int i=0;i<2;i++) { JSONObject b=new JSONObject(); b.put("ClientID",clients[i]); b.put("ClientSecret",""); b.put("RefreshToken",refresh); b.put("DeviceInfo",deviceInfo(account,platforms[i],versions[i])); try { b.put("DeviceProof",TraeDevice.proofOf(PATH,clients[i],refresh,account.optString("devicePrivateKey"))); } catch(Exception invalid) { throw new Failure("device_proof_failed"); } b.put("IDEVersion",versions[i]);
             Map<String,String> h=new LinkedHashMap<>(); h.put("Content-Type","application/json"); if(!account.optString("token","").isEmpty())h.put("Authorization","Cloud-IDE-JWT "+account.optString("token"));
-            Response r; try { r=http(AUTH_HOST+PATH,"POST",b,h,network,ctx); } catch(Failure failure) { if(failure.code.equals("response_too_large"))throw new Failure("outcome_unknown"); throw failure; } JSONObject result=r.json==null?null:r.json.optJSONObject("Result"); if(result==null && r.json!=null)result=r.json.optJSONObject("result"); String token=result==null?"":text(result,"Token","token");
-            if(r.status>=200 && r.status<300 && !token.isEmpty()) { JSONObject out=copy(account); out.put("token",token); String next=text(result,"RefreshToken","refreshToken"); out.put("refresh",next.isEmpty()?refresh:next); long expiry=tokenExpiry(result,token); if(expiry>0)out.put("expires",expiry); out.put("bound",true); return out; }
+            Response r; try { r=http(authHost+PATH,"POST",b,h,network,ctx); } catch(Failure failure) { if(failure.code.equals("response_too_large"))throw new Failure("outcome_unknown","RESPONSE_TOO_LARGE"); throw failure; } JSONObject result=r.json==null?null:r.json.optJSONObject("Result"); if(result==null && r.json!=null)result=r.json.optJSONObject("result"); String token=result==null?"":text(result,"Token","token");
+            if(r.status>=200 && r.status<300 && !token.isEmpty() && (businessCode(r.json).isEmpty() || "0".equals(businessCode(r.json)))) { JSONObject out=copy(account); out.put("token",token); String next=text(result,"RefreshToken","refreshToken"); out.put("refresh",next.isEmpty()?refresh:next); long expiry=tokenExpiry(result,token); if(expiry>0)out.put("expires",expiry); out.put("bound",true); out.put("authMode","device"); out.remove("browserSessionVerified"); return out; }
             // Only a concrete 4xx response or an explicit nonzero business code permits trying the other client.
+            if(!token.isEmpty())throw new Failure("outcome_unknown","CONFLICTING_TOKEN_RESPONSE");
             String code=businessCode(r.json); boolean reject=(r.status==400||r.status==401||r.status==403||r.status>=200&&r.status<300) && !code.isEmpty() && !code.equals("0");
-            if(!reject)throw new Failure("outcome_unknown");
-        } throw new Failure("requires_relogin");
+            String diagnostic=(i==0?"SOLO_":"IDE_")+responseDiagnostic(r);
+            if(!reject)throw new Failure("outcome_unknown",diagnostic);
+            rejected=rejected.isEmpty()?diagnostic:rejected+"_THEN_"+diagnostic;
+        } throw new Failure("requires_relogin",rejected,true);
     }
+    private static boolean safeCredential(JSONObject a,String key) {
+        Object value=a.opt(key);
+        if(!(value instanceof String) || ((String)value).isEmpty() || ((String)value).length()>32768)return false;
+        for(char c:((String)value).toCharArray())if(c<=32 || c==127)return false;
+        return true;
+    }
+    private static String sessionClientId(String value) throws Failure {
+        if(value==null || value.isEmpty())return "ono9krqynydwx5";
+        if(!value.equals("ono9krqynydwx5") && !value.equals("en1oxy7wnw8j9n"))throw new Failure("requires_relogin","UNSUPPORTED_CLIENT");
+        return value;
+    }
+    static boolean verifiedBrowserAccount(JSONObject account) {
+        return account!=null && Boolean.TRUE.equals(account.opt("browserSessionVerified"))
+                && "browser".equals(account.optString("authMode")) && !account.optBoolean("bound",false)
+                && safeCredential(account,"token") && safeCredential(account,"refresh") && safeCredential(account,"uid")
+                && ("ono9krqynydwx5".equals(account.optString("clientId")) || "en1oxy7wnw8j9n".equals(account.optString("clientId")));
+    }
+    // A read-only authenticated account endpoint confirms the original browser access token.
+    // This never exchanges/spends the browser's refresh token merely to finish logging in.
+    private static JSONObject verifyBrowserSession(JSONObject account,Failure rejection,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
+        if(!rejection.bindingRejected)throw rejection;
+        if(!safeCredential(account,"token") || !safeCredential(account,"refresh") || !safeCredential(account,"uid"))
+            throw new Failure("browser_auth_rejected","INCOMPLETE_BROWSER_IDENTITY");
+        long expiry=account.optLong("expires",0);
+        if(expiry>0 && expiry<=System.currentTimeMillis())throw new Failure("browser_auth_rejected","EXPIRED_BROWSER_TOKEN");
+        if(ctx!=null)ctx.check();
+        String host=consumerAuthHost(account.optString("authHost",""));
+        Response r=http(host+"/trae/api/v2/pay/ide_user_ent_usage","POST",new JSONObject().put("require_usage",true).put("req_source",0),headers(account),network,ctx);
+        String code=businessCode(r.json);
+        if(r.status<200 || r.status>=300 || r.json==null || (!code.isEmpty()&&!code.equals("0")) || r.json.optJSONArray("user_entitlement_pack_list")==null)
+            throw new Failure("browser_auth_rejected","CHECK_"+responseDiagnostic(r));
+        if(ctx!=null)ctx.check();
+        JSONObject out=copy(account);
+        out.put("bound",false);out.put("browserSessionVerified",true);out.put("authMode","browser");
+        out.put("clientId",sessionClientId(account.optString("clientId","")));
+        out.put("deviceBindingState","rejected");out.put("bindingDiagnostic",bindingDiagnostic(rejection));
+        return out;
+    }
+
+    private static JSONObject ordinaryRefresh(JSONObject account,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
+        if(!safeCredential(account,"refresh"))throw new Failure("requires_relogin","MISSING_REFRESH");
+        String client=sessionClientId(account.optString("clientId",""));
+        JSONObject body=new JSONObject().put("ClientID",client).put("ClientSecret","-")
+                .put("RefreshToken",account.optString("refresh")).put("UserID","");
+        Map<String,String> h=new LinkedHashMap<>();h.put("Content-Type","application/json");
+        Response r;
+        try { r=http(consumerAuthHost(account.optString("authHost",""))+"/cloudide/api/v3/trae/oauth/ExchangeToken","POST",body,h,network,ctx); }
+        catch(Failure failure) { if(failure.code.equals("response_too_large"))throw new Failure("outcome_unknown","BROWSER_RESPONSE_TOO_LARGE");throw failure; }
+        JSONObject result=r.json==null?null:r.json.optJSONObject("Result");
+        if(result==null && r.json!=null)result=r.json.optJSONObject("result");
+        String token=result==null?"":text(result,"Token","token");
+        String next=result==null?"":text(result,"RefreshToken","refreshToken");
+        String code=businessCode(r.json);
+        JSONObject credentials=new JSONObject().put("token",token).put("refresh",next);
+        if(r.status>=200 && r.status<300 && (code.isEmpty()||code.equals("0"))
+                && safeCredential(credentials,"token") && safeCredential(credentials,"refresh")) {
+            if(ctx!=null)ctx.check();
+            JSONObject out=copy(account);out.put("token",token);out.put("refresh",next);
+            out.put("expires",tokenExpiry(result,token));out.put("clientId",client);
+            out.put("bound",false);out.put("authMode","browser");out.put("browserSessionVerified",true);
+            return out;
+        }
+        // A successful-looking but incomplete/contradictory exchange may already have spent
+        // the refresh credential: never replay it or publish the old refresh token as new.
+        boolean rejected=token.isEmpty() && r.json!=null && !code.isEmpty() && !code.equals("0")
+                && (r.status==400 || r.status==401 || r.status==403 || r.status>=200&&r.status<300);
+        throw new Failure(rejected?"requires_relogin":"outcome_unknown","BROWSER_"+responseDiagnostic(r));
+    }
+    public static JSONObject refresh(JSONObject account,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
+        if(verifiedBrowserAccount(account)) {
+            try { TraeDevice.validate(account); } catch(Exception invalid) { throw new Failure("invalid_device"); }
+            return ordinaryRefresh(account,network,ctx);
+        }
+        try { return bindDevice(account,network,ctx); }
+        catch(Failure failure) {
+            if(!failure.bindingRejected)throw failure;
+            return ordinaryRefresh(account,network,ctx);
+        }
+    }
+
     public static JSONObject request(JSONObject account,String path,String method,JSONObject body,NetworkPolicy.Snapshot network,RequestContext ctx) throws Exception {
         if(path==null || !path.startsWith("/trae/api/") || path.contains("..") || path.contains("?") || path.contains("#") || path.contains("\\") || path.contains("%") || !("GET".equals(method)||"POST".equals(method)))throw new Failure("invalid_request");
         Response r=http(AUTH_HOST+path,method,body,headers(account),network,ctx); if(r.status<200||r.status>=300)throw new Failure("http_"+r.status); if(r.json==null)throw new Failure("invalid_response"); return r.json;
@@ -132,6 +242,12 @@ public final class TraeAuth {
                     || (!authOnly && ("www.trae.cn".equalsIgnoreCase(h)||"www.trae.com.cn".equalsIgnoreCase(h)||"trae-api-cn.mchost.guru".equalsIgnoreCase(h)));
         }catch(Exception e){return false;}
     }
+    static String consumerAuthHost(String value) throws Failure {
+        if(value==null || value.isEmpty())return AUTH_HOST;
+        if(!consumerCallbackHost(value,true))throw new Failure("enterprise_unsupported");
+        try { URI u=new URI(value.contains("://")?value:"https://"+value); return "https://"+u.getHost().toLowerCase(Locale.ROOT); }
+        catch(Exception invalid) { throw new Failure("enterprise_unsupported"); }
+    }
     private static String callbackError(Exception error) {
         if(error instanceof Failure) {String c=((Failure)error).code;
             if(c.equals("enterprise_unsupported"))return "授权来自尚未支持的站点，请使用 Trae CN 个人账号";
@@ -143,15 +259,15 @@ public final class TraeAuth {
     public static Flow startLogin(NetworkPolicy.Snapshot network) throws Exception { synchronized(TraeAuth.class) { if(flows>=4)throw new Failure("too_many_flows"); flows++; } try { return new Flow(network); } catch(Exception e){synchronized(TraeAuth.class){flows--;} throw e;} }
     public static final class Flow implements AutoCloseable {
         public final String flowId=UUID.randomUUID().toString(),url; public final long deadline=System.currentTimeMillis()+5*60*1000L;
-        public volatile String status="pending",error=""; private final ServerSocket server; private final JSONObject device; private final NetworkPolicy.Snapshot network; private JSONObject result; private boolean released; private RequestContext bindingContext; private Socket activeSocket;
+        public volatile String status="pending",error="",errorCode=""; private final ServerSocket server; private final JSONObject device; private final NetworkPolicy.Snapshot network; private JSONObject result; private boolean released; private RequestContext bindingContext; private Socket activeSocket;
         private Flow(NetworkPolicy.Snapshot n) throws Exception { network=n==null?NetworkPolicy.capture():n; device=TraeDevice.create(); server=new ServerSocket(); server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0)); server.setSoTimeout(1000);
             // The official authorization page only accepts an exact callback without a query.
             // It reflects login_trace_id as loginTraceID; require that unpredictable value on callback.
             String cb="http://127.0.0.1:"+server.getLocalPort()+"/authorize"; String[][] q={{"login_version","1"},{"auth_from","solo"},{"login_channel","native_ide"},{"plugin_version","2.3.24254"},{"auth_type","local"},{"client_id","ono9krqynydwx5"},{"redirect","0"},{"login_trace_id",flowId},{"auth_callback_url",cb},{"machine_id",device.optString("machineId")},{"device_id",device.optString("deviceId")},{"x_device_id",device.optString("deviceId")},{"x_machine_id",device.optString("machineId")},{"x_device_brand",BRAND},{"x_device_type","windows"},{"x_os_version","Windows 10 Pro"},{"x_env",""},{"x_app_version","3.3.65"},{"x_app_type","stable"},{"hide_saas_login","true"}}; StringBuilder s=new StringBuilder("https://www.trae.cn/authorization?"); for(String[] p:q){if(s.charAt(s.length()-1)!='?')s.append('&');s.append(enc(p[0])).append('=').append(enc(p[1]));} url=s.toString();
             Thread t=new Thread(new Runnable(){public void run(){serve();}},"trae-login"); t.setDaemon(true); t.start(); }
-        public synchronized JSONObject view() { JSONObject o=new JSONObject(); try{o.put("flowId",flowId);o.put("url",url);o.put("deadline",deadline);o.put("status",status);o.put("error",error);}catch(Exception ignored){} return o; }
+        public synchronized JSONObject view() { JSONObject o=new JSONObject(); try{o.put("flowId",flowId);o.put("url",url);o.put("deadline",deadline);o.put("status",status);o.put("error",error);o.put("errorCode",errorCode);}catch(Exception ignored){} return o; }
         public synchronized JSONObject takeResult() { JSONObject r=result; result=null; return r; }
-        public void close() { RequestContext c; Socket socket; synchronized(this){if(status.equals("pending")||status.equals("binding")){status="closed";error="登录已关闭";}c=bindingContext;socket=activeSocket;} if(c!=null)c.cancel("flow closed"); try{if(socket!=null)socket.close();}catch(Exception ignored){} try{server.close();}catch(Exception ignored){} }
+        public void close() { RequestContext c; Socket socket; synchronized(this){if(status.equals("pending")||status.equals("binding")||status.equals("validating")){status="closed";error="登录已关闭";}c=bindingContext;socket=activeSocket;} if(c!=null)c.cancel("flow closed"); try{if(socket!=null)socket.close();}catch(Exception ignored){} try{server.close();}catch(Exception ignored){} }
         private synchronized void release(){if(!released){released=true;synchronized(TraeAuth.class){flows--;}}}
         private void serve(){ try {while(System.currentTimeMillis()<deadline && !server.isClosed()) { try(Socket s=server.accept()){synchronized(this){if(server.isClosed())break;activeSocket=s;} s.setSoTimeout(3000);try{handle(s);}finally{synchronized(this){activeSocket=null;}}} catch(SocketTimeoutException ignored){} catch(Exception ignored){} } synchronized(this){if(status.equals("pending")){status="expired";error="登录超时";}} } finally {try{server.close();}catch(Exception ignored){} release();} }
         private void handle(Socket s) throws Exception {
@@ -169,10 +285,45 @@ public final class TraeAuth {
             synchronized(this){if(!status.equals("pending")){reply(s,409,origin,"登录已处理");return;}status="binding";}
             try { JSONObject jwt=new JSONObject(q.get("userJwt")),info=new JSONObject(q.get("userInfo")); String hostValue=q.containsKey("host")?q.get("host"):info.optString("Host",""); String auth=q.containsKey("authHost")?q.get("authHost"):q.containsKey("auth_host")?q.get("auth_host"):text(info,"AuthHost","authHost");
                 if(!consumerCallbackHost(hostValue,false) || !consumerCallbackHost(auth,true))throw new Failure("enterprise_unsupported");
-                JSONObject a=copy(device);a.put("token",text(jwt,"Token","token"));a.put("refresh",text(jwt,"RefreshToken","refreshToken"));a.put("uid",text(info,"UserID","userId"));a.put("name",text(info,"ScreenName","screenName"));long exp=tokenExpiry(jwt,a.optString("token"));a.put("expires",exp);a.put("bound",false); if(a.optString("token").isEmpty()||a.optString("refresh").isEmpty())throw new Failure("missing_credentials");
-                try{RequestContext binding; synchronized(this){if(!status.equals("binding"))throw new Failure("closed");bindingContext=new RequestContext("trae-login",network,Math.max(1,deadline-System.currentTimeMillis()));binding=bindingContext;} a=refresh(a,network,binding); synchronized(this){if(status.equals("binding")){if(binding.isCancelled()){result=null;status="failed";error="设备绑定未完成，请重新授权；结果未知不会自动重试";}else{result=a;status="success";}}}reply(s,200,origin,"登录已处理，请返回应用查看");}catch(Exception e){synchronized(this){if(status.equals("binding")){result=null;status="failed";error="设备绑定未完成，请重新授权；结果未知不会自动重试";}}reply(s,200,origin,"设备绑定失败，请返回应用查看");}
+                JSONObject a=copy(device);a.put("authHost",consumerAuthHost(auth));String client=text(jwt,"ClientID","clientId");if(client.isEmpty())client=q.get("clientId");a.put("clientId",sessionClientId(client));a.put("token",text(jwt,"Token","token"));a.put("refresh",text(jwt,"RefreshToken","refreshToken"));a.put("uid",text(info,"UserID","userId"));a.put("name",text(info,"ScreenName","screenName"));long exp=tokenExpiry(jwt,a.optString("token"));a.put("expires",exp);a.put("bound",false); if(!safeCredential(a,"token")||!safeCredential(a,"refresh"))throw new Failure("missing_credentials");
+                try {
+                    RequestContext binding;
+                    synchronized(this) {
+                        if(!status.equals("binding"))throw new Failure("closed");
+                        bindingContext=new RequestContext("trae-login",network,Math.max(1,deadline-System.currentTimeMillis()));
+                        binding=bindingContext;
+                    }
+                    JSONObject authenticated;
+                    try { authenticated=bindDevice(a,network,binding); }
+                    catch(Failure rejection) {
+                        if(!rejection.bindingRejected)throw rejection;
+                        synchronized(this) { if(!status.equals("binding"))throw new Failure("closed");status="validating"; }
+                        authenticated=verifyBrowserSession(a,rejection,network,binding);
+                    }
+                    binding.check();
+                    synchronized(this) {
+                        if(!(status.equals("binding")||status.equals("validating")) || binding.isCancelled())throw new Failure("closed");
+                        result=authenticated;status="success";
+                    }
+                    reply(s,200,origin,"授权结果已确认，请返回 All In 查看入池结果");
+                } catch(Exception e) {
+                    synchronized(this) {
+                        if(status.equals("binding")||status.equals("validating")) {
+                            result=null;status="failed";errorCode=bindingDiagnostic(e);error=bindingFailureMessage(e);
+                        }
+                    }
+                    reply(s,200,origin,error.isEmpty()?"登录未完成，请返回应用查看":error);
+                }
             } catch(Exception e){synchronized(this){if(status.equals("binding")){status="failed";error=callbackError(e);}}reply(s,400,origin,callbackError(e));} finally {synchronized(this){if(bindingContext!=null)bindingContext.close();} server.close();}
         }
-        private void reply(Socket s,int code,String origin,String body)throws Exception {byte[] data=body.getBytes(StandardCharsets.UTF_8);String h="HTTP/1.1 "+code+" Result\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: "+data.length+"\r\n"+(origin.isEmpty()?"":"Access-Control-Allow-Origin: "+origin+"\r\nVary: Origin\r\n")+"Access-Control-Allow-Methods: GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n";s.getOutputStream().write(h.getBytes(StandardCharsets.US_ASCII));s.getOutputStream().write(data);s.getOutputStream().flush();}
+        private void reply(Socket s,int code,String origin,String body)throws Exception {
+            String escaped=body.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;");
+            String page=code==204?"":"<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Trae 国内版授权</title>"
+                    +"<style>body{margin:0;padding:28px 22px;background:#111318;color:#f1f3f5;font:16px/1.7 system-ui,sans-serif}main{max-width:540px;margin:12vh auto}h1{font-size:22px}p{overflow-wrap:anywhere}.hint{color:#adb5bd;font-size:14px}</style>"
+                    +"<main><h1>Trae 国内版授权</h1><p>"+escaped+"</p><p class=\"hint\">请返回 All In 检查状态。反馈时只截取提示和诊断码，不要复制地址栏的授权链接。</p></main>";
+            byte[] data=page.getBytes(StandardCharsets.UTF_8);
+            String h="HTTP/1.1 "+code+" Result\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\nContent-Length: "+data.length+"\r\n"+(origin.isEmpty()?"":"Access-Control-Allow-Origin: "+origin+"\r\nVary: Origin\r\n")+"Access-Control-Allow-Methods: GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n";
+            s.getOutputStream().write(h.getBytes(StandardCharsets.US_ASCII));s.getOutputStream().write(data);s.getOutputStream().flush();
+        }
     }
 }

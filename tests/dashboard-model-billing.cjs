@@ -60,3 +60,16 @@ assert(!wbText.includes('not_provided'));assert(!wbText.includes('上次快照')
 cache.workbuddy=ctx.billingSnapshot(null,{ok:true,models:{},accounts:[{accountId:'a',name:'one',allowance:{kind:'allowance',scope:'account',unit:'credits',remaining:0,windows:[]}}]},1000);
 parent=node();ctx.renderProviderBilling(parent,'workbuddy');assert(parent.children[1].children.some(n=>n.textContent.includes('剩余 0 积分')));
 console.log('WorkBuddy allowance UI regression PASS');
+
+// Trae's upstream window uses spent amount + limit; old snapshots must not render only a name/time.
+const traeLegacy={name:'Credits',unit:'credits',used:10,amount:57.75,limit:3111,resetsAt:'2026-12-01T00:00:00.000Z'};
+assert.equal(ctx.billingAllowanceText(traeLegacy),'3053.25 积分');
+assert.equal(ctx.billingAllowanceText({...traeLegacy,amount:5000,used:100}),'0 积分');
+assert.equal(ctx.billingAllowanceText({...traeLegacy,amount:null}),'');
+assert.equal(ctx.billingAllowanceText({unlimited:true,unit:'credits'}),'不限额');
+cache['trae-cn']=ctx.billingSnapshot(null,{ok:true,models:{},accounts:[{accountId:'fixture-trae',name:'Fixture',allowance:{kind:'allowance',scope:'account',unit:'credits',windows:[traeLegacy]}}]},1000);
+parent=node();ctx.renderProviderBilling(parent,'trae-cn');
+const traeText=parent.children[1].children.map(n=>n.textContent).join(' ');
+assert(traeText.includes('Credits 剩 3053.25 积分'));
+assert(traeText.includes('重置 2026-12-01T00:00:00.000Z'));
+console.log('Trae remaining credits rendering PASS');

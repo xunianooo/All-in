@@ -5507,7 +5507,7 @@
         (Array.isArray(allowance.windows) ? allowance.windows : []).forEach(w => {
           if (!w) return;
           const amount = billingAllowanceText(w, allowance.unit);
-          if (amount) parts.push(String(w.name || '额度') + (w.scope === 'model' ? '（模型额度）' : '') + ' 剩 ' + amount + (w.resetAt ? ' · 重置 ' + String(w.resetAt) : ''));
+          if (amount) parts.push(String(w.name || '额度') + (w.scope === 'model' ? '（模型额度）' : '') + ' 剩 ' + amount + ((w.resetAt || w.resetsAt) ? ' · 重置 ' + String(w.resetAt || w.resetsAt) : ''));
         });
         const observed = allowance.observedAt || a.snapshotAt;
         if (observed) { const date = new Date(observed); if (!isNaN(date.getTime())) parts.push('时间 ' + date.toLocaleString()); }
@@ -5774,8 +5774,18 @@
     }
     function billingAllowanceText(allowance, fallbackUnit) {
       if (!allowance) return '';
+      if (allowance.unlimited === true) return '不限额';
       const remaining = billingNumber(allowance.remaining), percent = billingNumber(allowance.remainingPercent);
       if (remaining !== null) { const unit = billingUnit(allowance.unit || fallbackUnit); return String(remaining) + (unit ? ' ' + unit : ''); }
+      // Compatibility with the previous Trae credit-window schema; explicit remaining wins.
+      if (!Object.prototype.hasOwnProperty.call(allowance, 'remaining') && (allowance.unit || fallbackUnit) === 'credits'
+          && typeof allowance.limit === 'number' && typeof allowance.amount === 'number' && typeof allowance.used === 'number') {
+        const total = billingNumber(allowance.limit), spent = billingNumber(allowance.amount), used = billingNumber(allowance.used);
+        if (total !== null && spent !== null && used !== null && used <= 100) {
+          const left = Math.round(Math.max(0, total - spent) * 100) / 100;
+          if (Number.isFinite(left)) return String(left) + ' 积分';
+        }
+      }
       return percent !== null && percent <= 100 ? String(percent) + '%' : '';
     }
     function billingFreshness(item) {

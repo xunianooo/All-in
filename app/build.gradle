@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 32
-        versionName '1.2.26-test'
+        versionCode 35
+        versionName '1.2.29-test'
         testInstrumentationRunner 'com.gaeul.allin.RepairInstrumentation'
     }
 
@@ -198,6 +198,7 @@ def offlineTestMains = [
         'com.gaeul.allin.TraeStreamOfflineTest',
         'com.gaeul.allin.TraeControlOfflineTest',
         'com.gaeul.allin.TraeControlLoginHttpTest',
+        'com.gaeul.allin.TraeBrowserLoginHttpTest',
         'com.gaeul.allin.WorkBuddyPolicyOfflineTest',
         'com.gaeul.allin.WorkBuddyRefusalPolicyOfflineTest',
         'com.gaeul.allin.VendorPolicyGatewayHttpTest',

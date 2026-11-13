@@ -16,3 +16,13 @@ assert(source.includes('if (fresh || (!restoring && !resumed)) openTraeBrowser(u
 assert(block.includes('"missing".equals(status)'));
 assert(source.includes('fresh.setOnClickListener(v -> initTraeAuth(true))'));
 assert(source.includes('openTraeBrowser(traeUrl)'));
+
+// A terminal failure is retained rather than cleared by the poll worker.
+const failureBlock = block.slice(block.indexOf('final String detail = r.optString'), block.indexOf('failures = 0;', block.indexOf('final String detail = r.optString')));
+assert(failureBlock.includes('rememberTraeFailure('));
+assert(!failureBlock.includes('clearTraeFlow()'));
+assert(block.includes('prefs.getString("trae_flow_error", "")'));
+assert(block.includes('"?flowId=" + URLEncoder.encode(restoringId, "UTF-8")'));
+assert(block.includes('firstCheck || System.currentTimeMillis() < deadline'));
+assert(block.includes('r.opt("keyId") instanceof String'));
+assert(!block.includes('没有可检查的授权'));
