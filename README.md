@@ -127,6 +127,8 @@ curl http://127.0.0.1:3425/v1/chat/completions \
 
 Windows 使用 `gradlew.bat`。APK 产物位于 `app/build/outputs/apk/`。面板脚本使用 Node.js，具体命令可参考 [CI 工作流](.github/workflows/ci.yml)。
 
+CI 已改为**仅手动触发**，普通提交和 Pull Request 不自动运行双平台全量检查。需要时可在仓库 Actions 中选择 CI → Run workflow，保留原 Windows/Ubuntu 测试与构建能力。日常开发按改动运行相关本地回归；发布前重点验证 Android 构建、签名升级及设备表现。关闭自动触发不代表取消必要的功能与安全验证。
+
 Release 构建需要自行准备签名文件，并通过 `MAGPIE_KEYSTORE`、`MAGPIE_KEYSTORE_PASS`、`MAGPIE_KEY_ALIAS` 配置；如密钥口令与仓库口令不同，可设置 `MAGPIE_KEY_PASS`。这些 `MAGPIE_` 前缀是历史兼容命名，签名密钥和口令不应提交到仓库。使用其他签名证书构建的 APK 无法直接覆盖安装原证书签名的版本。
 
 手机端也可在具备 JDK、Android SDK 和 Gradle 所需环境的 Linux 容器中构建。测试与 CI 的实际结果请查看对应提交的运行记录；1.2.23-test 的 Windows CI 曾在测试管理凭据初始化阶段失败，不能据本机测试结果宣称 Windows 已通过。

@@ -1,8 +1,8 @@
 name: CI
 
+# Run only on explicit request; everyday pushes/PRs must not start the full matrix.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
