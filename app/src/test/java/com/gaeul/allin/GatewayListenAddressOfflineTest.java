@@ -357,9 +357,78 @@ public final class GatewayListenAddressOfflineTest {
     }
 
     // ---------- D: 真实 socket 语义 ----------
+    /**
+     * This is a bind/HTTP fixture, not a reverse-DNS test. NanoHTTPD 2.3.1's
+     * HTTPSession calls getHostName() before reading the request. Windows CI's
+     * virtual NIC can accept TCP while its PTR lookup blocks past the deadline.
+     * Keep the real peer bytes and the real socket; supply only the already-known
+     * numeric display name. Never replace the peer with loopback, change bind,
+     * filter a TCP-capable witness, or turn a partial HTTP response into a pass.
+     * Production GatewayServer and its client handlers are intentionally unchanged.
+     */
+    static final class NumericPeerSocket extends Socket {
+        private final Socket delegate;
+        private final InetAddress peer;
+        NumericPeerSocket(Socket delegate) throws java.io.IOException {
+            this.delegate = delegate;
+            InetAddress actual = delegate.getInetAddress();
+            if (actual == null) throw new java.io.IOException("fixture socket has no peer");
+            this.peer = InetAddress.getByAddress(actual.getHostAddress(), actual.getAddress());
+        }
+        @Override public InetAddress getInetAddress() { return peer; }
+        @Override public InputStream getInputStream() throws java.io.IOException { return delegate.getInputStream(); }
+        @Override public OutputStream getOutputStream() throws java.io.IOException { return delegate.getOutputStream(); }
+        @Override public boolean isClosed() { return delegate.isClosed(); }
+        @Override public void close() throws java.io.IOException { delegate.close(); }
+    }
+
+    static void fixtureNumericPeer() throws Exception {
+        for (String numeric : new String[]{"192.0.2.7", "2001:db8::7", "127.0.0.1"}) {
+            final InetAddress raw = InetAddress.getByAddress(InetAddress.getByName(numeric).getAddress());
+            Socket original = new Socket() {
+                @Override public InetAddress getInetAddress() { return raw; }
+            };
+            try (NumericPeerSocket view = new NumericPeerSocket(original)) {
+                check(java.util.Arrays.equals(raw.getAddress(), view.getInetAddress().getAddress()), "numeric display keeps every peer byte: " + numeric);
+                check(raw.getHostAddress().equals(view.getInetAddress().getHostName()), "fixture hostname is the numeric peer without PTR: " + numeric);
+                check(raw.isLoopbackAddress() == view.getInetAddress().isLoopbackAddress(), "numeric display never changes loopback classification");
+                check(!view.isClosed(), "socket view starts open");
+            }
+            check(original.isClosed(), "closing the view closes its real socket");
+        }
+        try (ServerSocket listener = new ServerSocket()) {
+            listener.bind(new InetSocketAddress("127.0.0.1", 0));
+            try (Socket client = new Socket("127.0.0.1", listener.getLocalPort());
+                 Socket accepted = listener.accept();
+                 NumericPeerSocket view = new NumericPeerSocket(accepted)) {
+                client.setSoTimeout(2000);
+                accepted.setSoTimeout(2000);
+                check(view.getInputStream() == accepted.getInputStream(), "view retains the accepted input stream");
+                check(view.getOutputStream() == accepted.getOutputStream(), "view retains the accepted output stream");
+                view.getOutputStream().write(7);
+                view.getOutputStream().flush();
+                check(client.getInputStream().read() == 7, "response bytes travel over the real accepted socket");
+                client.getOutputStream().write(9);
+                client.getOutputStream().flush();
+                check(view.getInputStream().read() == 9, "request bytes travel over the real accepted socket");
+            }
+        }
+        System.out.println("Numeric peer fixture checks OK (IPv4/IPv6 identity, loopback classification, real I/O and close)");
+    }
+
     static final class Probe extends NanoHTTPD {
         Probe(String host, int port) { super(host, port); }
+        @Override protected ClientHandler createClientHandler(Socket socket, InputStream input) {
+            try { return super.createClientHandler(new NumericPeerSocket(socket), input); }
+            catch (java.io.IOException failure) {
+                try { socket.close(); } catch (java.io.IOException ignored) { }
+                throw new IllegalStateException("fixture numeric peer unavailable", failure);
+            }
+        }
         @Override public Response serve(IHTTPSession session) {
+            String peer = session.getRemoteIpAddress();
+            check("127.0.0.1".equals(peer) ? "localhost".equals(session.getRemoteHostName())
+                    : peer.equals(session.getRemoteHostName()), "HTTP session uses real numeric peer, not reverse DNS");
             return newFixedLengthResponse(Response.Status.OK, "text/plain", "ok");
         }
     }
@@ -514,6 +583,7 @@ public final class GatewayListenAddressOfflineTest {
         check(candidates.isEmpty() || !lan.isEmpty(), "No independent TCP-capable LAN address: fixture is inconclusive, not a listener failure or a pass");
         fixtureQualification();
         fixtureHttpFraming();
+        fixtureNumericPeer();
         // 1. 历史默认：回环与局域网都通（证明既有连接不受影响）。
         probeReach(GatewayServer.planListen("0.0.0.0", false, PORT, PORT).host,
                 "wildcard listener", true, true, lan);
