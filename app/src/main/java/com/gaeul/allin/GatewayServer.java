@@ -1025,7 +1025,7 @@ public class GatewayServer extends NanoHTTPD {
     private synchronized boolean refreshFenceHit(String provider, String refresh) {
         if (refreshFenceDamaged()) return true;
         String digest = refreshFenceDigest(provider, refresh);
-        return digest != null && refreshFenceRecords().containsKey(digest);
+        return digest != null && (refreshFenceRecords().containsKey(digest) || !AccountTransferProtection.tag(configJson,provider,refresh).isEmpty());
     }
     /** True only when this value carries a record that says the provider already replaced it. */
     private synchronized boolean refreshValueRecordedAsSpent(String provider, String refresh) {
@@ -1036,7 +1036,7 @@ public class GatewayServer extends NanoHTTPD {
         String digest = refreshFenceDigest(provider, refresh);
         if (digest == null) return false;
         String label = refreshFenceRecords().get(digest);
-        return label != null && FENCE_SPENT.equals(refreshFenceTag(label));
+        return (label != null && FENCE_SPENT.equals(refreshFenceTag(label))) || "spent".equals(AccountTransferProtection.tag(configJson,provider,refresh));
     }
     private int writeRefreshFence() throws IOException {
         if (refreshFenceCorrupt) throw new IOException("refresh fence damaged; refusing to overwrite it");
@@ -1090,7 +1090,7 @@ public class GatewayServer extends NanoHTTPD {
             throw new RefreshFenceBlocked(refreshFenceUnavailable(provider, "一次性凭据为空，无法建立安全围栏"));
         synchronized (this) {
             java.util.LinkedHashMap<String, String> records = refreshFenceRecords();
-            if (records.containsKey(digest)) throw refreshAlreadyUncertain(provider);
+            if (records.containsKey(digest) || !AccountTransferProtection.tag(configJson,provider,value).isEmpty()) throw refreshAlreadyUncertain(provider);
             if (records.size() >= REFRESH_FENCE_LIMIT)
                 throw new RefreshFenceBlocked(refreshFenceUnavailable(provider,
                         "安全围栏容量已满（已保存 " + REFRESH_FENCE_LIMIT
@@ -1941,6 +1941,47 @@ public class GatewayServer extends NanoHTTPD {
             return out.toByteArray();
         }
     }
+    /** Native file transfers never expose credential bytes through the dashboard bridge. */
+    synchronized byte[] accountTransferSnapshot() throws IOException {
+        if(stopping || backupRetired || configRecoveryRequired)throw new IOException("网关正在切换或配置待恢复，请稍后再试");
+        byte[] durable=backupDurableConfig();
+        JSONObject disk;
+        try { disk=new JSONObject(new String(durable,java.nio.charset.StandardCharsets.UTF_8)); }
+        catch(Exception invalid){throw new IOException("当前配置不可读取");}
+        if(configJson==null || !configJson.similar(disk))throw new IOException("账户或配置尚在更新，请稍后重新打开导入导出");
+        return durable;
+    }
+    synchronized byte[] exportAccountTransfer(byte[] expectedHash,java.util.Set<Integer> selected,long now) throws IOException {
+        byte[] current=accountTransferSnapshot();
+        try {
+            if(!java.security.MessageDigest.isEqual(expectedHash,AccountTransferCodec.digest(current)))throw AccountTransferCodec.invalid("账号已变化，请重新选择导出");
+            loadRefreshFence();if(refreshFenceCorrupt)throw AccountTransferCodec.invalid("刷新保护文件无法完整读取，暂不能安全导出账号");
+            JSONObject decorated=AccountTransferProtection.decorate(new JSONObject(new String(current,java.nio.charset.StandardCharsets.UTF_8)),refreshFenceRecords());
+            return AccountTransferCodec.export(AccountTransferProtection.decorateMiniMax(decorated,selected,miniMaxJournal()),selected,now);
+        } finally {java.util.Arrays.fill(current,(byte)0);}
+    }
+    synchronized JSONObject commitAccountTransfer(byte[] expectedHash,AccountTransferCodec.Document document,
+                                                   java.util.Set<Integer> selected,boolean updates,long now) throws IOException {
+        byte[] current=accountTransferSnapshot();
+        if(!java.security.MessageDigest.isEqual(expectedHash,AccountTransferCodec.digest(current)))
+            throw new IOException("预览后账号或配置已变化，请重新预览，未写入任何账号");
+        AccountTransferPlan.Result result=AccountTransferPlan.merge(new JSONObject(new String(current,java.nio.charset.StandardCharsets.UTF_8)),document,selected,updates,now);
+        if(result.changed) {
+            // This local import consumed no upstream credential. The general login save path
+            // deliberately carries unpersisted, already-consumed credentials after failure;
+            // using it here would keep a failed import in memory. Commit our detached copy
+            // first instead, and publish it only after the atomic write succeeds.
+            try {
+                NetworkPolicy.parse(networkFromConfig(result.config));
+                GatewayAccessCatalog.preserveAccountScope(configJson,result.config);
+                Runnable hook=configWriteHookForTests;if(hook!=null)hook.run();
+                AtomicConfigFile.write(configFile,result.config.toString(2));
+            } catch(Exception failure) {throw new IOException("账号保存失败，原有配置保留，请重试");}
+            configJson=result.config;traeConfigEpoch++;runPostCommitEffects();
+        }
+        if(!lastConfigPostCommitError.isEmpty())result.summary.put("runtimeWarning",true);
+        return result.summary;
+    }
     private long traeConfigEpoch;
     private TraeControl traeControl;
     private synchronized TraeControl traeControl() {
@@ -2260,6 +2301,7 @@ public class GatewayServer extends NanoHTTPD {
             synchronized(GatewayServer.this) {
                 JSONObject current=miniAccount(configJson,lease.id);
                 if(backupRetired || current==null || !minimaxLifecycle().isCurrent(lease) || !miniState(current).equals(old.access+"\n"+old.refresh+"\n"+old.expires)) throw new IOException("MiniMax account changed");
+                if(!AccountTransferProtection.tag(configJson,"minimax-code",old.refresh).isEmpty())throw new MiniMaxRefreshJournal.Blocked();
                 ticket[0]=miniMaxJournal().begin(lease.id,old.refresh);
             }
             MiniMaxAuth.SignIn next=(miniMaxRefreshTransport==null?MiniMaxAuth.refresh(old.refresh):miniMaxRefreshTransport.refresh(old.refresh));

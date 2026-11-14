@@ -2,6 +2,8 @@
 const fs=require('fs'),path=require('path'),cp=require('child_process');
 const root=path.resolve(__dirname,'..');
 const scripts=[
+  "tests/dashboard-provider-badges.cjs",
+  "tests/dashboard-account-json-files.cjs",
   "tests/dashboard-stream-observation.cjs",
   "tests/dashboard-catpaw-auth-feedback.cjs",
   "tests/provider-upstream-defaults.cjs",

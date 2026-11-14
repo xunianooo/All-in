@@ -26,6 +26,7 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private BackupActivityController backupController;
+    private AccountTransferController accountTransferController;
     /** 当前 WebView 正在显示的页面地址；原生桥只认面板自己的页面 */
     private volatile String currentPageUrl = "";
 
@@ -504,10 +505,28 @@ public class MainActivity extends Activity {
         }
 
         @android.webkit.JavascriptInterface
+        public boolean openAccountTransfer(final String action,final String providerId) {
+            if(!bridgeAllowed() || !("import".equals(action)||"export".equals(action))
+                    || AccountTransferCodec.canonicalProvider(providerId).isEmpty())return false;
+            runOnUiThread(()-> {
+                if(!bridgeAllowed()||isFinishing()||isDestroyed())return;
+                if(backupController!=null&&backupController.busy()){Toast.makeText(MainActivity.this,"已有备份操作进行中，请先完成或取消",Toast.LENGTH_SHORT).show();return;}
+                if(accountTransferController==null)accountTransferController=new AccountTransferController(MainActivity.this,
+                        GatewayService.accountTransferBackend(MainActivity.this),summary->{
+                    if(webView!=null&&bridgeAllowed()&&!isFinishing()&&!isDestroyed())
+                        webView.evaluateJavascript("window.onAccountTransferFinished&&window.onAccountTransferFinished("+summary.toString()+");",null);
+                });
+                accountTransferController.open(action,providerId);
+            });
+            return true;
+        }
+
+        @android.webkit.JavascriptInterface
         public boolean openEncryptedBackup(final String action) {
             if (!bridgeAllowed() || !("export".equals(action) || "import".equals(action) || "rollback".equals(action))) return false;
             runOnUiThread(() -> {
                 if (!bridgeAllowed() || isFinishing()) return;
+                if(accountTransferController!=null&&accountTransferController.busy()){Toast.makeText(MainActivity.this,"已有账号文件操作进行中，请先完成或取消",Toast.LENGTH_SHORT).show();return;}
                 if (backupController == null) backupController = new BackupActivityController(MainActivity.this, GatewayService.backupBackend(MainActivity.this));
                 backupController.open(action);
             });
@@ -1092,12 +1111,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (accountTransferController != null && accountTransferController.onActivityResult(requestCode, resultCode, data)) return;
         if (backupController != null && backupController.onActivityResult(requestCode, resultCode, data)) return;
         super.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override
     protected void onDestroy() {
+        if (accountTransferController != null) accountTransferController.destroy();
         if (backupController != null) backupController.destroy();
         if (webView != null) {
             webView.destroy();

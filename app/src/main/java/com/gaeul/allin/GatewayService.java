@@ -473,6 +473,55 @@ public class GatewayService extends Service {
         super.onTaskRemoved(rootIntent);
     }
 
+    /** Native account-only transfer shares the engine and mutation locks with refresh/backup. */
+    static AccountTransferPlan.Backend accountTransferBackend(final Context context) {
+        final Context app=context.getApplicationContext();
+        return new AccountTransferPlan.Backend() {
+            public byte[] readConfig() throws Exception {
+                synchronized(ENGINE_SERIAL) {
+                    if(PENDING_STOPS.get()!=0)throw new java.io.IOException("网关正在停止，请稍后再试");
+                    GatewayService owner=current;GatewayServer own=owner==null?null:owner.server;
+                    if(own!=null)return own.accountTransferSnapshot();
+                    if(isGatewayEnabled(app))throw new java.io.IOException("网关尚未就绪，请稍后再试");
+                    return BackupFiles.readFile(new java.io.File(app.getFilesDir(),"config.json"),AccountTransferCodec.MAX_BYTES);
+                }
+            }
+            public byte[] export(byte[] expectedHash,java.util.Set<Integer> selected,long now) throws Exception {
+                synchronized(ENGINE_SERIAL) {
+                    if(PENDING_STOPS.get()!=0)throw AccountTransferCodec.invalid("网关正在停止，请稍后重新导出");
+                    GatewayService owner=current;GatewayServer own=owner==null?null:owner.server;
+                    if(own!=null)return own.exportAccountTransfer(expectedHash,selected,now);
+                    if(isGatewayEnabled(app))throw AccountTransferCodec.invalid("网关尚未就绪，请稍后重新导出");
+                    byte[] bytes=readConfig();
+                    try {
+                        if(!java.security.MessageDigest.isEqual(expectedHash,AccountTransferCodec.digest(bytes)))throw AccountTransferCodec.invalid("账号已变化，请重新选择导出");
+                        com.gaeul.allin.json.JSONObject config=new com.gaeul.allin.json.JSONObject(new String(bytes,java.nio.charset.StandardCharsets.UTF_8));
+                        java.util.Map<String,String> fences=AccountTransferProtection.read(new java.io.File(app.getFilesDir(),AccountTransferProtection.FILE));
+                        com.gaeul.allin.json.JSONObject decorated=AccountTransferProtection.decorate(config,fences);
+                        return AccountTransferCodec.export(AccountTransferProtection.decorateMiniMax(decorated,selected,new MiniMaxRefreshJournal(app.getFilesDir())),selected,now);
+                    } finally {java.util.Arrays.fill(bytes,(byte)0);}
+                }
+            }
+            public com.gaeul.allin.json.JSONObject commit(byte[] expectedHash,AccountTransferCodec.Document document,
+                    java.util.Set<Integer> selected,boolean updates,long now) throws Exception {
+                synchronized(ENGINE_SERIAL) {
+                    if(PENDING_STOPS.get()!=0)throw new java.io.IOException("网关正在停止，请稍后重新预览");
+                    GatewayService owner=current;GatewayServer own=owner==null?null:owner.server;
+                    if(own!=null)return own.commitAccountTransfer(expectedHash,document,selected,updates,now);
+                    if(isGatewayEnabled(app))throw new java.io.IOException("网关尚未就绪，请稍后重新预览");
+                    java.io.File file=new java.io.File(app.getFilesDir(),"config.json");
+                    byte[] before=BackupFiles.readFile(file,AccountTransferCodec.MAX_BYTES);
+                    if(!java.security.MessageDigest.isEqual(expectedHash,AccountTransferCodec.digest(before)))
+                        throw new java.io.IOException("预览后配置已变化，未导入，请重新选择文件");
+                    AccountTransferPlan.Result result=AccountTransferPlan.merge(new com.gaeul.allin.json.JSONObject(
+                            new String(before,java.nio.charset.StandardCharsets.UTF_8)),document,selected,updates,now);
+                    if(result.changed)AtomicConfigFile.write(file,result.config.toString(2));
+                    return result.summary;
+                }
+            }
+        };
+    }
+
     /** Native backup uses the same engine lock as watchdog start/stop. */
     static BackupCoordinator.Backend backupBackend(final Context context) {
         final Context app = context.getApplicationContext();

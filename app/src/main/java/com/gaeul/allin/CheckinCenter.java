@@ -33,6 +33,26 @@ final class CheckinCenter implements AutoCloseable {
     private static String key(String provider,String id) { return provider+":"+id; }
     static String day(long now) { SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd",Locale.US);f.setTimeZone(TimeZone.getTimeZone("GMT+08:00"));return f.format(new Date(now)); }
     static long nextDay(long now) { Calendar c=Calendar.getInstance(TimeZone.getTimeZone("GMT+08:00"));c.setTimeInMillis(now);c.add(Calendar.DATE,1);c.set(Calendar.HOUR_OF_DAY,0);c.set(Calendar.MINUTE,0);c.set(Calendar.SECOND,0);c.set(Calendar.MILLISECOND,0);return c.getTimeInMillis(); }
+    /** Migration never counts imported assertions as official reward proof or creates a fresh claim. */
+    static void protectAccountImport(JSONObject config,String provider,JSONObject account,JSONObject carried,long now) {
+        if(!eligible(provider,account))return;
+        String k=key(provider,account.optString("id"));JSONObject current=records(config).optJSONObject(k);
+        String fp=fingerprint(account),today=day(now);
+        if(current!=null && today.equals(current.optString("day"))) {
+            // The caller already proved this is the same provider-scoped identity. Keep a local
+            // daily fence even when account IDs/metadata were safely remapped during migration.
+            JSONObject kept=copy(current);kept.put("fingerprint",fp);putRecord(config,k,kept);return;
+        }
+        JSONObject record=new JSONObject().put("day",today).put("fingerprint",fp).put("outcome","unknown")
+                .put("verified",false).put("retryBlocked",true).put("claimPossible",true).put("at",now)
+                .put("nextAt",nextDay(now)).put("reasonCode","import_protection")
+                .put("message","账号已迁移；今天暂不重复领取，请先查询官方状态。");
+        if(carried!=null && today.equals(carried.optString("day"))) {
+            for(String f:new String[]{"actionAt","actionAutomatic","confirmedAt"})if(carried.has(f))record.put(f,carried.opt(f));
+            record.put("evidenceType","imported_record_unverified");
+        }
+        putRecord(config,k,record);
+    }
     private static JSONObject options(JSONObject config) { JSONObject o=config.optJSONObject("checkin");return o==null?new JSONObject():o; }
     private static JSONObject records(JSONObject config) { JSONObject r=options(config).optJSONObject("records");return r==null?new JSONObject():r; }
     static boolean enabled(JSONObject config,String provider) { JSONObject o=options(config),p=o.optJSONObject("providers");return o.optBoolean("autoEnabled",true) && (p==null ? !"zcode".equals(provider) : p.optBoolean(provider,!"zcode".equals(provider))); }

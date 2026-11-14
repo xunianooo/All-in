@@ -20,8 +20,10 @@ async function run() {
   assert.equal(calls[1][1].headers.get('x-all-in-management'), 'management');
   assert.equal(calls[2][1], undefined);
   assert.equal(calls[3][1], undefined);
-  assert(html.includes("fetch(API_BASE + '/api/providers/accounts/export'"));
-  assert(html.includes("!res.ok || !d.ok || !Array.isArray(d.accounts)"));
+  const transfer = html.slice(html.indexOf('    const ACCOUNT_FILE_PROVIDERS'), html.indexOf('    let currentModalProviderId'));
+  assert(transfer.includes("bridge.openAccountTransfer(action, providerId) !== true"));
+  assert(!transfer.includes('navigator.clipboard') && !transfer.includes('fetch(') && !transfer.includes('alert('));
+  assert(transfer.includes('summary.ok !== true') && transfer.includes('Number.isInteger(summary.saved)'));
   assert(!html.includes("esc(keys.filter(k => typeof k === 'string').join(','))"));
   const reconcile = html.slice(html.indexOf('    async function reconcileProviderReadback('), html.indexOf('    // 兼容旧脚本', html.indexOf('    async function reconcileProviderReadback(')));
   const source = `let commercialKeysDirty = true;

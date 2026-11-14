@@ -1,5 +1,6 @@
 const fs=require('fs'),vm=require('vm'),cp=require('child_process'),assert=require('assert');
 const html=fs.readFileSync('app/src/main/assets/dashboard.html','utf8');
+const fileTransferCode=html.slice(html.indexOf('    const ACCOUNT_FILE_PROVIDERS'),html.indexOf('    let currentModalProviderId'));
 const start=html.lastIndexOf('<div class="card"',html.indexOf('data-provider-logo="loomy"'));
 const card=html.slice(start,html.indexOf('<!--',start+1));
 const view=html.slice(html.indexOf('    function applyProviderView()'),html.indexOf('    const providerBillingCache'));
@@ -15,6 +16,7 @@ async function fetch(url,opts){calls.push({url,opts});return {json:async()=>url=
 ${ids}
 ${models}
 ${ping}
+${fileTransferCode}
 ${view}
 ${sync}
 function check(x,m){if(!x)throw Error(m)}

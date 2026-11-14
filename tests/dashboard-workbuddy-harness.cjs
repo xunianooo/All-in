@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
 const html = fs.readFileSync('app/src/main/assets/dashboard.html', 'utf8');
+const fileTransferCode=html.slice(html.indexOf('    const ACCOUNT_FILE_PROVIDERS'),html.indexOf('    let currentModalProviderId'));
 const js = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(x => x[1]).find(x => x.includes('let providerConfigRequest'));
 const start = js.indexOf('    let providerConfigRequest');
 const end = js.indexOf('    // 记住上一次', js.indexOf('    async function loadConfig()', start));
@@ -13,11 +14,13 @@ class Element {
   replaceChildren() { for (const el of this.children) el.parent = null; this.children = []; this._text = ''; }
   set textContent(s) { this.replaceChildren(); this._text = String(s); }
   get textContent() { return this._text + this.children.map(x => x.textContent).join(''); }
-  setAttribute() {}
+  setAttribute(k,v) { (this.attrs ||= {})[k]=v; }
+  getAttribute(k) { return (this.attrs||{})[k]; }
+  removeAttribute(k) { if(this.attrs)delete this.attrs[k]; }
   set innerHTML(s) { this._html = s; }
   closest(q) { for (let p = this; p; p = p.parent) if (q === 'details' && p.tagName === 'details') return p; return null; }
   querySelector(q) { return this.querySelectorAll(q)[0] || null; }
-  querySelectorAll(q) { const found=[]; const visit = x => { for (const c of x.children) { if ((q === 'input' && c.tagName === 'input') || (q === '[data-harness-control]' && c.dataset.harnessControl) || (q === 'details[open]' && c.tagName === 'details' && c.open) || (q === '[data-provider-focus]' && c.dataset.providerFocus)) found.push(c); visit(c); } }; visit(this); return found; }
+  querySelectorAll(q) { const found=[]; const visit = x => { for (const c of x.children) { if ((q === 'button' && c.tagName === 'button') || (q === '.account-json-file-actions' && c.className === 'account-json-file-actions') || (q === 'input' && c.tagName === 'input') || (q === '[data-harness-control]' && c.dataset.harnessControl) || (q === 'details[open]' && c.tagName === 'details' && c.open) || (q === '[data-provider-focus]' && c.dataset.providerFocus)) found.push(c); visit(c); } }; visit(this); return found; }
   focus() { this.doc.activeElement = this; }
 }
 function setup(hideDsh, token = 't0', id = 'workbuddy') {
@@ -31,7 +34,7 @@ function setup(hideDsh, token = 't0', id = 'workbuddy') {
   const cfg = {providers:[provider],providerStateTokens:token === null ? {} : {[id]:token}};
   const noop = () => {};
   const ctx = vm.createContext({Set,Map,JSON,Array,String,document:doc,window:{scrollY:0,scrollTo:noop,zcodeGiftLoaded:true},API_BASE:'',appConfig:cfg,lastConfigSig:'',renderDirty:false,visibleProviders:x=>x||[],providerLogo:()=>'',fetch:(url,opt)=>new Promise((resolve,reject)=>calls.push({url,opt,resolve,reject})),showToast:x=>toasts.push(x),console:{error:noop},autoSyncAfterLogin:noop,renderCommercialKeys:noop,renderGroups:noop,bindGroupEvents:noop,renderWbAccounts:noop,renderWbModelTags:noop,renderAllProvidersCards:noop,renderTraeAccounts:noop,refreshProviderBadges:noop,applyPlaceholderGuard:noop,renderCredentials:noop,renderMiddleware:noop,renderPingProviders:noop,renderAllModelsTags:noop});
-  vm.runInContext(js.slice(start,end),ctx);
+  vm.runInContext(fileTransferCode+js.slice(start,end),ctx);
   ctx.showProviderView('detail',id);
   return {ctx,calls,toasts,elements,id,sw:()=>elements['provider-detail-info'].querySelector('input'), unknown:()=>vm.runInContext(`providerUnknown.has(${JSON.stringify(id)})`,ctx), config:(value,t='t1')=>({providers:[{...provider,hideDsh:value}],providerStateTokens:{[id]:t}})};
 }

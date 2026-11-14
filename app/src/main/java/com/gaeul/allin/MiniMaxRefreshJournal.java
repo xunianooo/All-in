@@ -89,6 +89,18 @@ class MiniMaxRefreshJournal {
         // ASCII fields only, so the character count is the on-disk byte count.
         return new Stats(present,keyFile.isFile(),records.size(),pending,spent,MAX_RECORDS,present?text.length():0);
     }
+    /** Native account export classification. Reads existing key/journal only; creates nothing. */
+    String protectionTag(String refresh) throws IOException {
+        synchronized(PROCESS_LOCK) {
+            if(!stateFile.exists())return "";
+            Map<String,Record> records=read();
+            String text=readFile(keyFile,64);
+            if(!text.matches("[0-9a-f]{64}"))throw new IOException("invalid journal key");
+            byte[] key=new byte[32];for(int i=0;i<32;i++)key[i]=(byte)Integer.parseInt(text.substring(i*2,i*2+2),16);
+            try {Record record=records.get(digest(key,"refresh",refresh));return record==null?"":record.completed?"spent":"unknown";}
+            finally {Arrays.fill(key,(byte)0);}
+        }
+    }
     private byte[] key() throws IOException {
         if(!keyFile.exists()) {
             if(stateFile.exists()) throw new IOException("journal key missing");

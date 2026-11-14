@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug-only SAF integration host. It refuses any non-isolated application id. -->
+        <activity android:name=".AccountTransferFixtureActivity" android:exported="true" android:label="Account file integration fixture" />
+    </application>
+</manifest>

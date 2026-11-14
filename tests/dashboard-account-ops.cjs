@@ -1,5 +1,6 @@
 const fs=require('fs'),vm=require('vm'),cp=require('child_process'),assert=require('assert');
 const html=fs.readFileSync('app/src/main/assets/dashboard.html','utf8');
+const fileTransferCode=html.slice(html.indexOf('    const ACCOUNT_FILE_PROVIDERS'),html.indexOf('    let currentModalProviderId'));
 for(const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);
 const loomyCard=html.slice(html.lastIndexOf('<div class="card"',html.indexOf('data-provider-logo="loomy"')),html.indexOf('<!--',html.indexOf('data-provider-logo="loomy"')));
 assert(loomyCard.includes('data-provider-id="loomy"'), 'Loomy card must be identifiable before logo initialization');
@@ -8,6 +9,7 @@ const code=html.slice(html.indexOf('    // Account operations:'),html.indexOf(' 
 const harness=`<!doctype html><div id="item1"></div><div id="item2"></div><div id="provider-list-view"></div><div id="provider-subview"></div><div id="provider-catalog"><div id="provider-catalog-heading"></div><div id="all-providers-cards-container">${loomyCard}</div></div><div id="provider-detail-info"></div><pre id="result">WAIT</pre><script>
 const API_BASE='', calls=[], responses=[]; let providerView='add', providerDetail='', appConfig={providers:[{id:'loomy',accounts:[],keys:[],models:[]}]};
 function providerConfigured(p){return !!(p.accounts.length||p.keys.length)} function providerCounts(p){return {accounts:p.accounts.length,keys:p.keys.length,models:p.models.length}} function renderProviderBilling(){} function endpointProbeControls(){return ''} function hydrateEndpointProbe(){}
+${fileTransferCode}
 ${viewCode} let currentModalProviderId=null;
 let order=[]; async function loadConfig(){ order.push('load'); await Promise.resolve(); appConfig.providers[0].accounts.push({id:'new'}); order.push('loaded'); } function refreshProviderBadges(){order.push('badges')} function closeAccountModal(){order.push('close-account')} function showProviderView(view){order.push('view:'+view); providerView=view; check(appConfig.providers[0].accounts.length>0,'account visible before navigation')} function renderAccountModalList(){} function confirm(){return true}
 async function fetch(url,opts){calls.push({url,body:JSON.parse(opts.body)});return responses.shift()}

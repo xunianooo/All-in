@@ -32,6 +32,7 @@ final class BackupActivityController {
     private EditText passwordField, confirmationField;
 
     BackupActivityController(Activity activity, BackupCoordinator.Backend backend) { this.activity = activity; this.backend = backend; }
+    boolean busy() { return busy; }
     void open(String action) {
         if (destroyed || busy) return;
         if (Build.VERSION.SDK_INT < 26) { message("加密备份需要 Android 8.0 或更高版本。"); return; }

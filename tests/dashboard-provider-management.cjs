@@ -2,11 +2,12 @@ const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
 const html = fs.readFileSync('app/src/main/assets/dashboard.html', 'utf8');
+const fileTransferCode=html.slice(html.indexOf('    const ACCOUNT_FILE_PROVIDERS'),html.indexOf('    let currentModalProviderId'));
 const js = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(x => x[1]).find(x => x.includes('let providerConfigRequest'));
 new vm.Script(js);
 const start = js.indexOf('    let providerConfigRequest');
 const end = js.indexOf('    async function loadConfig()', start);
-const code = js.slice(start, end);
+const code = fileTransferCode + js.slice(start, end);
 const context = vm.createContext({ Set, JSON, Array, String, document: {}, window: {}, fetch:()=>{}, showToast:()=>{}, visibleProviders: x => Array.isArray(x) ? x : [], appConfig: {providers: []} });
 vm.runInContext(code, context);
 function counts(p) { return JSON.parse(JSON.stringify(context.providerCounts(p))); }
@@ -26,11 +27,11 @@ class Element {
  remove(){if(this.parent){this.parent.children=this.parent.children.filter(x=>x!==this);this.parent=null}}
  replaceChildren(){this.children=[];this._text=''}
  set textContent(s){this._text=String(s);this.children=[]} get textContent(){return this._text+this.children.map(x=>x.textContent).join('')}
- setAttribute(k,v){this.attrs[k]=v} getAttribute(k){return this.attrs[k]}
+ setAttribute(k,v){this.attrs[k]=v} getAttribute(k){return this.attrs[k]} removeAttribute(k){delete this.attrs[k]}
  set innerHTML(v){this._html=v;this._text=''} get innerHTML(){return this._html||''}
  closest(q){let x=this;while(x){if(q==='details' && x.tagName==='details')return x;x=x.parent}return null}
  querySelector(q){return this.querySelectorAll(q)[0]||null}
- querySelectorAll(q){const out=[];function visit(x){for(const c of x.children){if((q==='input'&&c.tagName==='input')||(q==='[data-harness-control]'&&c.dataset.harnessControl)||(q==='details[open]'&&c.tagName==='details'&&c.open)||(q==='[data-provider-focus]'&&c.dataset.providerFocus))out.push(c);visit(c)}}visit(this);return out}
+ querySelectorAll(q){const out=[];function visit(x){for(const c of x.children){if((q==='button'&&c.tagName==='button')||(q==='.account-json-file-actions'&&c.className==='account-json-file-actions')||(q==='input'&&c.tagName==='input')||(q==='[data-harness-control]'&&c.dataset.harnessControl)||(q==='details[open]'&&c.tagName==='details'&&c.open)||(q==='[data-provider-focus]'&&c.dataset.providerFocus))out.push(c);visit(c)}}visit(this);return out}
  focus(){this.doc.activeElement=this}
 }
 (async()=>{
