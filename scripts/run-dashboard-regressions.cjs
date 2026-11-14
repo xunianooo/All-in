@@ -1,7 +1,11 @@
-// The same original 34 regressions on Windows and Unix, with isolated browser profiles.
+// Original regressions plus the daily check-in center, with isolated browser profiles.
 const fs=require('fs'),path=require('path'),cp=require('child_process');
 const root=path.resolve(__dirname,'..');
 const scripts=[
+  "tests/dashboard-stream-observation.cjs",
+  "tests/dashboard-catpaw-auth-feedback.cjs",
+  "tests/provider-upstream-defaults.cjs",
+  "tests/dashboard-checkin-center.cjs",
   "tests/dashboard-setup-key.cjs",
   "tests/dashboard-back-navigation.cjs",
   "tests/dashboard-endpoint-probe.cjs",

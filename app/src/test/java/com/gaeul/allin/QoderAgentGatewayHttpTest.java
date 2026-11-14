@@ -3,6 +3,7 @@ package com.gaeul.allin;
 import fi.iki.elonen.NanoHTTPD;
 import com.gaeul.allin.json.JSONArray;
 import com.gaeul.allin.json.JSONObject;
+import com.gaeul.allin.json.JSONTokener;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.net.*;
@@ -307,6 +308,7 @@ public final class QoderAgentGatewayHttpTest {
         }
     }
     static void assertNoSuccessOrTools(String kind, String wire) throws Exception {
+        Set<Integer> pendingToolBlocks=new HashSet<>();
         for(String line:wire.split("\\r?\\n")) {
             if(line.startsWith("event:")) {
                 String event=line.substring(6).trim();
@@ -316,16 +318,27 @@ public final class QoderAgentGatewayHttpTest {
             String data=line.substring(5).trim(); if(data.isEmpty()) continue;
             check(!data.equals("[DONE]"),kind+" premature DONE "+wire);
             JSONObject event=new JSONObject(data); String type=event.optString("type");
-            check(!type.equals("message_stop") && !type.equals("response.completed") && !type.equals("response.function_call_arguments.done"),kind+" successful terminal "+wire);
+            check(!type.equals("message_stop") && !type.equals("response.completed") && !type.equals("response.function_call_arguments.done") && !type.equals("response.output_item.done"),kind+" successful tool/response completion "+wire);
             JSONObject block=event.optJSONObject("content_block");
-            check(block==null || !"tool_use".equals(block.optString("type")),kind+" executable tool block "+wire);
+            if(block!=null && "tool_use".equals(block.optString("type"))) {
+                // npm emits a tool header before partial arguments; this is not executable completion.
+                JSONObject input=block.optJSONObject("input");check(input==null||input.length()==0,kind+" premature completed tool input "+wire);
+                pendingToolBlocks.add(event.optInt("index",-1));
+            }
+            check(!"content_block_stop".equals(type)||!pendingToolBlocks.contains(event.optInt("index",-1)),kind+" premature complete tool block "+wire);
             JSONObject item=event.optJSONObject("item");
-            check(item==null || !"function_call".equals(item.optString("type")),kind+" executable tool item "+wire);
+            if(item!=null && "function_call".equals(item.optString("type")))check(item.optString("arguments","").isEmpty(),kind+" premature completed tool item "+wire);
             JSONArray choices=event.optJSONArray("choices");
             for(int i=0;choices!=null && i<choices.length();i++) {
                 JSONObject choice=choices.getJSONObject(i), delta=choice.optJSONObject("delta"), message=choice.optJSONObject("message");
                 check(choice.isNull("finish_reason"),kind+" premature finish "+wire);
-                check((delta==null || !delta.has("tool_calls")) && (message==null || !message.has("tool_calls")),kind+" executable calls "+wire);
+                check(message==null||!message.has("tool_calls"),kind+" premature completed tool message "+wire);
+                JSONArray fragments=delta==null?null:delta.optJSONArray("tool_calls");
+                for(int j=0;fragments!=null&&j<fragments.length();j++) {
+                    JSONObject fn=fragments.getJSONObject(j).optJSONObject("function");String args=fn==null?"":fn.optString("arguments","");
+                    boolean completedObject=false;try{new BoundedStrictJson(args).run();completedObject=new JSONTokener(args).nextValue()instanceof JSONObject;}catch(Exception incompleteOrMalformed){}
+                    check(!completedObject,kind+" malformed/truncated fixture leaked complete tool arguments "+wire);
+                }
             }
         }
     }

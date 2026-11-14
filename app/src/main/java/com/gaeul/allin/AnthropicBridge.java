@@ -858,7 +858,14 @@ final class AnthropicBridge {
             if (closed) return outs;
             try {
                 JSONObject upstreamError = chunk.optJSONObject("error");
-                if (upstreamError != null) return onError(upstreamError.optString("message", "Upstream stream error"));
+                if (upstreamError != null) {
+                    List<String> errors=onError(upstreamError.optString("message", "Upstream stream error"));
+                    if("rate_limit_error".equals(upstreamError.optString("type"))) {
+                        JSONObject safe=new JSONObject(upstreamError.toString());safe.put("type","rate_limit_error");
+                        errors.clear();errors.add(event("error",new JSONObject().put("type","error").put("error",safe)));
+                    }
+                    return errors;
+                }
                 usageCounts.merge(chunk.optJSONObject("usage"));
                 if (!started) {
                     started = true;

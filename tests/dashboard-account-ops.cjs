@@ -21,7 +21,7 @@ function check(b,m){if(!b)throw Error(m)}
  check(one.textContent.includes('可能触发每日赠送'),'fallback notice');
  responses.push(response({ok:true,accountId:'a1',balance:12})); await one.querySelectorAll('button')[0].onclick();
  check(calls[0].body.accountId==='a1' && one.textContent.includes('余额：12') && !two.textContent.includes('余额：12'),'account isolation');
- responses.push(response({ok:true,accountId:'a1',result:{outcome:'unknown'}})); await one.querySelectorAll('button')[1].onclick();check(one.textContent.includes('结果未知'),'unknown');
+ responses.push(response({ok:true,accountId:'a1',result:{outcome:'unknown'}})); await one.querySelectorAll('button')[1].onclick();check(one.textContent.includes('待官方核实'),'unknown is not reported as success');
  responses.push(response({ok:false},false,409)); await one.querySelectorAll('button')[2].onclick();check(one.textContent.includes('可能未知'),'onboarding conflict');
  showLoomyLogin();let inputs=document.querySelectorAll('input'), buttons=[...document.body.querySelectorAll('button')].slice(-3);
  inputs[0].value='13812345678';responses.push(response({ok:true,flowId:'flow'}));await buttons[0].onclick();check(inputs[0].value==='13812345678' && buttons[1].disabled,'phone retained after send');
@@ -48,6 +48,9 @@ function check(b,m){if(!b)throw Error(m)}
  showLoomyLogin(); inputs=[...document.querySelectorAll('input')].slice(-2); buttons=[...document.body.querySelectorAll('button')].slice(-3); inputs[0].value='13812345678'; inputs[1].value='123456'; buttons[2].onclick(); check(!inputs[0].isConnected && inputs[0].value==='' && inputs[1].value==='','close clears sensitive fields');
  responses.push(response({},false,403)); await one.querySelectorAll('button')[0].onclick(); check(one.textContent.includes('仅限手机本机'),'account operation local restriction');
  let loomy=document.createElement('div');document.body.appendChild(loomy);addAccountOperations(loomy,'loomy','l1');responses.push(response({ok:true,accountId:'l1',wallet:{dailyRemaining:5}}));await loomy.querySelectorAll('button')[0].onclick();check(loomy.textContent.includes('每日剩余：5'),'wallet');
+ check(loomy.querySelectorAll('button')[1].textContent==='刷新每日额度','Loomy button names the actual operation');
+ responses.push(response({ok:true,accountId:'l1',result:{outcome:'available',dailyQuota:5000,credit:999}}));await loomy.querySelectorAll('button')[1].onclick();check(loomy.textContent.includes('不代表本次新奖励')&&!loomy.textContent.includes('：999'),'wallet information is not shown as a reward');
+ responses.push(response({ok:true,accountId:'a1',result:{outcome:'claimed',credit:999}}));await one.querySelectorAll('button')[1].onclick();check(one.textContent.includes('待官方核实')&&!one.textContent.includes('：999'),'unverified claimed marker is not accepted');
  responses.push(response({ok:false,expired:true}));await loomy.querySelectorAll('button')[1].onclick();check(loomy.textContent.includes('登录已失效'),'expired');
  document.querySelector('#result').textContent='PASS';
 })().catch(e=>document.querySelector('#result').textContent='FAIL '+e.message);

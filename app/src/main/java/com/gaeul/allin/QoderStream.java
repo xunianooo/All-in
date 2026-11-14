@@ -205,6 +205,8 @@ public final class QoderStream {
 
     private static final class Call {
         String id = "", name = "";
+        int outputIndex = -1; // Assigned when its first name is given, as npm events().
+        boolean emitted; int sentArgs;
         final StringBuilder args = new StringBuilder();
     }
 
@@ -220,12 +222,15 @@ public final class QoderStream {
         private final String model, id = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "");
         private final long created = System.currentTimeMillis() / 1000;
         private final TreeMap<Integer, Call> calls = new TreeMap<>();
+        // 0.2.67: an upstream index can be reused by a new id. Preserve every
+        // begun call, rather than concatenating its JSON into or losing the old one.
+        private final List<Call> begunCalls = new ArrayList<>();
         private final List<Call> textCalls = new ArrayList<>();
         private final QoderTextTools textTools;
         private final boolean allowTextTools;
         private boolean textFlushed;
         private byte[] pending = new byte[0];
-        private int offset, held = -1, frameSize, skipped, toolSize;
+        private int offset, held = -1, frameSize, skipped, toolSize, nextToolIndex;
         private boolean terminal, closed, business, finishSeen;
         private String finish = "";
         private IOException failed;
@@ -295,7 +300,7 @@ public final class QoderStream {
             return (String) value;
         }
 
-        private void collectTools(Object value) throws IOException {
+        private void collectTools(Object value, ByteArrayOutputStream out) throws Exception {
             if (!(value instanceof JSONArray)) throw new IOException("Invalid Qoder tool list");
             JSONArray list = (JSONArray) value;
             if (list.length() > 0 && !textCalls.isEmpty()) throw new IOException("Mixed Qoder tool encodings");
@@ -310,16 +315,13 @@ public final class QoderStream {
                     throw new IOException("Invalid Qoder tool index");
                 int index = ((Number) rawIndex).intValue();
                 Call call = calls.get(index);
-                if (call == null) {
-                    if (calls.size() >= 128) throw new IOException("Too many Qoder tools");
-                    call = new Call(); calls.put(index, call);
-                }
                 String id = stringField(item, "id"), type = stringField(item, "type");
-                if (!type.isEmpty() && !type.equals("function")) throw new IOException("Invalid Qoder tool type");
-                if (!id.isEmpty()) {
-                    if (!call.id.isEmpty() && !call.id.equals(id)) throw new IOException("Qoder tool id changed");
-                    call.id = id;
+                if (call == null || (!id.isEmpty() && !call.id.isEmpty() && !call.id.equals(id))) {
+                    if (begunCalls.size() >= 128) throw new IOException("Too many Qoder tools");
+                    call = new Call(); calls.put(index, call); begunCalls.add(call);
                 }
+                if (!type.isEmpty() && !type.equals("function")) throw new IOException("Invalid Qoder tool type");
+                if (!id.isEmpty()) call.id = id;
                 Object function = item.opt("function");
                 if (function != null && function != JSONObject.NULL && !(function instanceof JSONObject))
                     throw new IOException("Invalid Qoder function");
@@ -329,12 +331,30 @@ public final class QoderStream {
                     if (!name.isEmpty()) {
                         if (!call.name.isEmpty() && !call.name.equals(name)) throw new IOException("Qoder tool name changed");
                         call.name = name;
+                        if(call.outputIndex<0)call.outputIndex=nextToolIndex++;
                     }
                     toolSize += args.getBytes(StandardCharsets.UTF_8).length;
                     if (toolSize > TOOL_LIMIT) throw new IOException("Qoder tools too large");
                     call.args.append(args);
                 }
+                if(!call.emitted && !call.id.isEmpty() && !call.name.isEmpty() && allowTextTools)textPieces(textTools.checkpoint(),out);
+                forwardTool(call,out);
             }
+        }
+
+        /** Native nonterminal fragments are not permission to execute a tool. Final checks remain mandatory. */
+        private void forwardTool(Call call,ByteArrayOutputStream out)throws Exception {
+            if(call.id.isEmpty()||call.name.isEmpty())return;
+            if(!declared(call.name))throw new IOException("Undeclared Qoder tool name");
+            List<Call> all=new ArrayList<>(begunCalls);all.addAll(textCalls);Set<String> ids=new HashSet<>();JSONArray active=new JSONArray();
+            for(Call c:all)if(c.emitted||c==call){if(!ids.add(c.id))throw new IOException("Duplicate Qoder tool id");active.put(new JSONObject().put("function",new JSONObject().put("name",c.name)));}
+            checkToolChoice(active);
+            int end=call.args.length();if(end>0&&Character.isHighSurrogate(call.args.charAt(end-1)))end--;
+            if(end<call.sentArgs)throw new IOException("Qoder arguments changed");
+            String args=call.args.substring(call.sentArgs,end);JSONObject fn=new JSONObject().put("arguments",args);JSONObject part=new JSONObject().put("index",call.outputIndex).put("function",fn);
+            if(!call.emitted){part.put("id",call.id).put("type","function");fn.put("name",call.name);call.emitted=true;}
+            else if(args.isEmpty())return;
+            call.sentArgs=end;emit(out,chunk(new JSONObject().put("tool_calls",new JSONArray().put(part)),null));business=true;
         }
 
         private void textPieces(List<QoderTextTools.Piece> pieces, ByteArrayOutputStream out) throws Exception {
@@ -353,7 +373,8 @@ public final class QoderStream {
                     toolSize += args.getBytes(StandardCharsets.UTF_8).length;
                     if (toolSize > TOOL_LIMIT) throw new IOException("Qoder tools too large");
                     call.args.append(args);
-                    textCalls.add(call);
+                    new BoundedStrictJson(args).run(); object(args);
+                    call.outputIndex=nextToolIndex++;textCalls.add(call);forwardTool(call,out);
                 }
             }
         }
@@ -407,7 +428,10 @@ public final class QoderStream {
             JSONArray result = new JSONArray();
             Set<String> ids = new HashSet<>();
             int index = 0;
-            List<Call> allCalls = new ArrayList<>(calls.values());
+            List<Call> allCalls = new ArrayList<>(begunCalls);
+            // A nameless earlier fragment may be named after a later call. The
+            // upstream emits first-named calls first, not raw index/arrival order.
+            allCalls.sort((a,b) -> Integer.compare(a.outputIndex,b.outputIndex));
             allCalls.addAll(textCalls);
             for (Call call : allCalls) {
                 if (call.id.trim().isEmpty() || !ids.add(call.id) || call.name.trim().isEmpty() || !declared(call.name))
@@ -415,6 +439,7 @@ public final class QoderStream {
                 try { new BoundedStrictJson(call.args.toString()).run(); }
                 catch (IllegalArgumentException ex) { throw new IOException("Invalid Qoder tool arguments"); }
                 object(call.args.toString());
+                if(!StandardCharsets.UTF_8.newEncoder().canEncode(call.args))throw new IOException("Invalid Unicode tool arguments");
                 result.put(new JSONObject().put("index", index++).put("id", call.id).put("type", "function")
                         .put("function", new JSONObject().put("name", call.name).put("arguments", call.args.toString())));
             }
@@ -423,7 +448,7 @@ public final class QoderStream {
             if (finish.equals("tool_calls") && result.length() == 0) throw new IOException("Missing Qoder tool calls");
             if (result.length() > 0 && finish.equals("length")) throw new IOException("Qoder tool call truncated");
             if (!finish.equals("stop") && !finish.equals("length") && !finish.equals("tool_calls") && !finish.equals("content_filter")) finish="stop";
-            if (result.length() > 0) { emit(out, chunk(new JSONObject().put("tool_calls", result), null)); business = true; }
+            for(Call call:allCalls)forwardTool(call,out); // flush only any withheld Unicode tail; never duplicate the whole batch
             if (!business) throw new IOException("Empty Qoder response");
             String reason = result.length() > 0 ? "tool_calls" : finish;
             JSONObject last = chunk(new JSONObject(), reason);
@@ -494,7 +519,7 @@ public final class QoderStream {
                 }
                 if (delta.has("tool_calls") && !delta.isNull("tool_calls")) {
                     if (finishSeen) throw new IOException("Qoder tools after finish");
-                    collectTools(delta.opt("tool_calls"));
+                    collectTools(delta.opt("tool_calls"),out);
                 }
             }
             if (!reason.isEmpty()) {
@@ -587,6 +612,7 @@ public final class QoderStream {
         BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
         StringBuilder text = new StringBuilder(), reasoning = new StringBuilder();
         JSONArray calls = new JSONArray();
+        TreeMap<Integer,Call> assembled=new TreeMap<>();
         JSONObject first = null;
         String finish = null, line;
         int total = 0;
@@ -601,11 +627,19 @@ public final class QoderStream {
             reasoning.append(delta.optString("reasoning_content", ""));
             JSONArray tc = delta.optJSONArray("tool_calls");
             if (tc != null) for (int i = 0; i < tc.length(); i++) {
-                JSONObject call = tc.getJSONObject(i); call.remove("index"); calls.put(call);
+                JSONObject part=tc.getJSONObject(i);Object rawIndex=part.opt("index");
+                if(!(rawIndex instanceof Number)||((Number)rawIndex).doubleValue()!=((Number)rawIndex).intValue())throw new IOException("Invalid tool delta index");
+                int index=((Number)rawIndex).intValue();Call call=assembled.get(index);if(call==null){call=new Call();assembled.put(index,call);}
+                String id=part.optString("id","");if(!id.isEmpty()){if(!call.id.isEmpty()&&!call.id.equals(id))throw new IOException("Aggregate tool id changed");call.id=id;}
+                JSONObject fn=part.optJSONObject("function");if(fn!=null){String name=fn.optString("name","");if(!name.isEmpty()){if(!call.name.isEmpty()&&!call.name.equals(name))throw new IOException("Aggregate tool name changed");call.name=name;}call.args.append(fn.optString("arguments",""));}
             }
             if (!choice.isNull("finish_reason")) finish = choice.getString("finish_reason");
         }
         if (first == null || finish == null) throw new IOException("Incomplete Qoder response");
+        for(Call call:assembled.values()){
+            if(call.id.isEmpty()||call.name.isEmpty())throw new IOException("Incomplete aggregate tool identity");object(call.args.toString());
+            calls.put(new JSONObject().put("id",call.id).put("type","function").put("function",new JSONObject().put("name",call.name).put("arguments",call.args.toString())));
+        }
         JSONObject message = new JSONObject().put("role", "assistant")
                 .put("content", text.length() == 0 ? JSONObject.NULL : text.toString());
         if (reasoning.length() > 0) message.put("reasoning_content", reasoning.toString());

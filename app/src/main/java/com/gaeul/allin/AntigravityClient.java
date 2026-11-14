@@ -4,6 +4,8 @@ import com.gaeul.allin.json.JSONArray;
 import com.gaeul.allin.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.FilterInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PipedInputStream;
@@ -669,7 +671,7 @@ public class AntigravityClient {
         final PipedOutputStream pos = new PipedOutputStream();
         final PipedInputStream pis = new PipedInputStream(pos, 16384);
         final String chunkId = "chatcmpl-ag-" + System.currentTimeMillis();
-        new Thread(new Runnable() {
+        final Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
                 BufferedReader br = null;
@@ -802,8 +804,15 @@ public class AntigravityClient {
                     try { upstream.close(); } catch (Throwable ignored) {}
                 }
             }
-        }, "Antigravity-SSE").start();
-        return pis;
+        }, "Antigravity-SSE");
+        worker.setDaemon(true);worker.start();
+        return new FilterInputStream(pis) {
+            private final java.util.concurrent.atomic.AtomicBoolean closed=new java.util.concurrent.atomic.AtomicBoolean();
+            @Override public void close() throws IOException {
+                if(!closed.compareAndSet(false,true))return;
+                try { upstream.close(); } finally { worker.interrupt();super.close(); }
+            }
+        };
     }
 
     /** 非流式：把整条 SSE 收成 OpenAI chat.completion */

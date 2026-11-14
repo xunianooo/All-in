@@ -33,6 +33,11 @@ public final class QoderTextTools {
         if (input != null) pending.append(input);
         return process(false);
     }
+    /** npm Splitter.flush before a native header drains a section without ending the whole stream. */
+    List<Piece> checkpoint() throws IOException {
+        if (failed || ended) throw new IOException("text tool parser already closed");
+        return process(true);
+    }
     public List<Piece> flush() throws IOException {
         if (failed || ended) throw new IOException("text tool parser already closed");
         ended = true;

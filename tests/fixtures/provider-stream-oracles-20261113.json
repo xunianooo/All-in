@@ -1,0 +1,28 @@
+{
+  "snapshot": "2026-11-13",
+  "qoderSourceSha256": "7290649066a01dbf14e82d88624bb22d0b57e2e32205c78c78d4deb3909153eb",
+  "miniMaxSourceSha256": "2db25b05b4dd6e67e070c7d992e872c2ce58855a9fd0e3adde598e6787cbb9a9",
+  "qoderFirstWire": "data: {\"statusCodeValue\":200,\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"tool_calls\\\":[{\\\"index\\\":0,\\\"id\\\":\\\"source-call\\\",\\\"type\\\":\\\"function\\\",\\\"function\\\":{\\\"name\\\":\\\"add_numbers\\\",\\\"arguments\\\":\\\"{\\\\\\\"a\\\\\\\":\\\"}}]},\\\"finish_reason\\\":null}]}\"}\n\n",
+  "qoderNextWire": "data: {\"statusCodeValue\":200,\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"tool_calls\\\":[{\\\"index\\\":0,\\\"function\\\":{\\\"arguments\\\":\\\"2,\\\\\\\"b\\\\\\\":3}\\\"}}]},\\\"finish_reason\\\":null}]}\"}\n\n",
+  "qoderFirstEvent": {
+    "tool": {
+      "index": 0,
+      "id": "source-call",
+      "name": "add_numbers",
+      "args": "{\"a\":"
+    }
+  },
+  "qoderNextEvent": {
+    "args": {
+      "index": 0,
+      "text": "2,\"b\":3}"
+    }
+  },
+  "qoderTail": [
+    {
+      "stop": "tool_calls"
+    }
+  ],
+  "miniMaxAcceptEncoding": "identity",
+  "firstEventBeforeUpstreamClosed": true
+}

@@ -517,7 +517,7 @@ final class ResponsesBridge {
                 toolChars+=size;
             }
             final StringBuilder pending = new StringBuilder();
-            JSONObject response, usage; int textIndex=-1, reasoningIndex=-1, refusalIndex=-1, sequence=0; String finish=null;
+            JSONObject response, usage, terminalRateError; int textIndex=-1, reasoningIndex=-1, refusalIndex=-1, sequence=0; String finish=null;
             byte[] bytes=new byte[0]; int at=0; boolean ended=false, started=false;
             void event(String type, JSONObject value) throws Exception { value.put("type",type).put("sequence_number",sequence++); pending.append("event: ").append(type).append("\ndata: ").append(value.toString()).append("\n\n"); }
             void start() throws Exception {
@@ -551,7 +551,14 @@ final class ResponsesBridge {
             void chunk(JSONObject chunk) throws Exception {
                 // "error": null is a legal carrier in Chat chunks; only a real
                 // error value may fail the stream.
-                if(chunk.has("error") && !chunk.isNull("error")) throw new java.io.IOException("upstream stream error");
+                if(chunk.has("error") && !chunk.isNull("error")) {
+                    JSONObject error=chunk.optJSONObject("error");
+                    if(error!=null && "rate_limit_error".equals(error.optString("type"))) {
+                        terminalRateError=new JSONObject();
+                        for(String field:new String[]{"type","code","message","provider","retry_after","retry_after_ms","cooldown_until","cooldown_source"})if(error.has(field))terminalRateError.put(field,error.opt(field));
+                    }
+                    throw new java.io.IOException("upstream stream error");
+                }
                 if(chunk.optJSONObject("usage")!=null) usage=responsesUsage(chunk.getJSONObject("usage"));
                 JSONArray choices=chunk.optJSONArray("choices"); if(choices==null || choices.length()==0)return;
                 if(choices.length()!=1) throw new java.io.IOException("multiple choices unsupported");
@@ -623,7 +630,7 @@ final class ResponsesBridge {
                         }
                     } catch(Exception e) {
                         ended=true;
-                        try { start(); JSONObject error=new JSONObject().put("code","upstream_stream_error").put("message",e.getMessage()==null?"upstream stream failed":e.getMessage()); response.put("status","failed").put("error",error); event("response.failed",new JSONObject().put("response",response)); } catch(Exception ignored) {}
+                        try { start(); JSONObject error=terminalRateError==null?new JSONObject().put("code","upstream_stream_error").put("message",e.getMessage()==null?"upstream stream failed":e.getMessage()):terminalRateError; response.put("status","failed").put("error",error); event("response.failed",new JSONObject().put("response",response)); } catch(Exception ignored) {}
                     }
                     if(pending.length()>0) { bytes=pending.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8); pending.setLength(0); at=0; return true; }
                 } return true;

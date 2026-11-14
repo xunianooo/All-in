@@ -24,19 +24,19 @@ public final class RaccoonAccountServiceOfflineTest {
         ok(new RaccoonAccountService(m).balance()==9 && m.calls==2);
         m=new Mock().add("{\"code\":200001}");
         try { new RaccoonAccountService(m).balance(); throw new AssertionError(); } catch(RaccoonAccountService.Failure e) { ok(e.expired && m.calls==1); }
-        String old="{\"bill_id\":\"old\",\"created_at\":\"2026-11-08T08:00:00+08:00\",\"points\":10,\"biz_type\":\"daily_grant\"}";
+        String old="{\"bill_id\":\"old\",\"created_at\":\"2026-11-07T08:00:00+08:00\",\"points\":10,\"biz_type\":\"daily_grant\"}";
         String fresh="{\"bill_id\":\"new\",\"created_at\":\"2026-11-08T09:00:00+08:00\",\"points\":20,\"biz_type\":\"daily_grant\"}";
         m=new Mock().add("{\"data\":{\"items\":["+old+"]}}").add("{}").add("{\"data\":{\"items\":["+old+","+fresh+","+fresh+"]}}");
         JSONObject r=new RaccoonAccountService(m).checkIn(1794096000000L);
         ok(r.optString("outcome").equals("claimed") && r.optLong("credit")==20 && m.calls==3);
         m=new Mock().fail(false).add("{}");
-        ok(new RaccoonAccountService(m).checkIn(1794096000000L).optString("outcome").equals("unknown") && m.desktop);
+        ok(new RaccoonAccountService(m).checkIn(1794096000000L).optString("outcome").equals("failed") && !m.desktop && m.calls==1);
         m=new Mock().add("{\"data\":{\"granted\":true,\"popup\":{\"points\":30}}}");
         r=new RaccoonAccountService(m).claimDesktopOnboarding();
         ok(r.optBoolean("settled") && r.optLong("credit")==30 && m.desktop && m.last.startsWith("POST "));
         StringBuilder page=new StringBuilder();
         for(int i=0;i<20;i++) { if(i>0) page.append(','); page.append("{\"bill_id\":\"").append(i).append("\"}"); }
-        m=new Mock().add("{\"data\":{\"items\":["+page+"]}}").add("{}").add("{\"data\":{\"items\":["+page+"]}}");
+        m=new Mock().add("{\"data\":{\"items\":["+page+"]}}").add("{\"data\":{\"items\":["+page+"]}}");
         ok(new RaccoonAccountService(m).checkIn(1794096000000L).optString("outcome").equals("unknown"));
         System.out.println("RaccoonAccountServiceOfflineTest passed");
     }

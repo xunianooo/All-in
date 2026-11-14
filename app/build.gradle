@@ -15,8 +15,8 @@ android {
         applicationId 'com.gaeul.allin'
         minSdk 24
         targetSdk 34
-        versionCode 35
-        versionName '1.2.29-test'
+        versionCode 45
+        versionName '1.2.39-test'
         testInstrumentationRunner 'com.gaeul.allin.RepairInstrumentation'
     }
 
@@ -77,6 +77,16 @@ dependencies {
 
 // 保留原有 9 个套件，并运行网关、Responses 和首次设置回归测试。
 def offlineTestMains = [
+        'com.gaeul.allin.ProviderStreamContractHttpTest',
+        'com.gaeul.allin.CatPawIncrementalHttpTest',
+        'com.gaeul.allin.CatPawAccountStatusHttpTest',
+        'com.gaeul.allin.ProviderUpstreamParityOfflineTest',
+        'com.gaeul.allin.CheckinProofRegressionTest',
+        'com.gaeul.allin.CheckinStatusRegressionTest',
+        'com.gaeul.allin.CheckinGatewayRegressionTest',
+        'com.gaeul.allin.CheckinCenterRegressionTest',
+        'com.gaeul.allin.WorkBuddyCheckinRegressionTest',
+        'com.gaeul.allin.CooldownFeedbackRegressionTest',
         'com.gaeul.allin.WorkBuddyAllowanceRegressionTest',
         'com.gaeul.allin.KeepAliveScheduleOfflineTest',
         'com.gaeul.allin.ReleaseRepairOfflineTest',
@@ -131,6 +141,7 @@ def offlineTestMains = [
         'com.gaeul.allin.ProviderEndpointProbeHttpTest',
         'com.gaeul.allin.ProviderEndpointProbeTlsHttpTest',
         'com.gaeul.allin.ProviderEndpointProbeGatewayHttpTest',
+        'com.gaeul.allin.ZCodePromptParityOfflineTest',
         'com.gaeul.allin.ZCodeGiftSummaryHttpTest',
         'com.gaeul.allin.ZCodeGiftControlOfflineTest',
         'com.gaeul.allin.ZCodeGiftBusyPolicyOfflineTest',
@@ -337,6 +348,9 @@ def offlineTestTasks = offlineTestMains.collect { name ->
         dependsOn 'compileOfflineTests'
         classpath = files({ [mainClassesDir.get(), testClassesDir.get(), configurations.offlineTest, tasks.named('compileReleaseJavaWithJavac', JavaCompile).get().options.bootstrapClasspath] })
         mainClass = name
+        if (simple == 'ProviderStreamContractHttpTest') args rootProject.file('tests/fixtures/provider-stream-oracles-20261113.json').absolutePath
+        if (simple == 'ProviderUpstreamParityOfflineTest') args rootProject.file('tests/fixtures/provider-upstream-20261113.json').absolutePath
+        if (simple == 'ZCodePromptParityOfflineTest') args rootProject.file('tests/fixtures/zcode-prompt-3.17.2.json').absolutePath
     }
 }
 

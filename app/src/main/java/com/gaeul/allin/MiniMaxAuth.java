@@ -558,6 +558,7 @@ public class MiniMaxAuth {
         String url = signedUrl(path, userID, now);
         String pathWithQuery = url.substring(AGENT.length());
         HttpURLConnection conn = factory.open(url);
+        conn.setInstanceFollowRedirects(false);
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(20000);
@@ -654,7 +655,20 @@ public class MiniMaxAuth {
      * 每日签到：读一周面板（status 1 未开始 / 2 可领 / 3 已领 / 4 不可领），今天可领就领一次。
      * 返回 {ok, outcome(claimed|done|inactive|ineligible|failed), credit, streak, error, status}
      */
-    public static JSONObject checkin(String access, String userID) {
+    static Integer checkinInteger(Object value) {
+        if(value instanceof Number){double n=((Number)value).doubleValue();return Double.isFinite(n)&&n==Math.rint(n)&&n>=0&&n<=Integer.MAX_VALUE?(int)n:null;}
+        if(value instanceof String&&((String)value).matches("[0-9]{1,9}"))return Integer.parseInt((String)value);
+        return null;
+    }
+    private static boolean checkinBusinessOk(JSONObject body) {
+        if(body.has("code")){Integer code=checkinInteger(body.opt("code"));if(code==null||code!=0)return false;}
+        JSONObject base=body.optJSONObject("base_resp");if(base!=null&&base.has("status_code")){Integer code=checkinInteger(base.opt("status_code"));if(code==null||code!=0)return false;}
+        return true;
+    }
+    private static void checkinCredit(JSONObject out,Object value) { Integer n=checkinInteger(value);if(n!=null)out.put("credit",n); }
+    public static JSONObject checkin(String access,String userID){return checkin(access,userID,true);}
+    static JSONObject checkin(String access, String userID,boolean claimAllowed) {
+        CheckinEvidence.query();
         JSONObject out = new JSONObject();
         try {
             String uid = userID == null ? "" : userID.trim();
@@ -672,6 +686,7 @@ public class MiniMaxAuth {
                 out.put("error", "签到面板返回非 JSON: " + st.optString("_raw", ""));
                 return out;
             }
+            if(st.optInt("_status",0)<200||st.optInt("_status",0)>=300||!checkinBusinessOk(body))return out.put("ok",false).put("outcome","unknown").put("verified",false).put("message","官方签到状态未成功返回，未发送领取请求");
             JSONObject data = body.optJSONObject("data");
             JSONArray days = data == null ? null : data.optJSONArray("days");
             if (days == null || days.length() == 0) {
@@ -682,7 +697,7 @@ public class MiniMaxAuth {
             JSONObject today = null;
             for (int i = 0; i < days.length(); i++) {
                 JSONObject d = days.optJSONObject(i);
-                if (d != null && d.optBoolean("is_today", false)) {
+                if (d != null && Boolean.TRUE.equals(d.opt("is_today"))) {
                     today = d;
                     break;
                 }
@@ -692,12 +707,14 @@ public class MiniMaxAuth {
                 out.put("outcome", "inactive");
                 return out;
             }
-            int dstatus = today.optInt("status", 0);
+            Integer dayValue=checkinInteger(today.opt("status"));
+            if(dayValue==null||dayValue<1||dayValue>4)return out.put("ok",false).put("outcome","unknown").put("verified",false).put("message","官方今日状态不完整，未发送领取请求");
+            int dstatus=dayValue;
             out.put("dayStatus", dstatus);
             if (dstatus == 3) {
                 out.put("ok", true);
-                out.put("outcome", "done");
-                out.put("credit", today.optInt("points", 0));
+                out.put("outcome", "done").put("verified",true).put("message","今日已签到，无需重复签到");
+                checkinCredit(out,today.opt("points"));
                 out.put("uid", uid);
                 return out;
             }
@@ -713,6 +730,8 @@ public class MiniMaxAuth {
                 out.put("uid", uid);
                 return out;
             }
+            if(!claimAllowed)return out.put("ok",true).put("outcome","not_checked").put("verified",true).put("message","今日尚未签到");
+            CheckinEvidence.claim();
             JSONObject claim = signedPost("/minimax-cloud/api/v1/signin/claim", access, uid, "{}");
             JSONObject cb = claim.optJSONObject("_body");
             out.put("claimStatus", claim.optInt("_status", 0));
@@ -722,10 +741,13 @@ public class MiniMaxAuth {
                 return out;
             }
             JSONObject cd = cb.optJSONObject("data");
-            int r = cd == null ? 0 : cd.optInt("claim_result", 0);
-            out.put("ok", true);
-            out.put("credit", cd == null ? 0 : cd.optInt("points", 0));
-            out.put("outcome", r == 1 ? "claimed" : (r == 2 ? "done" : "failed"));
+            Integer resultValue=cd==null?null:checkinInteger(cd.opt("claim_result"));int responseStatus=claim.optInt("_status",0);
+            boolean success=resultValue!=null&&(resultValue==1||resultValue==2)&&responseStatus>=200&&responseStatus<300&&checkinBusinessOk(cb);
+            int r=resultValue==null?0:resultValue;
+            out.put("ok",success);
+            if(success&&cd!=null)checkinCredit(out,cd.opt("points"));
+            out.put("outcome",success?(r==1?"claimed":"done"):"unknown");
+            out.put("verified",success).put("evidenceType","official_claim");
             if (r != 1 && r != 2) out.put("error", "未知 claim_result: " + (cd == null ? "null" : cd.toString()));
             out.put("uid", uid);
             return out;
@@ -793,6 +815,23 @@ public class MiniMaxAuth {
                 JSONObject entry = entries.optJSONObject(id);
                 if (id.trim().isEmpty() || entry == null) throw new java.io.IOException("Invalid MiniMax model");
                 JSONObject meta = new JSONObject();
+                // 0.2.9 declares the live model's input kinds separately from
+                // attachment. Keep the declaration without pretending our Chat
+                // bridge can encode video/audio; native callers retain these kinds.
+                JSONArray inputKinds = new JSONArray().put("text");
+                JSONObject modalities = entry.optJSONObject("modalities");
+                JSONArray input = modalities == null ? null : modalities.optJSONArray("input");
+                for (int k=0; input!=null && k<input.length(); k++) {
+                    Object raw=input.opt(k);
+                    if (!(raw instanceof String)) throw new java.io.IOException("Invalid MiniMax input modality");
+                    String kind=((String)raw).toLowerCase(java.util.Locale.ROOT);
+                    if (java.util.Arrays.asList("text","image","audio","video","pdf").contains(kind)
+                            && !containsIgnoreCase(inputKinds,kind)) inputKinds.put(kind);
+                }
+                if (Boolean.TRUE.equals(entry.opt("attachment")) && !containsIgnoreCase(inputKinds,"image")) inputKinds.put("image");
+                boolean attachment=entry.opt("attachment") instanceof Boolean ? entry.optBoolean("attachment") : inputKinds.length()>1;
+                meta.put("attachment",attachment).put("image",containsIgnoreCase(inputKinds,"image"));
+                meta.put("modalities",new JSONObject().put("input",inputKinds).put("output",new JSONArray().put("text")));
                 if (entry.has("name") && !entry.isNull("name")) {
                     if (!(entry.opt("name") instanceof String)) throw new java.io.IOException("Invalid MiniMax model name");
                     meta.put("name", entry.getString("name"));
@@ -806,7 +845,7 @@ public class MiniMaxAuth {
                         Object value = limit.opt(field);
                         if (!(value instanceof Number)) throw new java.io.IOException("Invalid MiniMax model limit");
                         double n = ((Number)value).doubleValue();
-                        if (Double.isNaN(n) || Double.isInfinite(n) || n <= 0 || n != Math.rint(n) || n > Integer.MAX_VALUE) throw new java.io.IOException("Invalid MiniMax model limit");
+                        if (Double.isNaN(n) || Double.isInfinite(n) || n < 0 || n != Math.rint(n) || n > Integer.MAX_VALUE) throw new java.io.IOException("Invalid MiniMax model limit");
                         long limitValue=((Number)value).longValue();
                         if ("output".equals(field) && verifiedModelOutputLimit(id)>0)
                             limitValue=verifiedModelOutputLimit(id);
@@ -898,6 +937,8 @@ public class MiniMaxAuth {
     public static java.util.Map<String, String> chatHeaders(String sessionId) {
         java.util.Map<String, String> h = new java.util.LinkedHashMap<String, String>();
         h.put("Accept", "text/event-stream, application/json");
+        // Pinned npm 0.2.9: MiniMax may flush one gzip member only at turn end.
+        h.put("Accept-Encoding", "identity");
         h.put("x-api-key", PLACEHOLDER_KEY);
         h.put("User-Agent", "MiniMaxAgent");
         h.put("X-Mavis-Agent-Id", "main");

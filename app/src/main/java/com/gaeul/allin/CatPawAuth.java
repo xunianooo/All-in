@@ -82,10 +82,18 @@ public final class CatPawAuth {
     }
 
     /** 未知模型回落到 longcat-2.0 的 type，与插件一致 */
-    private static int modelTypeOf(String id) {
+    static int modelTypeOf(String id) {
         Object[] m = MODELS.get(id);
         if (m == null) return 77;
         return ((Integer) m[1]).intValue();
+    }
+
+    /** Typed read-only account error; never carries the upstream body or credential. */
+    public static final class AccountFailure extends java.io.IOException {
+        public final int httpStatus;
+        public final Integer businessCode;
+        public AccountFailure(int status, Integer code) { super("CatPaw HTTP " + status); httpStatus=status;businessCode=code; }
+        public boolean expired() { return httpStatus==401 || (businessCode!=null && (businessCode==4010 || businessCode==4011)); }
     }
 
     public interface CatalogConnectionFactory { HttpURLConnection open(String url) throws Exception; }
@@ -111,7 +119,7 @@ public final class CatPawAuth {
                     .put("env", "EXTERNAL").toString().getBytes("UTF-8");
             try (OutputStream out = conn.getOutputStream()) { out.write(request); }
             int status = conn.getResponseCode();
-            if (status < 200 || status >= 300) throw new java.io.IOException("CatPaw catalog HTTP " + status);
+            if (status < 200 || status >= 300) throw new AccountFailure(status,null);
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             try (InputStream in = conn.getInputStream()) {
                 byte[] b = new byte[4096]; int n;
@@ -184,7 +192,7 @@ public final class CatPawAuth {
     }
 
     /** 每次请求都带客户端原样的一套头；m-host 是客户端本机局域网 IP，不能伪造，直接不发 */
-    private static Map<String, String> gatewayHeaders(String token) {
+    static Map<String, String> gatewayHeaders(String token) {
         Map<String, String> h = new LinkedHashMap<String, String>();
         String trace = hex32();
         h.put("Content-Type", "application/json");
@@ -273,40 +281,28 @@ public final class CatPawAuth {
     /** 余额：注意这里是 X-Auth-Token，不是聊天那套 Cookie */
     public static JSONObject balance(String token) {
         try {
-            Map<String, String> h = new LinkedHashMap<String, String>();
-            h.put("Accept", "application/json");
-            h.put("X-Auth-Token", token);
-            h.put("gray-set", "new-agent-sdk");
-            JSONObject j = getJson(BALANCE_URL, h, 20000);
-            JSONObject out = new JSONObject();
-            int code = j.optInt("code", -1);
-            if (code == 4010 || code == 4011) {
-                out.put("error", "妙手登录态已过期，请重新登录");
-                out.put("signIn", "expired");
-                return out;
-            }
-            if (code != 0) {
-                out.put("error", "妙手余额查询返回异常 code=" + code);
-                return out;
-            }
-            JSONObject data = j.optJSONObject("data");
-            if (data == null) {
-                out.put("error", "妙手余额响应缺少 data");
-                return out;
-            }
-            Object credit = data.opt("availableCredits");
-            if (credit == null) credit = data.opt("credit");
-            if (credit == null) credit = data.opt("balance");
-            if (credit == null) credit = data.opt("available");
-            out.put("credit", credit == null ? "" : String.valueOf(credit));
-            JSONObject plan = data.optJSONObject("userPlan");
-            out.put("plan", plan == null ? NAME : plan.optString("planName", NAME));
-            return out;
-        } catch (Exception e) {
-            JSONObject out = new JSONObject();
-            try { out.put("error", String.valueOf(e.getMessage())); } catch (Exception ignored) {}
-            return out;
+            Map<String,String> h=new LinkedHashMap<>();h.put("Accept","application/json");h.put("X-Auth-Token",token);h.put("gray-set","new-agent-sdk");
+            return balanceDocument(getJson(BALANCE_URL,h,20000));
+        } catch(Exception failure) { return balanceFailure(failure); }
+    }
+    static JSONObject balanceFailure(Throwable failure) {
+        JSONObject out=new JSONObject().put("error","妙手余额查询未完成");
+        if(failure instanceof AccountFailure) {
+            AccountFailure f=(AccountFailure)failure;out.put("httpStatus",f.httpStatus);
+            if(f.businessCode!=null)out.put("businessCode",f.businessCode);
+            if(f.expired())out.put("signIn","expired").put("error","妙手登录态已过期，请重新官方登录");
         }
+        return out;
+    }
+    static JSONObject balanceDocument(JSONObject j) {
+        if(j==null)return new JSONObject().put("error","妙手余额响应缺失");
+        int code=j.optInt("code",-1);
+        if(code==4010||code==4011)return balanceFailure(new AccountFailure(401,code));
+        if(code!=0)return new JSONObject().put("error","妙手余额查询返回业务拒绝");
+        JSONObject data=j.optJSONObject("data");if(data==null)return new JSONObject().put("error","妙手余额响应缺少 data");
+        Object credit=data.opt("availableCredits");if(credit==null)credit=data.opt("credit");if(credit==null)credit=data.opt("balance");if(credit==null)credit=data.opt("available");
+        JSONObject plan=data.optJSONObject("userPlan");
+        return new JSONObject().put("credit",credit==null?"":String.valueOf(credit)).put("plan",plan==null?NAME:plan.optString("planName",NAME));
     }
 
     // ===================== 聊天：round → event → turn =====================
@@ -388,7 +384,7 @@ public final class CatPawAuth {
     public static int failureStatus(Throwable error) {
         if (!(error instanceof Failure)) return 502;
         Failure f = (Failure) error;
-        if (f.httpStatus == 400 || f.httpStatus == 401 || f.httpStatus == 403 || f.httpStatus == 429) return f.httpStatus;
+        if (f.httpStatus == 400 || f.httpStatus == 401 || f.httpStatus == 402 || f.httpStatus == 403 || f.httpStatus == 429) return f.httpStatus;
         return 502;
     }
     public static boolean failureSentOrUnknown(Throwable error) {
@@ -402,8 +398,8 @@ public final class CatPawAuth {
         public final byte[] body;
         public ChatResponse(int status, byte[] body) { this.status = status; this.body = body == null ? new byte[0] : body; }
     }
-    private static int businessStatus(Integer code) {
-        return code != null && (code == 401 || code == 403 || code == 429) ? code : 502;
+    static int businessStatus(Integer code) {
+        return code != null && (code == 401 || code == 402 || code == 403 || code == 429) ? code : 502;
     }
     private static ChatResponse chatPost(ChatTransport transport, String path, JSONObject body,
                                          Map<String, String> headers, int timeout, String accept) throws Failure {
@@ -545,6 +541,7 @@ public final class CatPawAuth {
         StringBuilder text = new StringBuilder();
         StringBuilder reasoning = new StringBuilder();
         boolean contentSeen = false;
+        boolean visibleText = false;
         boolean done = false;
         boolean malformed = false;
         int offset = 0;
@@ -566,6 +563,7 @@ public final class CatPawAuth {
             JSONObject err = frame.optJSONObject("error");
             if (frame.has("error") && frame.opt("error") != JSONObject.NULL) {
                 Integer code = err != null && err.opt("code") instanceof Number ? err.optInt("code") : null;
+                if (err != null && err.optString("message", "").contains("余额不足")) throw new Failure(402,code,true);
                 throw new Failure(businessStatus(code), code, true);
             }
             JSONObject msg = frame.optJSONObject("message");
@@ -584,7 +582,13 @@ public final class CatPawAuth {
                 if (!"text".equals(c.optString("type"))) continue;
                 if (c.has("text")) {
                     if (!(c.opt("text") instanceof String)) { malformed = true; continue; }
-                    text.setLength(0); text.append(c.getString("text")); contentSeen = true;
+                    String current=c.getString("text"), head=current.replaceFirst("^\\s+", "");
+                    // npm 0.2.2: only an initial, model-less frame is the
+                    // balance gate. A model quoting these words is an answer.
+                    boolean modelless=msg.isNull("model") && msg.isNull("modelDisplayName");
+                    if (!visibleText && modelless && head.startsWith("当前余额不足以完成本次操作")) throw new Failure(402,null,true);
+                    text.setLength(0); text.append(current); contentSeen = true;
+                    if (!head.isEmpty() && !(modelless && "当前余额不足以完成本次操作".startsWith(head))) visibleText=true;
                 }
                 if (c.has("reasoningContent")) {
                     if (!(c.opt("reasoningContent") instanceof String)) { malformed = true; continue; }
@@ -600,7 +604,7 @@ public final class CatPawAuth {
         return out;
     }
 
-    private static JSONObject userMessage(String msgId, String prompt) throws Exception {
+    static JSONObject userMessage(String msgId, String prompt) throws Exception {
         JSONObject message = new JSONObject();
         message.put("type", "user");
         message.put("messageId", msgId);
@@ -621,25 +625,20 @@ public final class CatPawAuth {
 
     // ===================== HTTP 底座 =====================
 
-    private static JSONObject getJson(String url, Map<String, String> headers, int timeoutMs) throws Exception {
-        HttpURLConnection conn = NetworkPolicy.openHttp(url);
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(Math.min(timeoutMs, 15000));
-        conn.setReadTimeout(timeoutMs);
-        if (headers != null) {
-            Iterator<Map.Entry<String, String>> it = headers.entrySet().iterator();
-            while (it.hasNext()) {
-                Map.Entry<String, String> e = it.next();
-                conn.setRequestProperty(e.getKey(), e.getValue());
+    private static JSONObject getJson(String url, Map<String,String> headers,int timeoutMs)throws Exception {
+        HttpURLConnection conn=NetworkPolicy.openHttp(url);
+        try {
+            conn.setInstanceFollowRedirects(false);conn.setRequestMethod("GET");conn.setConnectTimeout(Math.min(timeoutMs,15000));conn.setReadTimeout(timeoutMs);
+            if(headers!=null)for(Map.Entry<String,String> e:headers.entrySet())conn.setRequestProperty(e.getKey(),e.getValue());
+            int status=conn.getResponseCode();
+            String body=readAll(status>=200&&status<300?conn.getInputStream():conn.getErrorStream());
+            if(status<200||status>=300) {
+                Integer code=null;
+                try { Object raw=new JSONObject(body).opt("code");if(raw instanceof Number){double n=((Number)raw).doubleValue();if(Double.isFinite(n)&&n==Math.rint(n)&&n>=0&&n<=Integer.MAX_VALUE)code=(int)n;} }catch(Exception ignored){}
+                throw new AccountFailure(status,code);
             }
-        }
-        int code = conn.getResponseCode();
-        InputStream is = code >= 200 && code < 400 ? conn.getInputStream() : conn.getErrorStream();
-        String body = readAll(is);
-        if (code < 200 || code >= 400) {
-            throw new Exception("HTTP " + code + " " + cut(body));
-        }
-        return new JSONObject(body.isEmpty() ? "{}" : body);
+            return new JSONObject(body.isEmpty()?"{}":body);
+        } finally { conn.disconnect(); }
     }
 
     private static String post(String url, String body, Map<String, String> headers,

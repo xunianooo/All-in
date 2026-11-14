@@ -33,7 +33,7 @@ public final class ModelBillingMetadata {
     }
     /** Deep-copy raw and attach billing when an official model multiplier is present. */
     public static JSONObject normalize(String provider, JSONObject raw) throws Exception {
-        JSONObject out=raw==null ? new JSONObject() : new JSONObject(raw.toString());
+        JSONObject out=raw==null ? new JSONObject() : UpstreamCatalog.metadata(provider,raw);
         if(raw==null || provider==null) return out;
         String p=provider.toLowerCase(Locale.ROOT); Double rate=null, original=null;
         String source=null; JSONObject schedule=null;

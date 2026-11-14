@@ -153,6 +153,7 @@ public class GatewayServer extends NanoHTTPD {
             stopping=true;
             minimaxLifecycle().retire();
             closeTrae();
+            if(dailyCheckin!=null)dailyCheckin.close();
             backupRetired=true;
             requests=activeContexts==null?Collections.emptyList():new ArrayList<>(activeContexts);
             if(requestWatchdog!=null) { requestWatchdog.shutdownNow(); requestWatchdog=null; }
@@ -362,7 +363,7 @@ public class GatewayServer extends NanoHTTPD {
     }
     private static boolean raccoonPathAllowed(String path) {
         return "/api/web/points/v1/balance".equals(path) || "/api/web/office/v3/setting_info".equals(path)
-                || "/api/web/points/v1/bills?paging.limit=20&paging.offset=0".equals(path)
+                || RaccoonAccountService.billsPathAllowed(path)
                 || "/api/web/desktop/v1/login/points/grant".equals(path);
     }
     private RaccoonAccountService raccoonApi(String accountId,String token) {
@@ -372,6 +373,7 @@ public class GatewayServer extends NanoHTTPD {
                 if(!raccoonPathAllowed(path) || !("GET".equals(method)||"POST".equals(method))) throw new IOException("Invalid account operation");
                 if(activeToken==null || activeToken.isEmpty() || activeToken.matches(".*[\\x00-\\x20\\x7f].*")) throw new IOException("Invalid token");
                 RaccoonHttpResponse response=sendRaccoonAccountRequest(method,path,desktop,activeToken);
+                CheckinEvidence.reply(response.status,response.json==null?"":response.json.optString("code",""));
                 if(response.status==401 && response.complete && !refreshed && "GET".equals(method) && accountId!=null && !accountId.isEmpty()) {
                     try {
                         JSONObject next=ensureRaccoonToken(accountId,activeToken,0); String nextToken=storedAccess(next);
@@ -636,7 +638,7 @@ public class GatewayServer extends NanoHTTPD {
                 String token=raccoon?storedAccess(a):a.optString("token",""); if(token.isEmpty()) return errorResponse(400,"Account token unavailable");
                 JSONObject out=new JSONObject().put("ok",true).put("accountId",id);
                 if("raccoon/balance".equals(action)) out.put("balance",raccoonApi(id,token).balance());
-                else if("raccoon/checkin".equals(action)) out.put("result",raccoonApi(id,token).checkIn(System.currentTimeMillis()));
+                else if("raccoon/checkin".equals(action)) out.put("result",checkinCenter().runOne("raccoon",id,false));
                 else if("raccoon/onboarding".equals(action)) {
                     synchronized(this) {
                         if(!billingAccountCurrent(provider,a)) return errorResponse(409,"Account changed");
@@ -650,7 +652,7 @@ public class GatewayServer extends NanoHTTPD {
                     out.put("result",raccoonApi(id,token).claimDesktopOnboarding());
                 }
                 else if("loomy/balance".equals(action)) out.put("wallet",walletJson(loomyApi().usage(token)));
-                else if("loomy/checkin".equals(action)) { LoomyAuth.Refresh r=loomyApi().refreshDaily(token); JSONObject result=new JSONObject().put("outcome",r.outcome); if(r.before!=null) result.put("before",r.before); if(r.after!=null) result.put("after",r.after); out.put("result",result); }
+                else if("loomy/checkin".equals(action)) out.put("result",checkinCenter().runOne("loomy",id,false));
                 else return errorResponse(404,"Not Found");
                 if(raccoon) synchronized(this) {
                     JSONObject currentProvider=uniqueRaccoonProvider(configJson);
@@ -1952,6 +1954,103 @@ public class GatewayServer extends NanoHTTPD {
         return traeControl;
     }
     private void closeTrae() { if(traeControl!=null) traeControl.close(); }
+    private volatile CheckinCenter dailyCheckin;
+    private CheckinCenter.Transport checkinTransportForTests;
+    void setCheckinTransportForTests(CheckinCenter.Transport transport){checkinTransportForTests=transport;}
+    private synchronized CheckinCenter checkinCenter() {
+        if(dailyCheckin==null) dailyCheckin=new CheckinCenter(new CheckinCenter.Host() {
+            public Object lock(){return GatewayServer.this;}
+            public JSONObject config(){return configJson;}
+            public boolean save(JSONObject next){return saveConfig(next);}
+            public boolean retired(){return stopping||backupRetired;}
+        },checkinTransportForTests==null?new CheckinCenter.Transport(){public JSONObject checkin(String p,JSONObject a)throws Exception{return performDailyCheckin(p,a);}public JSONObject status(String p,JSONObject a)throws Exception{return readDailyCheckinStatus(p,a);}}:checkinTransportForTests);
+        return dailyCheckin;
+    }
+    @Override public void start(int timeout,boolean daemon) throws IOException {
+        super.start(timeout,daemon);
+        if(context!=null)checkinCenter().start();
+    }
+    private JSONObject performDailyCheckin(String provider,JSONObject account) throws Exception {
+        CheckinEvidence.prepare();
+        final NetworkPolicy.Snapshot checkinNetwork;
+        synchronized(this){checkinNetwork=NetworkPolicy.parse(networkFromConfig(configJson));}
+        try(NetworkPolicy.Scope scope=NetworkPolicy.use(checkinNetwork)) {
+            String id=account.optString("id");
+            if("workbuddy".equals(provider)) {
+                JSONObject fresh=ensureStoredToken(provider,account,null);
+                return WorkBuddyCheckin.checkin(provider,fresh,this::openVendorConnection);
+            }
+            if("minimax-code".equals(provider))return minimaxCheckinAccount(account);
+            if("raccoon".equals(provider)) {
+                synchronized(accountOperationLock) {
+                    JSONObject fresh=ensureRaccoonToken(id,null,0);
+                    if(fresh==null)throw new IOException("account unavailable");
+                    return raccoonApi(id,storedAccess(fresh)).checkIn(System.currentTimeMillis());
+                }
+            }
+            if("loomy".equals(provider)) {
+                LoomyAuth.Refresh r=loomyApi().refreshDaily(account.optString("token"));
+                return loomyAvailability(r.after).put("claimPossible",true).put("refreshAcknowledged",true);
+            }
+            if("trae-cn".equals(provider)) {
+                JSONObject raw=traeControl().api("/api/trae/checkin",Collections.emptyMap(),new JSONObject().put("accountId",id));
+                // The status balance is not evidence of this attempt's newly granted reward.
+                JSONObject result=new JSONObject().put("outcome",raw.optString("outcome","unknown"));
+                if("done".equals(raw.optString("outcome"))){JSONObject status=raw.optJSONObject("status");result.put("verified",status!=null&&Boolean.TRUE.equals(status.opt("checked_in"))).put("evidenceType","official_status").put("message","今日签到状态已确认；上游未提供本次新增奖励数额");}
+                return result;
+            }
+            if("zcode".equals(provider)) {
+                JSONObject raw=ZCodeGiftControl.claimAll(account.optString("jwt"),account.optString("device"));
+                int claimed=raw.optJSONArray("claimed")==null?0:raw.optJSONArray("claimed").length();
+                if("captcha".equals(raw.optString("outcome")))return new JSONObject().put("outcome","captcha").put("message","部分领取可能已完成，请在 ZCode 官方客户端完成验证码");
+                if(!raw.optBoolean("complete",false))return new JSONObject().put("outcome","unknown").put("message","赠送领取结果不完整，今天不重复发送领取");
+                if(claimed>0)return new JSONObject().put("outcome","claimed").put("verified",true).put("evidenceType","official_claim").put("message","已领取 "+claimed+" 个赠送套餐（不是积分签到）");
+                if(raw.optJSONArray("ineligible")!=null&&raw.optJSONArray("ineligible").length()>0)return new JSONObject().put("outcome","ineligible");
+                if(raw.optJSONArray("done")!=null&&raw.optJSONArray("done").length()>0)return new JSONObject().put("outcome","done").put("verified",true);
+                return new JSONObject().put("outcome","inactive").put("message","当前没有可领取的赠送套餐");
+            }
+            throw new IllegalArgumentException("unsupported checkin provider");
+        }
+    }
+    private static JSONObject loomyAvailability(Double quota) {
+        boolean known=quota!=null&&Double.isFinite(quota)&&quota>=0;
+        JSONObject r=new JSONObject().put("outcome",known?"available":"unknown").put("verified",false).put("evidenceType","wallet_only").put("reasonCode","no_daily_status").put("claimPossible",false).put("phase","status").put("message",known?"每日额度已查询；余额可用不代表本次新增了签到奖励。":"每日额度暂未完整返回，不能确认本次新增奖励。");
+        if(known)r.put("dailyQuota",quota);return r;
+    }
+    private JSONObject readDailyCheckinStatus(String provider,JSONObject account)throws Exception {
+        CheckinEvidence.prepare();NetworkPolicy.Snapshot network;synchronized(this){network=NetworkPolicy.parse(networkFromConfig(configJson));}
+        try(NetworkPolicy.Scope scope=NetworkPolicy.use(network)){
+            String id=account.optString("id");CheckinEvidence.query();
+            if("workbuddy".equals(provider))return WorkBuddyCheckin.status(provider,ensureStoredToken(provider,account,null),this::openVendorConnection);
+            if("raccoon".equals(provider)){JSONObject fresh=ensureRaccoonToken(id,null,0);if(fresh==null)throw new IOException("account unavailable");return raccoonApi(id,storedAccess(fresh)).checkinStatus(System.currentTimeMillis());}
+            if("trae-cn".equals(provider)){
+                JSONObject r=traeControl().api("/api/trae/checkin-status",Collections.singletonMap("accountId",id),new JSONObject()),status=r.optJSONObject("status");
+                if(status!=null&&status.opt("checked_in") instanceof Boolean)return new JSONObject().put("verified",true).put("outcome",status.optBoolean("checked_in")?"done":"not_checked").put("message",status.optBoolean("checked_in")?"今日已签到，无需重复签到":"今日尚未签到");
+                return new JSONObject().put("outcome","failed").put("safeToRetry",true).put("claimPossible",false).put("message","上游状态缺少明确签到标记；本次未发送领取请求");
+            }
+            if("minimax-code".equals(provider)){MiniMaxLifecycle.Lease lease=miniLease(account,false,null);return MiniMaxAuth.checkin(lease.credentials.access,account.optString("uid"),false);}
+            if("loomy".equals(provider)){LoomyAuth.Wallets w=loomyApi().usage(account.optString("token"));return loomyAvailability(w.dailyRemaining!=null?w.dailyRemaining:w.daily);}
+            return new JSONObject().put("outcome","unknown").put("message","赠送领取请使用单独的手动入口");
+        }
+    }
+    private Response checkinApi(String uri,String method,String raw) {
+        try {
+            if("/api/checkin/status".equals(uri)) {
+                if(!"GET".equals(method))return errorResponse(405,"GET required");
+                return jsonResponse(checkinCenter().snapshot());
+            }
+            if(!"POST".equals(method))return errorResponse(405,"POST required");
+            JSONObject body=raw.trim().isEmpty()?new JSONObject():new JSONObject(raw);
+            if("/api/checkin/settings".equals(uri))return jsonResponse(checkinCenter().settings(body));
+            if("/api/checkin/reconcile".equals(uri))return jsonResponse(checkinCenter().reconcile(body.optString("provider"),body.optString("accountId")));
+            if("/api/checkin/run".equals(uri)) {
+                for(Iterator<String> it=body.keys();it.hasNext();)if(!Arrays.asList("provider","accountId").contains(it.next()))return errorResponse(400,"unsupported checkin field");
+                return jsonResponse(checkinCenter().enqueue(body.optString("provider",""),body.optString("accountId",""),false));
+            }
+            return errorResponse(404,"Not Found");
+        } catch(IllegalArgumentException invalid){return errorResponse(400,"请选择支持签到的有效账号，或检查开关参数");}
+          catch(Exception failed){return errorResponse(503,"签到中心暂不可用；未确认的领取不会自动重复发送");}
+    }
     /** Magpie keeps an expiring Cline token when a refresh fails but it still has this long. */
     private static final long CLINE_REFRESH_GRACE_MS = 30000L;
     private static final Object[] CLINE_REFRESH_LOCKS = clineRefreshLocks();
@@ -2371,7 +2470,12 @@ public class GatewayServer extends NanoHTTPD {
         }
         case "cline": return ProviderAllowance.fromCline(ClineAuth.fetchUsage(token, !"api".equals(account.optString("type", "oauth"))));
         case "github-copilot": return ProviderAllowance.fromCopilot(CopilotAuth.fetchAllowance(account.optString("refresh", "")));
-        case "catpaw": return ProviderAllowance.fromCatPaw(CatPawAuth.balance(token));
+        case "catpaw": {
+            JSONObject balance=CatPawAuth.balance(token);
+            if("expired".equals(balance.optString("signIn")))throw new CatPawAuth.AccountFailure(401,balance.has("businessCode")?balance.optInt("businessCode"):null);
+            if(balance.has("error"))throw new CatPawAuth.AccountFailure(balance.optInt("httpStatus",502),null);
+            return ProviderAllowance.fromCatPaw(balance);
+        }
         case "qoder_cn": {
             String device = account.optString("deviceToken", "");
             if (device.isEmpty()) device = account.optString("token", "");
@@ -2417,14 +2521,7 @@ public class GatewayServer extends NanoHTTPD {
         }
         case "trae-cn": return fetchTraeAllowance(account);
         case "loomy": {
-            LoomyAuth.Wallets w=loomyApi().usage(token);
-            JSONObject out=new JSONObject().put("kind","allowance").put("scope","account").put("unit","credits").put("observedAt",System.currentTimeMillis());
-            if(w.permanent!=null && w.permanent>=0) out.put("remaining",w.permanent);
-            JSONArray windows=new JSONArray();
-            if(w.dailyLimit!=null && w.dailyRemaining!=null && w.dailyLimit>0 && w.dailyRemaining>=0 && w.dailyRemaining<=w.dailyLimit)
-                windows.put(new JSONObject().put("name","daily").put("remainingPercent",100*w.dailyRemaining/w.dailyLimit));
-            else if(w.daily!=null && w.daily>=0) windows.put(new JSONObject().put("name","daily").put("remaining",w.daily).put("unit","credits"));
-            out.put("windows",windows); return out;
+            return ProviderAllowance.fromLoomy(loomyApi().usage(token),System.currentTimeMillis());
         }
         case "minimax-code": {
             MiniMaxLifecycle.Lease lease=miniLease(account,false,null);
@@ -2531,6 +2628,9 @@ public class GatewayServer extends NanoHTTPD {
                     if(!Double.isFinite(total) || total<0 || (total==0 && !"qoder_cn".equals(provider)) || left>total)continue;
                     clean.put("total",total); if(total>0) clean.put("remainingPercent",100*left/total);
                 }
+                Object reset=w.opt("resetAt");
+                if(reset instanceof String && ((String)reset).matches("[0-9TtZz:+.-]{4,40}"))clean.put("resetAt",reset);
+                if(Boolean.TRUE.equals(w.opt("aside")))clean.put("aside",true);
                 windows.put(clean);continue;
             }
             Object v=w.opt("remainingPercent");
@@ -2544,6 +2644,14 @@ public class GatewayServer extends NanoHTTPD {
             JSONObject clean=new JSONObject().put("name",name).put("remainingPercent",n); Object reset=w.opt("resetAt");
             if(reset instanceof Number && ((Number)reset).longValue()>0) clean.put("resetAt",reset);
             else if(reset instanceof String && ((String)reset).matches("[0-9TtZz:+.\\-]{4,40}")) clean.put("resetAt",reset);
+            if("loomy".equals(provider)) {
+                Object left=w.opt("remaining"),total=w.opt("total"),spent=w.opt("amount");
+                if(left instanceof Number && total instanceof Number && spent instanceof Number) {
+                    double l=((Number)left).doubleValue(),t=((Number)total).doubleValue(),a=((Number)spent).doubleValue();
+                    if(Double.isFinite(l)&&Double.isFinite(t)&&Double.isFinite(a)&&l>=0&&t>=0&&a>=0&&l<=t&&a<=t)
+                        clean.put("remaining",l).put("total",t).put("amount",a).put("limit",t).put("used",t>0?100*a/t:0).put("unit","credits");
+                }
+            }
             windows.put(clean);
         }
         out.put("windows",windows); Object observed=raw.opt("observedAt");
@@ -2641,6 +2749,7 @@ public class GatewayServer extends NanoHTTPD {
                 } catch(Exception e) { item.put("errorKind","unavailable"); }
             } else if(!supported && billingTransport==null) item.put("errorKind",java.util.Arrays.asList("qoder_cn","workbuddy","workbuddy-ai","raccoon","trae-cn","trae-international","loomy","antigravity").contains(id)?"not_provided":"unsupported");
             else try { JSONObject allowance=safeAllowance(id,fetchBillingAllowance(id,a)); if(allowance==null) item.put("errorKind","unknown"); else item.put("allowance",allowance); }
+            catch(CatPawAuth.AccountFailure e) { item.put("errorKind",e.expired()?"sign_in_required":"unavailable"); }
             catch(WorkBuddyAllowance.Failure e) { item.put("errorKind",e.kind); }
             catch(Exception e) { item.put("errorKind","unavailable"); }
             if(Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("interrupted");
@@ -2906,16 +3015,7 @@ public class GatewayServer extends NanoHTTPD {
             android.util.Log.w("Magpie", "用量账本初始化失败: " + e.getMessage());
         }
         calibrateZCodeBaseAsync();
-        // MiniMax 的聊天花的是签到积分：启动后补签一次，同一天只签一次
-        try {
-            new Thread(scopedTask(new Runnable() {
-                @Override
-                public void run() {
-                    autoCheckinMiniMax();
-                }
-            }), "minimax-checkin").start();
-        } catch (Throwable ignored) {
-        }
+        // Daily claims are scheduled by CheckinCenter after the listener starts.
     }
 
     static void initializePrivacy(File privateDir) {
@@ -5025,6 +5125,7 @@ public class GatewayServer extends NanoHTTPD {
         try {
             if (uri.startsWith("/api/account-ops/")) return accountOperation(session,uri,method,rawBody);
             if ("/api/providers/billing".equals(uri)) return billingResponse(session);
+            if(uri.startsWith("/api/checkin/"))return checkinApi(uri,method,rawBody);
 
             // 0. Codex 原生 Responses / Models 端点直通拦截
             if (uri.startsWith("/backend-api/codex")) {
@@ -5639,6 +5740,7 @@ public class GatewayServer extends NanoHTTPD {
                     try { newConf = ConfigurationView.restore(newConf, configJson, GatewayManagementCredential.get()); }
                     catch (IllegalArgumentException invalidReference) { return errorResponse(409,"配置凭据引用已失效，请刷新后重试"); }
                     newConf.remove("providerStateTokens");
+                    if(configJson.has("checkin")) newConf.put("checkin",new JSONObject(configJson.getJSONObject("checkin").toString())); else newConf.remove("checkin");
                     if(configJson.has("affinity")) newConf.put("affinity",configJson.opt("affinity")); else newConf.remove("affinity");
                     if(configJson.has("resilience")) newConf.put("resilience",configJson.opt("resilience")); else newConf.remove("resilience");
                     if(configJson.has("outbound")) newConf.put("outbound",configJson.opt("outbound"));
@@ -6384,6 +6486,7 @@ public class GatewayServer extends NanoHTTPD {
                 try {
                     JSONObject body=new JSONObject();
                     if(Method.POST.equals(session.getMethod())) { if(!rawBody.trim().isEmpty()) body=new JSONObject(rawBody); }
+                    if("/api/trae/checkin".equals(uri))return jsonResponse(checkinCenter().runOne("trae-cn",body.optString("accountId"),false).put("ok",true));
                     return jsonResponse(traeControl().api(uri.endsWith("fetch-cloud-models")?"/api/auth/trae-cn/sync-models":uri,query,body));
                 } catch(IllegalArgumentException e) { return errorResponse(400,"Trae: 请选择有效账号或检查请求参数");
                 } catch(Exception e) { return errorResponse(502,"Trae 操作未完成，请重新登录或稍后同步；已发送结果未知时不会自动重试"); }
@@ -6473,7 +6576,7 @@ public class GatewayServer extends NanoHTTPD {
                     if (a != null && a.optBoolean("enabled", true) && !a.optString("refresh", "").trim().isEmpty()) { acc = a; break; }
                 }
                 if (acc == null) return errorResponse(400, "请先登录 MiniMax Code 再签到");
-                JSONObject r = minimaxCheckinAccount(acc);
+                JSONObject r = checkinCenter().runOne("minimax-code",acc.optString("id"),false).put("ok",true);
                 java.util.Iterator<String> it = r.keys();
                 while (it.hasNext()) {
                     String k = it.next();
@@ -7601,7 +7704,11 @@ public class GatewayServer extends NanoHTTPD {
                     }
                     fetched = fetchRaccoonModels(token, modelMeta, chosen==null?"":chosen.optString("id",""));
                 } else if ("catpaw".equals(provId)) {
-                    fetched = CatPawAuth.fetchCatalog(token, modelMeta);
+                    try { fetched = CatPawAuth.fetchCatalog(token, modelMeta,catPawCatalogForTests==null?url->NetworkPolicy.openHttp(url):catPawCatalogForTests); }
+                    catch(CatPawAuth.AccountFailure failure) {
+                        int status=failure.expired()?401:failure.httpStatus==403?403:failure.httpStatus==429?429:502;
+                        return errorResponse(status,failure.expired()?"妙手登录态已过期，请重新官方登录；账号和模型目录未清除":"妙手官方模型目录查询未完成；原目录保留");
+                    }
                 } else if ("github-copilot".equals(provId)) {
                     JSONObject cacc = null;
                     JSONArray caccs = prov.optJSONArray("accounts");
@@ -11159,6 +11266,7 @@ public class GatewayServer extends NanoHTTPD {
                         if (attemptLease != null) attemptLease.cancel();
                         throw failure;
                     } finally { ATTEMPT_LEASE.remove(); }
+                    if(!last.ok)last.response=visibleCooldown(last,target,guardResult);
                     if (last.ok) {
                         success = true;
                         if(request!=null && last.affinitySemanticComplete) request.affinitySemantic.set(true);
@@ -11255,7 +11363,10 @@ public class GatewayServer extends NanoHTTPD {
             if (cooled && (last == null
                     || (lastTarget != null && lastTarget.commercialCandidates != null))) {
                 terminalStatus = 429; terminalError = "All available credentials are cooling down";
-                Response response = errorResponse(429, terminalError);
+                long coolingNow=System.currentTimeMillis();
+                JSONObject coolingBody=CooldownFeedback.body("gateway","",null,Math.max(0,earliest-coolingNow),coolingNow);
+                Response response=newFixedLengthResponse(Status.TOO_MANY_REQUESTS,"application/json; charset=UTF-8",coolingBody.toString());
+                addCorsHeaders(response);applyGuardHeaders(response,guardResult);
                 long wait = earliest - System.currentTimeMillis();
                 long seconds = wait <= 0 ? 0 : 1 + (wait - 1) / 1000;
                 response.addHeader("Retry-After", Long.toString(seconds));
@@ -11580,6 +11691,41 @@ public class GatewayServer extends NanoHTTPD {
         }
     }
 
+    private java.util.concurrent.ConcurrentHashMap<String,Long> clientRateCooldowns;
+    private synchronized java.util.concurrent.ConcurrentHashMap<String,Long> clientRateCooldowns() {
+        if(clientRateCooldowns==null)clientRateCooldowns=new java.util.concurrent.ConcurrentHashMap<>();return clientRateCooldowns;
+    }
+    private long rateRestRemaining(RouteTarget t) {
+        if(t==null)return 0;String key=restKeyOf(t);Long until=clientRateCooldowns().get(key);if(until==null)return 0;
+        long remaining=until-System.currentTimeMillis();if(remaining<=0)clientRateCooldowns().remove(key,until);return Math.max(0,remaining);
+    }
+    private void rateRest(RouteTarget t,long ms) {
+        if(t==null||ms<=0)return;long until=System.currentTimeMillis()+Math.min(ms,CooldownFeedback.MAX_MS);
+        clientRateCooldowns().merge(restKeyOf(t),until,Math::max);
+    }
+    private Response visibleCooldown(Attempt attempt,RouteTarget target,ContextGuard.Result guard) {
+        if(attempt==null||attempt.ok||attempt.response==null||attempt.executionUnknown||!CooldownFeedback.limited(attempt.status,attempt.body))return attempt==null?null:attempt.response;
+        // Trae names quota and rate answers with the same HTTP 429. Only 4011 is a
+        // confirmed rate rejection; keep its existing per-instance adapter cooldown.
+        if(target!=null&&"trae-cn".equals(target.providerId)&&!attempt.body.contains("code 4011"))return attempt.response;
+        String hint=attempt.retryAfter;if(hint==null)hint=attempt.response.getHeader("Retry-After");
+        if(attempt.localRejection&&ProviderRetryPolicy.safeRetryAfter(hint)==null)return attempt.response;
+        long now=System.currentTimeMillis(),remaining=rateRestRemaining(target);
+        if(!attempt.localRejection&&target!=null&&target.commercialCandidates==null&&!"trae-cn".equals(target.providerId)) {
+            long wait=CooldownFeedback.waitMillis(hint,remaining,now);rateRest(target,wait);remaining=Math.max(remaining,wait);
+        }
+        JSONObject body=CooldownFeedback.body(target==null?"gateway":target.providerId,attempt.body,hint,remaining,now);
+        if(attempt.localRejection){JSONObject detail=body.getJSONObject("error");detail.put("cooldown_source","gateway");detail.put("message",(target==null?"gateway":target.providerId)+" 正在限流冷却，请在 "+detail.optLong("retry_after")+" 秒后重试（网关剩余等待时间，不保证上游届时恢复）");}
+        Response previous=attempt.response;
+        Response r=newFixedLengthResponse(Status.TOO_MANY_REQUESTS,"application/json; charset=UTF-8",body.toString());
+        addCorsHeaders(r);applyGuardHeaders(r,guard);
+        for(String header:new String[]{RaccoonResponsePolicy.SIGN_IN_HEADER,"X-AllIn-WorkBuddy-Harness","X-Magpie-Served-By","X-AllIn-ZCode-Source","X-AllIn-ZCode-Error"}) {
+            String value=previous.getHeader(header);if(value!=null)r.addHeader(header,value);
+        }
+        r.addHeader("Retry-After",Long.toString(body.getJSONObject("error").optLong("retry_after")));
+        r.addHeader("X-AllIn-Cooldown-Until",Long.toString(body.getJSONObject("error").optLong("cooldown_until")));
+        try{previous.close();}catch(IOException ignored){}return r;
+    }
     private void rest(RouteTarget t, int status) {
         if (t == null) return;
         long ms = (status == 429 || status == 402) ? REST_QUOTA_MS : REST_FAIL_MS;
@@ -12099,6 +12245,12 @@ public class GatewayServer extends NanoHTTPD {
         // survives the 401 replay loop and is read from the finally block.
         boolean raccoonSignInRenewed=false;
         try {
+            long rateWait=target.commercialCandidates==null?rateRestRemaining(target):0;
+            if(rateWait>0) {
+                out.localRejection=true;out.status=429;out.body="Account is in rate-limit cooldown";
+                out.retryAfter=Long.toString((rateWait+999)/1000);out.response=errorResponse(429,out.body);
+                out.response.addHeader("Retry-After",out.retryAfter);return out;
+            }
             if (("workbuddy".equals(target.providerId) || "workbuddy-ai".equals(target.providerId))
                     && target.account!=null && "oauth".equals(target.account.optString("type"))) {
                 try {
@@ -12272,7 +12424,9 @@ public class GatewayServer extends NanoHTTPD {
 
             // ===== 妙手 CatPaw：round → event → turn 三步会话机，非 OpenAI 兼容 =====
             if ("catpaw".equals(target.protocol)) {
-                return adopt(out, forwardCatPaw(target, payload, clientWantsStream, requestedModel, maskSession, guardResult));
+                Attempt cat=forwardCatPaw(target,payload,clientWantsStream,requestedModel,maskSession,guardResult);
+                if(cat.ok && clientWantsStream && cat.response.getData() instanceof OutboundStream) handedOff=true;
+                return adopt(out,cat);
             }
 
             // ===== MiniMax Code：上游是 Anthropic messages，要做双向转换 =====
@@ -12443,6 +12597,7 @@ public class GatewayServer extends NanoHTTPD {
                 ZCodeRefusalPolicy.Hold held=zcodeRefusals().before(targetUrl,zcodeAccountScope(target),zcodeNetworkScope());
                 if(held!=null){out.safeZcodeRejection=true;out.status=429;out.body="ZCode local refusal cooldown";out.response=errorResponse(429,out.body);out.response.addHeader("Retry-After",Long.toString((held.retryAfterMillis+999)/1000));return out;}
             }
+            WorkBuddyGrowth.apply(target.providerId,payload,workbuddyHeaders.get("X-Conversation-ID"),null);
             byte[] requestBytes = payload.toString().getBytes("UTF-8");
             if(isWorkBuddy) {
                 ByteArrayOutputStream compressed=new ByteArrayOutputStream();
@@ -12775,6 +12930,7 @@ public class GatewayServer extends NanoHTTPD {
                 if (("workbuddy".equals(target.providerId) || "workbuddy-ai".equals(target.providerId))
                         && !WorkBuddyNativePolicy.useNative(target.providerId, target.upstreamModel))
                     is = new WorkBuddyFilterRefusalStream(is);
+                is=new CooldownFeedback.Stream(is,target.providerId,conn.getHeaderField("Retry-After"),wait -> rateRest(target,wait));
                 out.response = wantsAnthropicOut()
                         ? streamForwardAnthropicResponse(is, requestedModel, maskSession, guardResult, conn)
                         : streamForwardResponse(is, maskSession, guardResult, conn,
@@ -14685,6 +14841,10 @@ public class GatewayServer extends NanoHTTPD {
         out.response=errorResponse(out.status,out.body);if(out.retryAfter!=null)out.response.addHeader("Retry-After",out.retryAfter);return out;
     }
 
+    private CatPawAuth.CatalogConnectionFactory catPawCatalogForTests;
+    void setCatPawCatalogForTests(CatPawAuth.CatalogConnectionFactory factory) { catPawCatalogForTests=factory; }
+    private CatPawStream.Transport catPawStreamForTests;
+    void setCatPawStreamForTests(CatPawStream.Transport transport) { catPawStreamForTests=transport; }
     private CatPawAuth.ChatTransport catPawTransportForTests;
     void setCatPawTransportForTests(CatPawAuth.ChatTransport transport) { catPawTransportForTests=transport; }
 
@@ -14718,6 +14878,27 @@ public class GatewayServer extends NanoHTTPD {
                 Object value=savedType.opt("modelTypeId");
                 if(value instanceof Number) { double d=((Number)value).doubleValue();
                     if(Double.isFinite(d) && d>0 && d<=Integer.MAX_VALUE && d==Math.rint(d)) trustedType=(int)d; }
+            }
+            if(clientWantsStream && (tools==null || tools.length()==0)) {
+                JSONArray prepared;
+                try { prepared=CatPawToolBridge.prepare(msgs,tools,payload.opt("tool_choice")); }
+                catch(Exception invalid) { throw new CatPawAuth.Failure(400,null,false); }
+                final boolean owns=REQUEST_CONTEXT.get()==null;
+                final RequestContext request=owns?new RequestContext("catpaw-probe",NetworkPolicy.capture(),120000):REQUEST_CONTEXT.get();
+                OutboundLimiter.Ticket ticket=null;CatPawStream live=null;boolean transferred=false;
+                try {
+                    ticket=admitOutbound(target,request);ticket.markSent();out.sent=true;
+                    UsageLedger.Row row=U_ROW.get();if(row!=null){row.outboundAt=System.currentTimeMillis();row.ep="subscription";}RequestDiagnostics.handoff(row);
+                    CatPawStream.Transport transport=catPawStreamForTests!=null?catPawStreamForTests:catPawTransportForTests!=null?CatPawStream.legacy(catPawTransportForTests):CatPawStream.HTTP;
+                    live=CatPawStream.open(token,target.upstreamModel,prepared,trustedType,requestedModel,request,transport);
+                    Response response=wantsAnthropicOut()?streamForwardAnthropicResponse(live,requestedModel,maskSession,guardResult,null):streamForwardResponse(live,maskSession,guardResult,null,out.modelRef);
+                    final CatPawStream heldStream=live;final OutboundLimiter.Ticket heldTicket=ticket;
+                    final java.util.concurrent.atomic.AtomicBoolean released=new java.util.concurrent.atomic.AtomicBoolean();
+                    Runnable release=()->{if(released.compareAndSet(false,true)){heldStream.close();heldTicket.close();if(owns)request.close();}};
+                    request.onClose(release);response.setData(new OutboundStream(response.getData(),release,request));
+                    response.addHeader("X-All-In-Stream-Mode","incremental");response.addHeader("X-Magpie-Served-By",out.modelRef);
+                    out.response=response;out.ok=true;out.status=200;transferred=true;return out;
+                } finally {if(!transferred){if(live!=null)live.close();if(ticket!=null)ticket.close();if(owns)request.close();}}
             }
             JSONObject res = CatPawToolBridge.complete(token,target.upstreamModel,msgs,tools,payload.opt("tool_choice"),trustedType,catPawTransportForTests);
             res.put("text",PrivacyMasker.unmaskText(res.optString("text", ""),maskSession));
@@ -14754,14 +14935,23 @@ public class GatewayServer extends NanoHTTPD {
                 mime="text/event-stream";
             } else { result=toAnthropicBodyIfNeeded(body.toString(),requestedModel); mime="application/json; charset=UTF-8"; }
             Response resp=newFixedLengthResponse(Status.OK,mime,result);
-            if(clientWantsStream) resp.addHeader("Cache-Control","no-cache");
+            if(clientWantsStream) {resp.addHeader("Cache-Control","no-cache");resp.addHeader("X-All-In-Stream-Mode","buffered_tool_validation");}
             addCorsHeaders(resp); applyGuardHeaders(resp,guardResult);
             out.response=resp; out.ok=true; out.status=200; return out;
         } catch (Throwable e) {
+            if(e instanceof OutboundRejected) {
+                OutboundRejected rejected=(OutboundRejected)e;out.ok=false;out.stopFallback=true;out.sent=false;out.localRejection=true;out.status=rejected.status;
+                out.body="CatPaw local outbound admission rejected; no upstream request was sent";out.response=errorResponse(out.status,out.body);
+                if(rejected.retryMillis>0){out.retryAfter=Long.toString((rejected.retryMillis+999)/1000);out.response.addHeader("Retry-After",out.retryAfter);}return out;
+            }
             out.ok=false;out.stopFallback=true;out.sent=CatPawAuth.failureSentOrUnknown(e);
             out.status=CatPawAuth.failureStatus(e);out.localRejection=!out.sent && out.status==400;out.protocolFailure=out.sent;
-            out.body="CatPaw request failed (HTTP "+out.status+"); request was not replayed";
+            out.body=out.status==402 ? "妙手余额不足，未得到模型回复；请在官方查看额度，未重复发送请求"
+                    : out.status==429 ? "妙手限流，请等待约45秒后再试；本次请求未重复发送"
+                    : out.status==401 ? "妙手登录态已过期，请重新官方授权；本次请求未重复发送"
+                    : "CatPaw request failed (HTTP "+out.status+"); request was not replayed";
             out.response=errorResponse(out.status,out.body);
+            if(out.status==429){out.retryAfter="45";out.response.addHeader("Retry-After","45");}
             return out;
         }
     }
@@ -15763,33 +15953,11 @@ public class GatewayServer extends NanoHTTPD {
                     || (code instanceof String && "0".equals(code)))) throw new IOException();
             JSONObject data = res.optJSONObject("data");
             if (data == null) throw new IOException();
-            JSONArray agents = data.optJSONArray("agents");
-            if (agents == null) throw new IOException();
-            List<String> list = new ArrayList<>();
-            boolean foundCli = false;
-            for (int i = 0; i < agents.length(); i++) {
-                JSONObject agent = agents.optJSONObject(i);
-                if (agent == null || !"cli".equals(agent.optString("name"))) continue;
-                foundCli = true;
-                JSONArray models = agent.optJSONArray("models");
-                if (models == null || models.length() == 0) throw new IOException();
-                for (int j = 0; j < models.length(); j++) {
-                    Object raw = models.opt(j);
-                    if (!(raw instanceof String) || ((String) raw).trim().isEmpty()) throw new IOException();
-                    String model = ((String) raw).trim();
-                    if (!list.contains(model)) list.add(model);
-                }
-            }
-            if (!foundCli || list.isEmpty()) throw new IOException();
+            JSONObject officialMetadata = new JSONObject();
+            List<String> list = UpstreamCatalog.workbuddy(data,officialMetadata);
             java.util.Map<String, JSONObject> officialByModel = new java.util.HashMap<>();
-            JSONArray allModels = data.optJSONArray("models");
-            if (allModels != null) {
-                for (int i = 0; i < allModels.length(); i++) {
-                    JSONObject entry = allModels.optJSONObject(i);
-                    if (entry == null) continue;
-                    String id = entry.optString("id", "").trim();
-                    if (!id.isEmpty()) officialByModel.put(id, entry);
-                }
+            for(java.util.Iterator<String> it=officialMetadata.keys();it.hasNext();) {
+                String id=it.next();officialByModel.put(id,officialMetadata.optJSONObject(id));
             }
             JSONObject pendingMeta = new JSONObject();
             for (String model : list) {

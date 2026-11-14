@@ -54,7 +54,7 @@ public class LoomyAuthHttpTest {
             require(api.checkCode("13800138000","123456","fake-id").equals("fake-session"));
             mode="account403"; try {api.sendCode("13800138000");throw new AssertionError();} catch(LoomyAuth.Failure e) {require(!e.expired && e.getMessage().equals("上游 HTTP 403"));} mode="ok";
             LoomyAuth.Wallets w=api.validateSession("fake-session");require(w.permanent==100 && w.dailyUsed()==2000);
-            require(api.refreshDaily("fake-session").outcome.equals("claimed")); require(api.refreshDaily("fake-session").outcome.equals("done"));
+            LoomyAuth.Refresh first=api.refreshDaily("fake-session");require(first.outcome.equals("available")&&first.before==3000&&first.after==5000); LoomyAuth.Refresh second=api.refreshDaily("fake-session");require(second.outcome.equals("available")&&second.before==5000&&second.after==5000);
             mode="missing"; try {api.refreshDaily("fake-session");throw new AssertionError();} catch(LoomyAuth.Failure e) {require(!e.expired);}
             require(refresh==2); mode="expired"; try {api.usage("fake-session");throw new AssertionError();} catch(LoomyAuth.Failure e) {require(e.expired);}
             try {api.usage("fake-session\tinvalid");throw new AssertionError();} catch(LoomyAuth.Failure e) {require(!e.expired);}

@@ -84,7 +84,8 @@ public class AntigravityAuth {
             + "https://www.googleapis.com/auth/cclog "
             + "https://www.googleapis.com/auth/experimentsandconfigs";
 
-    public static final String APP_VERSION = "2.9.1";
+    // Fixed local npm 0.1.9 fallback; 2.9.1 omits Gemini 4 from the live catalog.
+    public static final String APP_VERSION = "2.31.2";
     public static final String USER_AGENT = "antigravity/hub/" + APP_VERSION + " linux/x64";
 
     /** Antigravity 不说有哪些模型时的兜底（upstream antigravityModels） */

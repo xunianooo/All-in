@@ -101,7 +101,10 @@ public final class ZCodeGiftPolicyHttpTest {
             for (String metadata : new String[]{"null", "[]", "\"opaque\"", "{\"user_id\":null,\"trace\":7}"}) {
                 JSONObject original=new JSONObject("{\"messages\":[],\"metadata\":"+metadata+"}");
                 ZCodeGift.Stream dressed=ZCodeGift.openStream("token","device","zai","m",original,"sess",3000,true);
-                check(new JSONObject(received[0]).get("metadata").toString().equals(original.get("metadata").toString()),"dressed metadata preserved: "+metadata);
+                JSONObject actual=new JSONObject(received[0]).getJSONObject("metadata");
+                JSONObject bound=new JSONObject(actual.getString("user_id"));
+                check(bound.getString("device_id").equals("device")&&bound.getString("session_id").equals(sid[0]),"dressed gift metadata matches authenticated device and header session");
+                if(original.optJSONObject("metadata")!=null&&original.getJSONObject("metadata").has("trace"))check(actual.getInt("trace")==7,"other metadata retained");
                 dressed.is.close();
             }
             // ---- 3.17.2 的 X-Title 与 x-query-id：全部走回环夹具，不对真网 ----

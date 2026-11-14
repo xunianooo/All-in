@@ -180,27 +180,16 @@ final class ZCodeGift {
     // ===================== body 整形（dress） =====================
 
     /** # Environment 段，与插件 environment() 一致 */
-    private static String environmentBlock(String provider, String model) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(ZCodePrompt.ENV_HEADING).append("\n");
-        sb.append(ZCodePrompt.ENV_INVOKED_LINE).append("\n");
-        sb.append("- ").append(ZCodePrompt.ENV_PLATFORM_LABEL).append(": linux\n");
-        sb.append("- ").append(ZCodePrompt.ENV_OS_VERSION_LABEL).append(": ").append(fullOsVersion());
-        if (model != null && !model.isEmpty()) {
-            sb.append("\n").append(ZCodePrompt.ENV_POWERED_BY_LINE
-                    .replace("{provider}", provider)
-                    .replace("{model}", model));
-        }
-        return sb.toString();
+    private static String environmentBlock() {
+        return ZCodePrompt.ENV_HEADING + "\n" + ZCodePrompt.ENV_INVOKED_LINE
+                + "\n - " + ZCodePrompt.ENV_PLATFORM_LABEL + ": linux"
+                + "\n - " + ZCodePrompt.ENV_OS_VERSION_LABEL + ": " + fullOsVersion()
+                + "\n - " + ZCodePrompt.ENV_UNTRUSTED_NOTE;
     }
 
     /** 最前面那条 <system-reminder> 日期 turn，标签紧贴正文，前后不留空白 */
     private static JSONObject contextPrefix() {
-        String body = ZCodePrompt.CTX_INTRO + "\n"
-                + ZCodePrompt.CTX_CURRENT_DATE_HEADING + "\n"
-                + ZCodePrompt.CTX_CURRENT_DATE_LINE.replace("{date}", today()) + "\n"
-                + "\n"
-                + ZCodePrompt.CTX_OUTRO;
+        String body = ZCodePrompt.CTX_CURRENT_DATE_LINE.replace("{date}", today());
         JSONArray content = new JSONArray();
         JSONObject t = new JSONObject();
         t.put("type", "text");
@@ -252,7 +241,13 @@ final class ZCodeGift {
 
         java.util.List<String> dynamic = new java.util.ArrayList<String>();
         dynamic.add(ZCodePrompt.BEFORE_ENVIRONMENT);
-        dynamic.add(environmentBlock(provider, model));
+        JSONArray offeredTools = body.optJSONArray("tools");
+        for (int i=0; offeredTools!=null && i<offeredTools.length(); i++) {
+            JSONObject tool=offeredTools.optJSONObject(i);
+            if (tool!=null && "Skill".equals(tool.optString("name"))) { dynamic.add(ZCodePrompt.SESSION_GUIDANCE); break; }
+        }
+        dynamic.add(environmentBlock());
+        if (model!=null && !model.isEmpty()) dynamic.add(ZCodePrompt.ENV_POWERED_BY_LINE.replace("{provider}",provider).replace("{model}",model));
         dynamic.add(ZCodePrompt.AFTER_ENVIRONMENT);
         dynamic.addAll(own);
 
@@ -322,18 +317,15 @@ final class ZCodeGift {
             if (t != null) t.remove("cache_control");
         }
 
-        // metadata 浅合并，补 user_id
+        // Gift metadata is bound to the authenticated device/session; caller attribution is not an identity.
         Object existingMeta = body.opt("metadata");
-        if (!body.has("metadata") || existingMeta instanceof JSONObject) {
-            JSONObject meta = existingMeta instanceof JSONObject ? (JSONObject) existingMeta : new JSONObject();
-            try {
-                if (!meta.has("user_id") && device != null && !device.trim().isEmpty() && session != null && !session.trim().isEmpty()) {
-                    JSONObject user = new JSONObject().put("device_id", device).put("account_uuid", "").put("session_id", session);
-                    meta.put("user_id", user.toString());
-                }
-                body.put("metadata", meta);
-            } catch (Exception ignored) {}
+        JSONObject meta = existingMeta instanceof JSONObject ? (JSONObject)existingMeta : new JSONObject();
+        if (existingMeta instanceof JSONArray) {
+            JSONArray values=(JSONArray)existingMeta;
+            for(int i=0;i<values.length();i++)meta.put(String.valueOf(i),values.opt(i));
         }
+        meta.put("user_id",new JSONObject().put("device_id",device).put("account_uuid","").put("session_id",session).toString());
+        body.put("metadata",meta);
         return body;
     }
 

@@ -79,8 +79,11 @@ public final class ProviderAllowanceOfflineTest {
         check(ProviderAllowance.fromMiniMax(new JSONObject("{\"base_resp\":{\"status_code\":1},\"model_remains\":[{\"model_name\":\"video\",\"current_interval_status\":2}]}"),1)==null);
         JSONObject qoder = ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"userQuota\":{\"total\":100,\"used\":100},\"addOnQuota\":{\"cap\":50,\"remaining\":25},\"orgResourcePackage\":{\"total\":0}}}"),1);
         check(qoder.getDouble("remaining")==25,"spent plan is not a spent account with add-on credits");
-        check(qoder.getJSONArray("windows").length()==3,"Qoder pools remain separate");
-        check(qoder.getJSONArray("windows").getJSONObject(2).getDouble("remaining")==0,"zero-cap pool is known zero");
+        check(qoder.getJSONArray("windows").length()==4,"Qoder aggregate plus three separate pools");
+        JSONObject qoderTotal=qoder.getJSONArray("windows").getJSONObject(0);
+        check(qoderTotal.getDouble("remaining")==25 && qoderTotal.getDouble("total")==150,"aggregate has the same balance, not a doubled sum");
+        for(int i=1;i<4;i++)check(qoder.getJSONArray("windows").getJSONObject(i).getBoolean("aside"),"component pools are not counted twice");
+        check(qoder.getJSONArray("windows").getJSONObject(3).getDouble("remaining")==0,"zero-cap pool is known zero");
         check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"enterprise\",\"qoderUsage\":{}}"),1)==null,"enterprise pool is not a personal credit quota");
         check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{}}"),1)==null,"no pool is unknown");
         check(ProviderAllowance.fromQoder(json("{\"displayMode\":\"qoder\",\"qoderUsage\":{\"userQuota\":{\"total\":100}}}"),1)==null,"missing used and remaining is unknown");

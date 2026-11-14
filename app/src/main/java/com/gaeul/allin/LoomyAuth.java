@@ -104,14 +104,14 @@ public final class LoomyAuth {
             c.setInstanceFollowRedirects(false); c.setConnectTimeout(20000); c.setReadTimeout(20000); c.setRequestMethod(method);
             for(Map.Entry<String,String> h:headers.entrySet()) c.setRequestProperty(h.getKey(),h.getValue());
             if(body!=null) { c.setDoOutput(true); c.setRequestProperty("Content-Type","application/json"); byte[] bytes=body.getBytes(StandardCharsets.UTF_8); c.setFixedLengthStreamingMode(bytes.length); try(OutputStream out=c.getOutputStream()){out.write(bytes);} }
-            int status=c.getResponseCode(); if(sessionRequest && (status==401 || status==403)) throw new Failure("登录态已失效",true);
+            int status=c.getResponseCode(); CheckinEvidence.reply(status,""); if(sessionRequest && (status==401 || status==403)) throw new Failure("登录态已失效",true);
             if(status<200 || status>=300) throw new Failure("上游 HTTP "+status,false);
             ByteArrayOutputStream out=new ByteArrayOutputStream(); try(InputStream in=c.getInputStream()) { byte[] buf=new byte[4096]; int n; while((n=in.read(buf))!=-1){ if(out.size()+n>1048576) throw new Failure("上游响应过大",false); out.write(buf,0,n); } }
             try { return new JSONObject(new String(out.toByteArray(),StandardCharsets.UTF_8)); } catch(Exception e) { throw new Failure("上游响应格式无效",false); }
         } finally { c.disconnect(); }
     }
     private static void check(JSONObject o) throws Failure {
-        String code=o.optString("code","").trim(); if("000000".equals(code)) return;
+        String code=o.optString("code","").trim(); CheckinEvidence.reply(CheckinEvidence.get().http,code); if("000000".equals(code)) return;
         if("020002".equals(code) || "100002".equals(code)) throw new Failure("登录态已失效",true);
         throw new Failure("上游业务请求失败",false);
     }
@@ -151,11 +151,15 @@ public final class LoomyAuth {
     /** Validation performs a read-only points request; a successful result proves the session works for points. */
     public Wallets validateSession(String session) throws Exception { return usage(session); }
     public Refresh refreshDaily(String session) throws Exception {
+        CheckinEvidence.query();
         Wallets before=usage(session); // No mutation unless the pre-read succeeds.
+        CheckinEvidence.claim();
         JSONObject result=tokenRequest("POST","/api/v1/points/first-login",session,"{}"); check(result);
         Double after=num(data(result),"dailyBalance");
         if(after==null) { try { after=usage(session).daily; } catch(Failure e) { if(e.expired) throw e; } catch(Exception ignored) {} }
-        String outcome=before.daily==null || after==null ? "unknown" : after>before.daily ? "claimed" : "done";
+        // The endpoint acknowledges a refresh, but exposes no attributable reward record.
+        // Even a larger wallet may have changed elsewhere; do not call it a new grant.
+        String outcome=after==null||after<0 ? "unknown" : "available";
         return new Refresh(outcome,before.daily,after);
     }
 }

@@ -114,11 +114,13 @@ public final class ProviderAllowance {
         JSONObject usage = raw.optJSONObject("qoderUsage"); if (usage == null) return null;
         String[][] fields = {{"userQuota", "user_quota"}, {"addOnQuota", "add_on_quota"}, {"orgResourcePackage", "org_resource_package"}};
         try {
-            JSONObject out = base("credits", at); double sum = 0; int known = 0;
+            JSONObject out = base("credits", at); double sum = 0, totalSum=0; int known = 0;
+            String reset=UpstreamCatalog.reset(usage.has("expiresAt")?usage.opt("expiresAt"):usage.opt("expires_at"));
             for (int i = 0; i < fields.length; i++) {
                 Object value = usage.has(fields[i][0]) ? usage.opt(fields[i][0]) : usage.opt(fields[i][1]);
                 if (!(value instanceof JSONObject)) continue;
                 JSONObject pool = (JSONObject) value;
+                if(pool.has("unit") && !pool.isNull("unit") && !"credits".equals(pool.optString("unit")))return null;
                 Object capRaw = pool.opt("total"); if (!(capRaw instanceof Number)) capRaw = pool.opt("cap");
                 if (!(capRaw instanceof Number)) return null;
                 double cap = ((Number) capRaw).doubleValue();
@@ -134,9 +136,18 @@ public final class ProviderAllowance {
                 }
                 JSONObject w = new JSONObject().put("name", QoderCredits.TURN_POOLS[i]).put("unit", "credits").put("remaining", left).put("total", cap);
                 if (cap > 0) w.put("remainingPercent", 100 * left / cap);
-                out.getJSONArray("windows").put(w); sum += left; known++;
+                if (i==0 && cap>0 && reset!=null) w.put("resetAt",reset);
+                out.getJSONArray("windows").put(w); sum += left; totalSum+=cap; known++;
             }
-            if (known == 0 || !Double.isFinite(sum)) return null;
+            if (known == 0 || !Double.isFinite(sum) || !Double.isFinite(totalSum)) return null;
+            if(known>1 && totalSum>0) {
+                JSONArray pools=out.getJSONArray("windows"), windows=new JSONArray();
+                JSONObject all=new JSONObject().put("name","Total credits").put("unit","credits").put("remaining",sum).put("total",totalSum).put("remainingPercent",100*sum/totalSum);
+                if(reset!=null && pools.length()>0 && pools.getJSONObject(0).has("resetAt"))all.put("resetAt",reset);
+                windows.put(all);
+                for(int i=0;i<pools.length();i++)windows.put(pools.getJSONObject(i).put("aside",true));
+                out.put("windows",windows);
+            }
             return out.put("remaining", sum);
         } catch (Exception bad) { return null; }
     }
@@ -148,7 +159,20 @@ public final class ProviderAllowance {
         }
         return nonnegative(value);
     }
-    /** Account windows remain separate from model-specific pools. */
+    /** Loomy 0.1.5: percentage spent and absolute credits spent are different units. */
+    static JSONObject fromLoomy(LoomyAuth.Wallets wallet,long at) throws Exception {
+        JSONObject out=base("credits",at);JSONArray windows=out.getJSONArray("windows");
+        if(wallet.permanent!=null && wallet.permanent>=0)out.put("remaining",wallet.permanent);
+        if(wallet.dailyLimit!=null && wallet.dailyRemaining!=null && wallet.dailyLimit>=0 && wallet.dailyRemaining>=0) {
+            double total=wallet.dailyLimit,spent=Math.min(total,Math.max(0,total-wallet.dailyRemaining)),left=total-spent;
+            long nextDay=(Math.floorDiv(at+8*3600000L,86400000L)+1)*86400000L-8*3600000L;
+            windows.put(new JSONObject().put("name","daily").put("unit","credits").put("remaining",left).put("total",total)
+                    .put("used",total>0?100*spent/total:0).put("amount",spent).put("limit",total).put("remainingPercent",total>0?100*left/total:0).put("resetAt",nextDay));
+        } else if(wallet.daily!=null && wallet.daily>=0)windows.put(new JSONObject().put("name","daily").put("remaining",wallet.daily).put("unit","credits").put("aside",true));
+        return done(out);
+    }
+
+
     public static JSONObject fromMiniMax(JSONObject raw) { return fromMiniMax(raw,System.currentTimeMillis()); }
     public static JSONObject fromMiniMax(JSONObject raw,long at) {
         if(raw==null) return null;
