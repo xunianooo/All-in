@@ -1,44 +1,62 @@
+<p align="center"><img src="docs/images/all-in-logo.jpg" width="88" height="88" alt="All In 标志"></p>
+
 # All In
 
-**让 Android 手机运行 AI 网关，让电脑和手机上的客户端共用一个 API 地址。**
+**把 Android 手机变成 AI 网关，用一个地址接入多个模型供应商。**
 
-All In 在 Android 设备上运行 HTTP 服务。你在手机上配置供应商账号和 API Key，客户端用 All In 的网关口令访问模型。换账号、调整路由或限制可用模型，都可以在 All In 的面板里完成。推理请求由手机转发给所选供应商，模型在供应商侧运行。
+在手机上登录供应商账号或添加 API Key，再把 All In 的网关地址和口令填进 ETA、Claude Code 或其他支持对应协议的客户端。同一部手机和局域网里的电脑都可以接入。模型推理由供应商完成，账号、路由和用量集中在手机上管理。
 
-[下载 APK](https://github.com/xunianooo/All-in/releases/latest) · [查看更新记录](https://github.com/xunianooo/All-in/releases) · [反馈问题](https://github.com/xunianooo/All-in/issues)
+[下载 APK](https://github.com/xunianooo/All-in/releases/latest) · [更新日志](https://github.com/xunianooo/All-in/releases) · [反馈问题](https://github.com/xunianooo/All-in/issues)
 
-当前正式版为 **All In 1.2.116（构建 124）**。[1.2.116 更新说明](docs/RELEASE_1.2.116.md)
+当前发布版为 **1.2.158-test（构建 166）**。[查看本版更新](https://github.com/xunianooo/All-in/releases/tag/v1.2.158-test)
 
-> [!IMPORTANT]
-> **老用户升级后，请把「治理 → 网关上下文与超时 → 请求体上限」改成 `0`，再点击「保存网关设置」。**
-> 覆盖安装会保留旧设置，**仅安装新版不会自动清除已保存的 `1.86 MB` 上限**。保存后请确认「当前生效」显示 **「请求体 不限制」**。不要卸载或清数据；0只取消这项网关字节预算，不取消上游模型自身限制。
+## 界面预览
 
-## 长什么样
-
-不搞玄学，四张实机截图，把网关这点事儿说明白。
-
-<table>
+<table width="100%">
   <tr>
-    <td align="center" width="50%">
-      <strong>网关总览 · 家底一眼清</strong><br>
-      <img src="docs/images/screenshot-home.jpg" alt="网关总览：请求、Token、脱敏与裁剪统计" width="240"><br>
-      请求数、Token、脱敏拦截、上下文裁剪——四个数字往那一摆，网关在忙什么就不用猜了。
+    <td align="center" valign="top" colspan="2" width="33%">
+      <strong>网关总览</strong><br>
+      <img src="docs/images/screenshot-home.jpg" width="232" alt="查看网关状态、请求统计和账号额度"><br>
+      <sub>查看网关状态、请求统计和账号额度</sub>
     </td>
-    <td align="center" width="50%">
-      <strong>网关接入 · 把模型递到手边</strong><br>
-      <img src="docs/images/screenshot-ingress.jpg" alt="网关接入：连接你的 AI 工具与 API 地址" width="240"><br>
-      一个地址、一把钥匙，把入池的模型交给平时顺手的 Agent，就这样。
+    <td align="center" valign="top" colspan="2" width="33%">
+      <strong>客户端接入</strong><br>
+      <img src="docs/images/screenshot-ingress.jpg" width="232" alt="复制本机或局域网地址与网关口令"><br>
+      <sub>复制本机或局域网地址与网关口令</sub>
+    </td>
+    <td align="center" valign="top" colspan="2" width="33%">
+      <strong>供应商管理</strong><br>
+      <img src="docs/images/screenshot-providers.jpg" width="232" alt="管理账号、模型目录和启停状态"><br>
+      <sub>管理账号、模型目录和启停状态</sub>
     </td>
   </tr>
   <tr>
-    <td align="center" width="50%">
-      <strong>供应商 · 谁上谁下你说了算</strong><br>
-      <img src="docs/images/screenshot-providers.jpg" alt="供应商列表：已导入账号与 API Key，可启停" width="240"><br>
-      账号挨个排好，开关一拨就位，模型目录跟着同步。
+    <td align="center" valign="top" colspan="2" width="33%">
+      <strong>模型路由</strong><br>
+      <img src="docs/images/screenshot-routing.jpg" width="232" alt="配置虚拟模型组与故障切换"><br>
+      <sub>配置虚拟模型组与故障切换</sub>
     </td>
-    <td align="center" width="50%">
-      <strong>隐私保护 · 敏感信息先过一道筛</strong><br>
-      <img src="docs/images/screenshot-privacy.jpg" alt="隐私保护：敏感信息脱敏规则设置" width="240"><br>
-      明文发不发、哪些字段先脱敏，决定权老老实实留在你手里。
+    <td align="center" valign="top" colspan="2" width="33%">
+      <strong>用量与治理</strong><br>
+      <img src="docs/images/screenshot-governance.jpg" width="232" alt="查看 Token、请求明细和用量热力图"><br>
+      <sub>查看 Token、请求明细和用量热力图</sub>
+    </td>
+    <td align="center" valign="top" colspan="2" width="33%">
+      <strong>隐私保护</strong><br>
+      <img src="docs/images/screenshot-privacy.jpg" width="232" alt="管理脱敏规则和自定义正则"><br>
+      <sub>管理脱敏规则和自定义正则</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" colspan="3" width="50%">
+      <strong>每日签到</strong><br>
+      <img src="docs/images/screenshot-checkin.jpg" width="232" alt="查看签到状态和处理结果"><br>
+      <sub>查看签到状态和处理结果</sub>
+    </td>
+    <td align="center" valign="top" colspan="3" width="50%">
+      <strong>WorkBuddy 成长任务</strong><br>
+      <img src="docs/images/screenshot-workbuddy-tasks.jpg" width="232" alt="查看任务进度、预计可领奖励和短对话开关"><br>
+      <sub>查看任务进度、预计可领奖励和短对话开关</sub>
     </td>
   </tr>
 </table>
@@ -47,7 +65,10 @@ All In 在 Android 设备上运行 HTTP 服务。你在手机上配置供应商�
 
 1. 从 Releases 下载 APK，安装到 **Android 7.0（API 24）及以上**的设备。从旧版升级时，可以用同签名 APK 直接覆盖安装，保留账号和配置。
 2. 打开 All In，按向导完成设置并启动网关。在「供应商」里登录支持的账号或添加 API Key，再查看该账号可用的模型。
-3. 在面板复制 API 地址和网关口令，填入客户端。选一个面板或模型目录中实际存在的模型发起请求。
+3. 在「接入」复制对应的服务地址和网关口令，填入客户端。用模型目录中实际列出的模型 ID 发送第一条请求。
+
+> [!NOTE]
+> 覆盖升级会保留旧版手动保存的请求体上限。如果旧限制挡住了长请求，可在「治理 → 网关上下文与超时」把「请求体上限」设为 `0` 并保存。`0` 取消这项网关字节限制，上游模型的上下文限制仍然适用。
 
 | 客户端位置 | OpenAI 兼容 Base URL | Anthropic 服务根地址 |
 | --- | --- | --- |
@@ -87,16 +108,17 @@ curl -sS "$BASE_URL/chat/completions" \
 登录方式、模型和额度取决于账号与供应商。Loomy 支持手机验证码登录，也可使用已有会话凭据。部分适配依赖供应商网页或客户端协议，上游变更可能影响登录、模型同步或推理。面板也会显示尚未实现的占位入口，可用模型以实际同步结果为准。
 
 - **多账号管理** · 同一供应商可以管理多个账号或 API Key，按账号启停，分别查看模型或额度。账号可在 Android 应用里用 JSON 文件迁移，整机配置另有密码加密备份。[账号迁移说明](docs/ACCOUNT_JSON_TRANSFER.md)
-- **自定义第三方API** · 可添加Chat Completions、Responses或Anthropic Messages文本上游，选择认证方式和自定义请求头，在同一菜单拉取、搜索并勾选模型入池。新候选默认不选中，后续同步不会自动新增入池模型。[自定义API说明](docs/CUSTOM_API_PROVIDERS.md)
+- **自定义第三方 API** · 可添加 Chat Completions、Responses 或 Anthropic Messages 文本上游，选择认证方式和自定义请求头，在同一菜单拉取、搜索并勾选模型入池。新候选默认不选中，后续同步不会自动新增入池模型。[自定义API说明](docs/CUSTOM_API_PROVIDERS.md)
 - **每日签到** · 签到中心显示受支持账号的状态，支持手动触发及网关运行时自动处理；奖励资格由供应商判定，ZCode 赠送通过手动入口领取。
+- **WorkBuddy 成长任务** · 在签到中心打开独立页面，按账号查看任务进度，可手动执行或只领取已达标奖励。适用于国内个人 OAuth 账号。Tier 2 真实短对话默认关闭，开启后会消耗少量积分。
 
 ## 模型路由与用量
 
-客户端可以用 `provider/model` 指定供应商模型，也可以用 `group/<组 ID>` 请求路由组。路由组默认关闭。启用后，可为同一入口配置多个候选模型，并选择按顺序、轮流、手动指定优先项或近期用量优先。模型白名单用于控制对外可用的模型。裸模型名兜底默认关闭。
+客户端可以用 `provider/model` 指定供应商模型，也可以用 `group/<组 ID>` 请求路由组。路由组默认关闭。启用后，可为同一入口配置多个候选模型，并选择顺序主备、轮询均摊、手动指定或低负载策略。模型白名单用于控制对外可用的模型。裸模型名兜底默认关闭。
 
 同一供应商内可选 **轮流、用量均衡、到期优先**。用量均衡优先比较可信的额度使用比例，缺少可比数据时参考本机近期 Token 与在途负载。到期优先使用供应商明确提供的额度到期或重置信息。模型权限、账号启停和冷却状态仍参与选路。[账号路由说明](docs/ACCOUNT_ROUTING.md)
 
-「用量与治理」可查看调用记录、Token 统计和热力图。账本区分已知、部分已知、估算与未知用量。对于部分执行结果未知的请求，网关会停止自动重试，以避免重复执行或重复扣费。
+「用量与治理」可查看 Token 统计、用量热力图和调用明细。诊断支持按供应商和失败类型筛选、查看前置拦截及导出 CSV。账本区分已知、部分已知、估算与未知用量。对于部分执行结果未知的请求，网关会停止自动重试，以避免重复执行或重复扣费。
 
 ## API 与模型能力
 
@@ -141,13 +163,7 @@ Windows 使用 `gradlew.bat`。Debug APK 在 `app/build/outputs/apk/debug/`。Gi
 
 ## 致谢
 
-All In 建立在开源项目和社区分享的工作之上，感谢每一位作者和维护者：
-
-- **[Magpie](https://github.com/yetone/magpie)**：感谢 [@yetone](https://github.com/yetone) 和 Magpie 贡献者提供的开源网关、协议处理及供应商适配思路。All In 的部分实现参考或移植自 Magpie。
-- **[magpie-community/plugins](https://github.com/magpie-community/plugins)**：感谢维护 OpenCode / Magpie 供应商插件的社区与各插件作者。项目在适配不同供应商的登录、请求和响应时，参考了社区发布的 npm 包及其源码；各插件有各自的作者和许可，请以对应项目的声明为准。
-- **DeepSeek 网页适配贡献者**：感谢相关社区作者与贡献者分享实现；随应用附带的许可文件见 [`magpie-deepseek-web-auth-MIT.txt`](app/src/main/assets/licenses/magpie-deepseek-web-auth-MIT.txt)。
-
-感谢所有提供反馈、测试问题和改进建议的朋友。
+感谢开源项目的作者与维护者，以及提供反馈、复现问题和参与测试的朋友。第三方许可和原版权声明见[第三方声明](docs/THIRD_PARTY_NOTICES.md)及[应用内附带的许可](app/src/main/assets/licenses/)。
 
 ## 使用声明
 
