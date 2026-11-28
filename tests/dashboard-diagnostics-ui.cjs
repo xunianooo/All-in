@@ -139,6 +139,24 @@ window.fetch = async url => {
   copyBtns[1].click();
   check(copiedList.length === 1 && copiedList[0].includes('deepseek-reasoner'), 'copy failed: ' + copiedList[0]);
 
+  const firstRows = [...nextSessions.sessions];
+  const cardsFor = () => Array.from(rs.querySelectorAll('.ios-diag-card'));
+  const openTarget = cardsFor()[1];
+  openTarget.querySelector('summary').click();
+  openTarget.querySelector('.diag-extra-details summary').click();
+  check(openTarget.open && openTarget.querySelector('.diag-extra-details').open, 'both disclosures manually opened');
+  nextSessions.sessions = [{...firstRows[0], requestId: 'newer', model: 'new row'},
+    {...firstRows[1], statusCode: 499, terminal: true}, firstRows[0]];
+  await loadRecentSessions();
+  let moved = cardsFor()[1];
+  check(moved.open && moved.querySelector('.diag-extra-details').open && moved.textContent.includes('HTTP 499'), 'manual open and nested state survive new rows, reorder and status update');
+  check(!cardsFor()[0].open && !cardsFor()[2].open, 'new row and sibling attempt remain collapsed');
+  moved.querySelector('summary').click();
+  await loadRecentSessions();
+  check(!cardsFor()[1].open, 'intentional closure survives refresh');
+  nextSessions.sessions = firstRows;
+  await loadRecentSessions();
+
   // Switch to failed-only mode and provider filter
   setDiagFilter('failed');
   await new Promise(r => setTimeout(r, 20));
@@ -214,6 +232,9 @@ window.fetch = async url => {
   await new Promise(r => setTimeout(r, 20));
   check(rs.textContent.includes('HTTP 403') && rs.textContent.includes('路由选路') && rs.textContent.includes('路由组未启用'), 'rejected event not rendered');
   check(!rs.querySelector('script'), 'XSS in gatewayEvents');
+  cardsFor()[0].querySelector('summary').click();
+  await loadRecentSessions();
+  check(!cardsFor()[0].open, 'manually closed gateway event does not reopen on refresh');
 
   // Exercise usage-recent rendering on failed non-WorkBuddy rows + unconfirmed WorkBuddy guard
   const j = {

@@ -83,6 +83,9 @@ public class LoginActivity extends Activity {
     private TextView subtitleView;
     private volatile boolean isPolling = false;
     private volatile int workBuddyGeneration;
+    private volatile long workBuddyFinishRequested;
+    private boolean workBuddyInitializing;
+    private Button workBuddyDoneButton;
     private String currentState = "";
     private String currentProvider = "workbuddy";
     private volatile RaccoonAuthorizationFlow raccoonAuthorizationFlow;
@@ -180,6 +183,7 @@ public class LoginActivity extends Activity {
         // 右上角“完成/提取”按钮
         Button doneBtn = new Button(this);
         doneBtn.setText("完成入池");
+        if("workbuddy".equals(currentProvider))workBuddyDoneButton=doneBtn;
         doneBtn.setTextColor(Color.WHITE);
         doneBtn.setBackgroundColor(Color.parseColor("#10b981"));
         doneBtn.setTextSize(13);
@@ -189,9 +193,14 @@ public class LoginActivity extends Activity {
             public void onClick(View v) {
                 if ("trae-cn".equals(currentProvider)) checkTraeStatus();
                 else if ("workbuddy".equals(currentProvider)) {
-                    if (!isPolling && !currentState.isEmpty()) startWorkBuddyPolling(currentState, ++workBuddyGeneration);
-                    else if (!isPolling) initWorkBuddyAuth();
-                    else Toast.makeText(LoginActivity.this,"正在确认官方身份和保存结果，请稍候",Toast.LENGTH_SHORT).show();
+                    if(workBuddyInitializing)return;
+                    if(isPolling) {
+                        if(workBuddyFinishRequested==0)workBuddyFinishRequested=android.os.SystemClock.elapsedRealtime();
+                        subtitleView.setText("正在确认本次授权；若官方仍未确认，稍后会提示重新授权");
+                    } else if(!currentState.isEmpty()) {
+                        workBuddyFinishRequested=android.os.SystemClock.elapsedRealtime();
+                        startWorkBuddyPolling(currentState,++workBuddyGeneration);
+                    } else initWorkBuddyAuth();
                 } else extractTokenFromPage(true);
             }
         });
@@ -544,6 +553,11 @@ public class LoginActivity extends Activity {
     }
 
     private void initWorkBuddyAuth() {
+        if(workBuddyInitializing || isPolling)return;
+        workBuddyInitializing=true;
+        workBuddyFinishRequested=0;
+        currentState="";
+        workBuddyDoneButton.setText("申请授权中");
         final int generation=++workBuddyGeneration;
         subtitleView.setText("正在申请官方授权；本次登录不会移除已入池账号…");
         startLoginTask(() -> {
@@ -576,6 +590,7 @@ public class LoginActivity extends Activity {
                     throw new java.io.IOException();
                 postLoginUi(() -> {
                     if(isFinishing() || isDestroyed() || generation!=workBuddyGeneration)return;
+                    workBuddyInitializing=false;
                     currentState=state;
                     subtitleView.setText("请在官方页面选择个人或团队账号；确认保存成功后才会完成入池");
                     webView.loadUrl(authUrl);
@@ -583,8 +598,9 @@ public class LoginActivity extends Activity {
                 });
             } catch(Exception failed) {
                 final String display = reason;
-                postLoginUi(() -> {if(!isFinishing() && !isDestroyed() && generation==workBuddyGeneration)
-                    subtitleView.setText(display);});
+                postLoginUi(() -> {if(!isFinishing() && !isDestroyed() && generation==workBuddyGeneration) {
+                    workBuddyInitializing=false;workBuddyDoneButton.setText("重新授权");subtitleView.setText(display);
+                }});
             }
         });
     }
@@ -1436,41 +1452,70 @@ public class LoginActivity extends Activity {
 
     private void startWorkBuddyPolling(final String state, final int generation) {
         isPolling=true;
+        workBuddyDoneButton.setText("完成入池");
         startLoginTask(() -> {
-            final long deadline=System.currentTimeMillis()+5*60*1000L;
-            while(isPolling && generation==workBuddyGeneration && System.currentTimeMillis()<deadline) {
+            final long deadline=android.os.SystemClock.elapsedRealtime()+5*60*1000L;
+            int unconfirmed=0;
+            String lastPhase="";
+            while(isPolling && generation==workBuddyGeneration && android.os.SystemClock.elapsedRealtime()<deadline) {
                 try {
                     Thread.sleep(1500);
-                    if(!isPolling || generation!=workBuddyGeneration)break;
+                    if(!isPolling || generation!=workBuddyGeneration)return;
                     LocalBridge.Result response=loginRequest("GET","/api/auth/workbuddy/poll-login?state="
-                            +URLEncoder.encode(state,"UTF-8"),null,20000);
+                            +URLEncoder.encode(state,"UTF-8"),null,55000);
+                    if(!response.transportError.isEmpty())throw new java.io.IOException("missing local confirmation");
+                    if(response.status==401 || response.status==403) {
+                        endWorkBuddyPolling(generation,true,"本机网关未授权，请返回首页后再试");return;
+                    }
                     JSONObject result=new JSONObject(response.body);
-                    if(response.accountSaved() && "success".equals(result.optString("status"))) {
-                        isPolling=false;
+                    String status=result.optString("status");
+                    if(response.accountSaved() && "success".equals(status)) {
                         postLoginUi(() -> {
-                            if(isFinishing() || isDestroyed() || generation!=workBuddyGeneration)return;
+                            if(generation!=workBuddyGeneration)return;
+                            isPolling=false;currentState="";
                             Toast.makeText(LoginActivity.this,"WorkBuddy 账号已确认保存并入池",Toast.LENGTH_LONG).show();
                             finish();
                         });
                         return;
                     }
-                    if(response.status==410 || response.status==409 || response.status>=500 || !result.optBoolean("ok",false)) {
-                        isPolling=false;
-                        postLoginUi(() -> {
-                            if(isFinishing() || isDestroyed() || generation!=workBuddyGeneration)return;
-                            if(response.status==410 || response.status==409)currentState="";
-                            subtitleView.setText("尚未确认入池：请检查官方账号选择，点完成入池重试；已有账号保持不变");
-                        });
-                        return;
+                    if("save-failed".equals(status) && result.opt("ok")==Boolean.FALSE) {
+                        endWorkBuddyPolling(generation,false,"官方身份已确认，但保存未成功。请点「重试确认」；不会重新交换凭据");return;
                     }
-                } catch(InterruptedException cancelled) { Thread.currentThread().interrupt();break; }
-                catch(Exception transientFailure) { /* State/token retrieval GET can be retried; refresh is never replayed here. */ }
+                    if(response.status==410 || response.status==409 || response.status==502) {
+                        endWorkBuddyPolling(generation,true,"本次授权已失效或官方未确认，请点「重新授权」。可使用原手机号");return;
+                    }
+                    if(response.status!=200 || !"pending".equals(status) || !result.optBoolean("ok",false))
+                        throw new java.io.IOException("unexpected local confirmation");
+                    unconfirmed=0;
+                    String phase=result.optString("phase");
+                    boolean identity="identity".equals(phase);
+                    long requested=workBuddyFinishRequested;
+                    if(requested!=0 && android.os.SystemClock.elapsedRealtime()-requested>=20000L) {
+                        endWorkBuddyPolling(generation,true,"官方尚未确认本次登录，请点「重新授权」。可使用原手机号");return;
+                    }
+                    if(!phase.equals(lastPhase)) {
+                        lastPhase=phase;
+                        postLoginUi(() -> {if(generation==workBuddyGeneration && isPolling)
+                            subtitleView.setText(identity?"已收到授权，正在等待官方确认您选择的账号":"正在等待官方授权，请在网页完成登录");});
+                    }
+                } catch(InterruptedException cancelled) {Thread.currentThread().interrupt();return;}
+                catch(Exception missing) {
+                    // An HTTP timeout is not proof that the server did not commit.
+                    if(++unconfirmed>=2) {
+                        endWorkBuddyPolling(generation,false,"本机网关未返回完整确认。请点「重试确认」核对本次结果，勿重复登录");return;
+                    }
+                }
             }
-            if(generation==workBuddyGeneration) {
-                isPolling=false;
-                postLoginUi(() -> {if(!isFinishing() && !isDestroyed() && generation==workBuddyGeneration){
-                    currentState="";subtitleView.setText("授权等待超时，请点完成入池重新发起");}});
-            }
+            endWorkBuddyPolling(generation,true,"本次授权等待超时，请点「重新授权」");
+        });
+    }
+    private void endWorkBuddyPolling(int generation,boolean fresh,String message) {
+        postLoginUi(() -> {
+            if(generation!=workBuddyGeneration)return;
+            isPolling=false;workBuddyFinishRequested=0;
+            if(fresh)currentState="";
+            workBuddyDoneButton.setText(fresh?"重新授权":"重试确认");
+            subtitleView.setText(message);
         });
     }
 

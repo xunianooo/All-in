@@ -40,18 +40,30 @@ public final class WorkBuddyMultiAccountRegressionTest {
         public InputStream getInputStream(){return new ByteArrayInputStream(api.answer(this).toString().getBytes(StandardCharsets.UTF_8));}
     }
     private static final class FakeApi {
-        int states;final List<Official> calls=new ArrayList<>();
+        int states;
+        volatile boolean failIdentityAfterDelete;
+        final CountDownLatch catalogEntered=new CountDownLatch(1), catalogRelease=new CountDownLatch(1);
+        volatile boolean blockInitialCatalog;
+        final List<Official> calls=Collections.synchronizedList(new ArrayList<>());
         JSONObject answer(Official connection) {
             String path=connection.getURL().getPath(), q=connection.getURL().getQuery();JSONObject data=new JSONObject();
             if(path.endsWith("/auth/state")){int n=++states;data.put("state","state-"+n).put("authUrl","https://copilot.tencent.com/login?state=state-"+n);}
             else if(path.endsWith("/auth/token")){boolean team=q.contains("state-2");data.put("accessToken",team?"fixture-team":"fixture-personal").put("refreshToken",team?"refresh-team":"refresh-personal").put("expiresIn",3600).put("refreshExpiresIn",86400).put("domain","copilot.tencent.com").put("tokenType","Bearer");}
-            else if(path.endsWith("/login/account")){boolean team=q.contains("state-2");data.put("uid","verified-user").put("nickname","同名用户").put("type",team?"enterprise":"personal");if(team)data.put("enterpriseId","team-1").put("enterpriseName","测试团队");}
-            else if(path.equals("/v3/config")){String own="team-1".equals(connection.getRequestProperty("X-Enterprise-Id"))?"team-only":"personal-only";data.put("agents",new JSONArray().put(new JSONObject().put("name","cli").put("models",new JSONArray().put("shared").put(own))))
+            else if(path.endsWith("/login/account")){
+                if(failIdentityAfterDelete && q.contains("state-2"))return new JSONObject().put("code",777);
+                boolean team=q.contains("state-2");data.put("uid","verified-user").put("nickname","同名用户").put("type",team?"enterprise":"personal");if(team)data.put("enterpriseId","team-1").put("enterpriseName","测试团队");}
+            else if(path.equals("/v3/config")){
+                if(blockInitialCatalog && "Bearer fixture-personal".equals(connection.getRequestProperty("Authorization"))) {
+                    catalogEntered.countDown();
+                    try{if(!catalogRelease.await(12,TimeUnit.SECONDS))throw new AssertionError("catalog release not signalled");}
+                    catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new RuntimeException(cancelled);}
+                }
+                String own="team-1".equals(connection.getRequestProperty("X-Enterprise-Id"))?"team-only":"personal-only";data.put("agents",new JSONArray().put(new JSONObject().put("name","cli").put("models",new JSONArray().put("shared").put(own))))
                     .put("models",new JSONArray().put(new JSONObject().put("id","shared").put("credits","x1")).put(new JSONObject().put("id",own).put("credits","x2")));}
             else throw new AssertionError("Unexpected official fixture path: "+path);
             return new JSONObject().put("code",0).put("data",data);
         }
-        long count(String path){return calls.stream().filter(c->c.getURL().getPath().equals(path)).count();}
+        long count(String path){synchronized(calls){return calls.stream().filter(c->c.getURL().getPath().equals(path)).count();}}
     }
     private static void loginAndCatalog(Path root)throws Exception {
         Path file=root.resolve("login.json");GatewayServer gateway=MultiAccountGatewayOfflineTest.gateway(MultiAccountGatewayOfflineTest.config(new JSONArray().put(provider("workbuddy",new JSONArray(),"shared"))),file);
@@ -69,11 +81,12 @@ public final class WorkBuddyMultiAccountRegressionTest {
         JSONObject disk=new JSONObject(new String(Files.readAllBytes(file),StandardCharsets.UTF_8));JSONArray accounts=disk.getJSONArray("providers").getJSONObject(0).getJSONArray("accounts");
         check(accounts.length()==2,"Two verified accounts survive serialization/restart");
         for(int i=0;i<2;i++){JSONObject account=accounts.getJSONObject(i);check(account.has("refresh") && account.getLong("expires")>System.currentTimeMillis() && account.getLong("refreshExpiresAt")>account.getLong("expires"),"OAuth refresh and both expiry clocks persisted");check(account.getString("uid").equals("verified-user") && account.getString("domain").equals("copilot.tencent.com"),"Verified uid and domain persisted");}
+        awaitCatalog(file,2);
         JSONObject synced=MultiAccountGatewayOfflineTest.post(gateway,"/api/auth/workbuddy/sync-models",new JSONObject());check(synced.optBoolean("ok"),"Scoped model catalog synchronizes");
         accounts=MultiAccountGatewayOfflineTest.live(gateway).getJSONArray("providers").getJSONObject(0).getJSONArray("accounts");
         check(accounts.getJSONObject(0).getJSONArray("models").toString().contains("personal-only") && !accounts.getJSONObject(0).getJSONArray("models").toString().contains("team-only"),"Personal model cache remains personal");
         check(accounts.getJSONObject(1).getJSONArray("models").toString().contains("team-only") && !accounts.getJSONObject(1).getJSONArray("models").toString().contains("personal-only"),"Enterprise model cache remains enterprise");
-        for(Official call:api.calls)if(call.getURL().getPath().equals("/v3/config")) {
+        for(Official call:new ArrayList<>(api.calls))if(call.getURL().getPath().equals("/v3/config")) {
             boolean team="Bearer fixture-team".equals(call.getRequestProperty("Authorization"));
             check(team?"team-1".equals(call.getRequestProperty("X-Enterprise-Id")) && "team-1".equals(call.getRequestProperty("X-Tenant-Id")):call.getRequestProperty("X-Enterprise-Id")==null && call.getRequestProperty("X-Tenant-Id")==null,"Actual catalog transport has exactly the selected enterprise scope");
             check(call.disconnected && !call.getInstanceFollowRedirects(),"Catalog credentials cannot follow a redirect");
@@ -82,6 +95,55 @@ public final class WorkBuddyMultiAccountRegressionTest {
         check(rejected.getInt("_http")==400 && api.calls.size()==before,"Untrusted login origin rejected before transport");
         String redacted=ask(gateway,"/api/config",Collections.emptyMap()).toString();
         check(!redacted.contains("fixture-personal") && !redacted.contains("refresh-personal") && !redacted.contains("refresh-team"),"Configuration view redacts saved OAuth tokens");
+    }
+    private static JSONArray diskAccounts(Path file)throws Exception {
+        return new JSONObject(new String(Files.readAllBytes(file),StandardCharsets.UTF_8)).getJSONArray("providers").getJSONObject(0).getJSONArray("accounts");
+    }
+    private static void awaitCatalog(Path file,int expected)throws Exception {
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(4);
+        do {
+            int n=0;JSONArray accounts=diskAccounts(file);
+            for(int i=0;i<accounts.length();i++)if(accounts.getJSONObject(i).has("models"))n++;
+            if(n==expected)return;
+            Thread.sleep(25);
+        }while(System.nanoTime()<deadline);
+        throw new AssertionError("background model catalog not persisted");
+    }
+    private static void deletedIdentityCanRejoin(Path root)throws Exception {
+        Path file=root.resolve("relogin.json");
+        GatewayServer gateway=MultiAccountGatewayOfflineTest.gateway(MultiAccountGatewayOfflineTest.config(new JSONArray().put(provider("workbuddy",new JSONArray(),"shared"))),file);
+        FakeApi api=new FakeApi();api.blockInitialCatalog=true;api.failIdentityAfterDelete=true;
+        gateway.setVendorConnectionsForTests(url->{try{return new Official(url,api);}catch(Exception e){throw new IOException(e);}});
+        ExecutorService client=Executors.newSingleThreadExecutor();
+        try {
+            String poll="/api/auth/workbuddy/poll-login";
+            Map<String,List<String>> empty=Collections.emptyMap();
+            String first=ask(gateway,"/api/auth/workbuddy/init-login",empty).getString("state");
+            Future<JSONObject> login=client.submit(()->ask(gateway,poll,query("state",first)));
+            check(api.catalogEntered.await(4,TimeUnit.SECONDS),"catalog is genuinely waiting upstream");
+            String old=login.get(2,TimeUnit.SECONDS).getString("id");
+            check(diskAccounts(file).length()==1,"durable login response while optional catalog is blocked");
+            String expected=ask(gateway,"/api/config",empty).getJSONObject("providerStateTokens").getString("workbuddy");
+            JSONObject removed=MultiAccountGatewayOfflineTest.post(gateway,"/api/auth/workbuddy/remove",new JSONObject().put("id",old).put("expectedStateToken",expected));
+            check(removed.optBoolean("removed") && diskAccounts(file).length()==0,"remove prior instance from the durable pool");
+            long calls=api.count("/v2/plugin/auth/token");
+            check(ask(gateway,poll,query("state",first)).getInt("_http")==409 && api.count("/v2/plugin/auth/token")==calls,"old completed flow cannot reinsert a removed account");
+            String failed=ask(gateway,"/api/auth/workbuddy/init-login",empty).getString("state");
+            check(ask(gateway,poll,query("state",failed)).getInt("_http")==502,"terminal official identity failure is not a save retry");
+            check(ask(gateway,poll,query("state",failed)).getInt("_http")==410 && diskAccounts(file).length()==0,"failed authorization not reused or published");
+            String fresh=ask(gateway,"/api/auth/workbuddy/init-login",empty).getString("state");
+            GatewayServer.setConfigWriteHookForTests(()->{throw new IllegalStateException("fixture disk failure");});
+            try {check("save-failed".equals(ask(gateway,poll,query("state",fresh)).optString("status")) && diskAccounts(file).length()==0,"confirmed identity, failed save never claims success");}
+            finally{GatewayServer.setConfigWriteHookForTests(null);}
+            calls=api.count("/v2/plugin/auth/token");long identities=api.count("/v2/plugin/login/account");
+            String restored=ask(gateway,poll,query("state",fresh)).getString("id");
+            check(api.count("/v2/plugin/auth/token")==calls && api.count("/v2/plugin/login/account")==identities,"save retry does not repeat official token or identity requests");
+            JSONArray saved=diskAccounts(file);
+            check(saved.length()==1 && !old.equals(restored) && restored.equals(saved.getJSONObject(0).optString("id"))
+                   && "verified-user".equals(saved.getJSONObject(0).optString("uid")),"same verified identity joins again as one new durable slot");
+            api.catalogRelease.countDown();awaitCatalog(file,1);
+            check(restored.equals(diskAccounts(file).getJSONObject(0).getString("id")),"late catalog cannot revive removed slot");
+        }finally{api.catalogRelease.countDown();client.shutdownNow();gateway.stop();}
     }
     private static JSONObject ensure(GatewayServer gateway,JSONObject account)throws Exception {
         return (JSONObject)MultiAccountGatewayOfflineTest.invoke(gateway,"ensureStoredToken",new Class[]{String.class,JSONObject.class,String.class},"workbuddy",account,null);
@@ -154,7 +216,7 @@ public final class WorkBuddyMultiAccountRegressionTest {
     }
     public static void main(String[] args)throws Exception {
         Path root=Files.createTempDirectory("workbuddy-multi-regression-");
-        try {loginAndCatalog(root);refresh(root);headersAndHttp();check(IngressMemoryBudget.usedBytes()==0,"HTTP resources and body budgets released");System.out.println("WorkBuddyMultiAccountRegressionTest PASS checks="+checks);}
+        try {loginAndCatalog(root);deletedIdentityCanRejoin(root);refresh(root);headersAndHttp();check(IngressMemoryBudget.usedBytes()==0,"HTTP resources and body budgets released");System.out.println("WorkBuddyMultiAccountRegressionTest PASS checks="+checks);}
         finally{NetworkPolicy.configure(null);MultiAccountGatewayOfflineTest.clean(root);}
     }
 }

@@ -40,6 +40,9 @@ public final class AccountTransferFixtureActivity extends Activity {
             try{AtomicConfigFile.write(new File(getFilesDir(),"account-transfer-fixture-result.json"),result.toString());}catch(Exception ignored){}
             updateStatus(result.optString("action")+" 成功 saved="+result.optInt("saved"));
         });
+        Object retained=getLastNonConfigurationInstance();
+        controller.restoreExport(retained instanceof AccountTransferController.PendingExport?(AccountTransferController.PendingExport)retained:null,
+                state==null?null:state.getString(AccountTransferController.PENDING_EXPORT_NAME));
         button(layout,"导出测试账号JSON",()->controller.open("export","workbuddy"));
         button(layout,"导入测试账号JSON",()->controller.open("import","workbuddy"));
         button(layout,"清空测试目标账号",()->{if(!controller.busy()){writeFixture(false);updateStatus("测试目标已清空");}});
@@ -69,6 +72,8 @@ public final class AccountTransferFixtureActivity extends Activity {
         int accounts=0,keys=0;JSONArray ps=root.getJSONArray("providers");for(int i=0;i<ps.length();i++){JSONObject p=ps.getJSONObject(i);accounts+=p.getJSONArray("accounts").length();keys+=p.getJSONArray("keys").length();}
         status.setText(prefix+"\n账号="+accounts+" Key="+keys+"\n只操作 repairtest 内的合成数据，不调用供应商。");
     }catch(Exception failure){status.setText("读取测试状态失败");}}
+    @Override public Object onRetainNonConfigurationInstance(){return controller.retainExport();}
+    @Override protected void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);AccountTransferController.PendingExport p=controller.retainExport();if(p!=null)state.putString(AccountTransferController.PENDING_EXPORT_NAME,p.name);}
     @Override protected void onActivityResult(int request,int result,Intent data){if(controller!=null&&controller.onActivityResult(request,result,data))return;super.onActivityResult(request,result,data);}
     @Override protected void onDestroy(){if(controller!=null)controller.destroy();super.onDestroy();}
 }

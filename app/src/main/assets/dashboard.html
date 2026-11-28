@@ -8030,6 +8030,36 @@ html[data-theme="dark"] .priv-ico.tone-violet { background: rgba(167, 139, 250, 
       const modeName = m === 'failed' ? '仅看失败' : (m === 'rejected' ? '前置拦截' : '全部');
       return p ? (modeName + ' · ' + p) : modeName;
     }
+    // Remember the state of each actual request/attempt, not its list position. Capture
+    // synchronously before replacement so a click immediately before fetch completion wins.
+    const diagDisclosureStates = new Map();
+    function rememberDiagDisclosures(el) {
+      if (!el || typeof el.querySelectorAll !== 'function') return;
+      for (const card of el.querySelectorAll('details[data-diag-row-key]')) {
+        const key = card.getAttribute('data-diag-row-key');
+        const nested = card.querySelector('details.diag-extra-details');
+        diagDisclosureStates.delete(key);
+        diagDisclosureStates.set(key, {open: card.open, extra: !!(nested && nested.open)});
+      }
+      while (diagDisclosureStates.size > 160) diagDisclosureStates.delete(diagDisclosureStates.keys().next().value);
+    }
+    function renderDiagnosticRows(rows, eventMode, render) {
+      const seen = new Map();
+      return rows.map(item => {
+        const row = item || {};
+        const key = JSON.stringify(eventMode ? ['event', row.requestId, row.t, row.stage, row.path]
+          : (row.requestId ? ['request', row.requestId, row.attempt]
+            : ['legacy', row.timestamp, row.provider, row.model, row.path]));
+        const occurrence = (seen.get(key) || 0) + 1;
+        seen.set(key, occurrence);
+        const rowKey = key + ':' + occurrence;
+        const state = diagDisclosureStates.get(rowKey);
+        const html = render(row).replace(/^<details([^>]*)>/, (_, attrs) => '<details'
+          + attrs.replace(/ open$/, '') + ' data-diag-row-key="' + esc(rowKey) + '"'
+          + ((state ? state.open : eventMode) ? ' open' : '') + '>');
+        return state && state.extra ? html.replace('<details class="diag-extra-details">', '<details class="diag-extra-details" open>') : html;
+      }).join('');
+    }
     async function loadRecentSessions() {
       const revision = ++recentSessionsRevision;
       const status = document.getElementById('recent-sessions-status');
@@ -8082,13 +8112,14 @@ html[data-theme="dark"] .priv-ico.tone-violet { background: rgba(167, 139, 250, 
         const el = document.getElementById('recent-sessions');
         if (!el) return;
         if (typeof el.removeAttribute === 'function') el.removeAttribute('data-view-mismatch');
+        rememberDiagDisclosures(el);
         if (typeof diagPayloadStore !== 'undefined') diagPayloadStore.clear();
         if (modeNow === 'rejected' && typeof renderGatewayEventRow === 'function') {
           if (events.length === 0) {
             el.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">暂无网关前置拦截记录</div>';
             return;
           }
-          el.innerHTML = events.map(renderGatewayEventRow).join('');
+          el.innerHTML = renderDiagnosticRows(events, true, renderGatewayEventRow);
           return;
         }
         if (list.length === 0) {
@@ -8101,7 +8132,7 @@ html[data-theme="dark"] .priv-ico.tone-violet { background: rgba(167, 139, 250, 
           const rid = item && typeof item.requestId === 'string' ? item.requestId : '';
           if (rid) reqCounts.set(rid, (reqCounts.get(rid) || 0) + 1);
         }
-        el.innerHTML = list.map(item => renderRecentRequest(item, reqCounts.get(item && item.requestId) || 1)).join('');
+        el.innerHTML = renderDiagnosticRows(list, false, item => renderRecentRequest(item, reqCounts.get(item.requestId) || 1));
       } catch (e) {
         if (revision !== recentSessionsRevision) return;
         const el = document.getElementById('recent-sessions');
@@ -8115,6 +8146,7 @@ html[data-theme="dark"] .priv-ico.tone-violet { background: rgba(167, 139, 250, 
           }
           if (el) {
             if (typeof el.setAttribute === 'function') el.setAttribute('data-view-mismatch', recentSessionsViewKey + '->' + reqKey);
+            rememberDiagDisclosures(el);
             el.innerHTML = '<div class="diag-filter-error" style="font-size:0.8rem;color:var(--text-muted);padding:6px 0;">请求「'
               + esc(nextLabel) + '」失败（' + esc(e.message) + '）；先前显示结果属于「' + esc(prevLabel) + '」，未在新筛选下继续展示。</div>';
           }
@@ -14361,17 +14393,24 @@ async function removeCustomProvider(id) {
           window.open(data.authUrl, '_blank');
 
           // 自动启动后台监听
-          wbScanTimer = setInterval(async () => {
+          let polling = false;
+          const timer = wbScanTimer = setInterval(async () => {
+            if (polling || wbScanTimer !== timer) return;
+            polling = true;
             try {
               const pollRes = await fetch(API_BASE + '/api/auth/workbuddy/poll-login?state=' + encodeURIComponent(data.state) + '&baseUrl=' + encodeURIComponent(data.baseUrl));
               const pollData = await pollRes.json();
+              if (wbScanTimer !== timer) return;
               if (pollData.ok && pollData.status === 'success') {
                 clearInterval(wbScanTimer);
                 tip.style.display = 'none';
                 showToast('🎉 恭喜！WorkBuddy 账号 [' + (pollData.username || '用户') + '] 扫码成功，已自动入池！');
                 await loadConfig();
+              } else if ([401, 403, 409, 410, 502].includes(pollRes.status) || pollData.status === 'save-failed') {
+                clearInterval(timer);
+                tip.innerText = '尚未确认入池。请检查账号池后重新发起 WorkBuddy 登录。';
               }
-            } catch (e) {}
+            } catch (e) {} finally { polling = false; }
           }, 2000);
         } else {
           tip.style.display = 'none';
@@ -16983,6 +17022,7 @@ async function removeCustomProvider(id) {
         return;
       }
       if (inAppPollTimer) clearInterval(inAppPollTimer);
+      inAppPollTimer = null;
       const modal = document.getElementById('inapp-login-modal');
       const frame = document.getElementById('inapp-login-frame');
       const indicator = document.getElementById('inapp-poll-indicator');
@@ -17000,17 +17040,24 @@ async function removeCustomProvider(id) {
           indicator.innerText = '● 正在监听登录状态，登录后将自动关闭入池...';
           indicator.style.color = '#10b981';
 
-          inAppPollTimer = setInterval(async () => {
+          let polling = false;
+          const timer = inAppPollTimer = setInterval(async () => {
+            if (polling || inAppPollTimer !== timer) return;
+            polling = true;
             try {
               const pollRes = await fetch(API_BASE + '/api/auth/workbuddy/poll-login?state=' + encodeURIComponent(data.state) + '&baseUrl=' + encodeURIComponent(data.baseUrl));
               const pollData = await pollRes.json();
+              if (inAppPollTimer !== timer) return;
               if (pollData.ok && pollData.status === 'success') {
                 clearInterval(inAppPollTimer);
                 closeInAppLogin();
                 showToast('🎉 恭喜！WorkBuddy 账号 [' + (pollData.username || '用户') + '] 登录成功，已自动加入网关池！');
                 await loadConfig();
+              } else if ([401, 403, 409, 410, 502].includes(pollRes.status) || pollData.status === 'save-failed') {
+                clearInterval(timer);
+                indicator.innerText = '● 尚未确认入池，请检查账号池后重新发起登录。';
               }
-            } catch (e) {}
+            } catch (e) {} finally { polling = false; }
           }, 2000);
         } else {
           alert('获取官方授权失败: ' + errText(data.error, '网络异常'));

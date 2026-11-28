@@ -76,6 +76,11 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
+        Object retained=getLastNonConfigurationInstance();
+        String exportName=savedInstanceState==null?null:savedInstanceState.getString(AccountTransferController.PENDING_EXPORT_NAME);
+        if(retained instanceof AccountTransferController.PendingExport || exportName!=null)
+            accountTransfer().restoreExport(retained instanceof AccountTransferController.PendingExport
+                    ? (AccountTransferController.PendingExport)retained:null,exportName);
         applySystemBarsInternal(isSystemDark());
         AppUpdateManager.schedule(this);
 
@@ -613,12 +618,7 @@ public class MainActivity extends Activity {
             runOnUiThread(()-> {
                 if(!bridgeAllowed()||isFinishing()||isDestroyed())return;
                 if(backupController!=null&&backupController.busy()){Toast.makeText(MainActivity.this,"已有备份操作进行中，请先完成或取消",Toast.LENGTH_SHORT).show();return;}
-                if(accountTransferController==null)accountTransferController=new AccountTransferController(MainActivity.this,
-                        GatewayService.accountTransferBackend(MainActivity.this),summary->{
-                    if(webView!=null&&bridgeAllowed()&&!isFinishing()&&!isDestroyed())
-                        webView.evaluateJavascript("window.onAccountTransferFinished&&window.onAccountTransferFinished("+summary.toString()+");",null);
-                });
-                accountTransferController.open(action,providerId);
+                accountTransfer().open(action,providerId);
             });
             return true;
         }
@@ -1189,8 +1189,34 @@ public class MainActivity extends Activity {
         else super.onBackPressed();
     }
 
+    private AccountTransferController accountTransfer() {
+        if(accountTransferController==null)accountTransferController=new AccountTransferController(this,
+                GatewayService.accountTransferBackend(this),summary->{
+            if(webView!=null&&bridgeAllowed()&&!isFinishing()&&!isDestroyed())
+                webView.evaluateJavascript("window.onAccountTransferFinished&&window.onAccountTransferFinished("+summary.toString()+");",null);
+        });
+        return accountTransferController;
+    }
+
+    @Override
+    public Object onRetainNonConfigurationInstance() {
+        return accountTransferController==null?null:accountTransferController.retainExport();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        AccountTransferController.PendingExport pending=accountTransferController==null?null:accountTransferController.retainExport();
+        // After process death only the randomized cleanup name can be restored, not the selection.
+        if(pending!=null)state.putString(AccountTransferController.PENDING_EXPORT_NAME,pending.name);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode==AccountTransferController.EXPORT_DOCUMENT) {
+            accountTransfer().onActivityResult(requestCode,resultCode,data);
+            return;
+        }
         if (accountTransferController != null && accountTransferController.onActivityResult(requestCode, resultCode, data)) return;
         if (backupController != null && backupController.onActivityResult(requestCode, resultCode, data)) return;
         super.onActivityResult(requestCode, resultCode, data);

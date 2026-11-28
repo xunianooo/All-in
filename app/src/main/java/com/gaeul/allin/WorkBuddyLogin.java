@@ -16,7 +16,7 @@ final class WorkBuddyLogin {
     static final class ApiFailure extends IOException {
         final int status, code;
         ApiFailure(int status, int code) { super("WorkBuddy account API refused"); this.status=status; this.code=code; }
-        boolean pending() { return code==11217 || code==12151 || status==408 || status==429; }
+        boolean pending(boolean identity) { return code==(identity?12151:11217) || status==408 || status==429; }
     }
     static final class Flow {
         final String provider, state, authUrl;
@@ -153,7 +153,8 @@ final class WorkBuddyLogin {
             int code=envelope.optInt("code",-1);
             if(status<200 || status>=300 || code!=0)throw new ApiFailure(status,code);
             JSONObject data=envelope.optJSONObject("data");
-            if(data==null || data.length()==0)throw new ApiFailure(status,11217);
+            if(data==null || data.length()==0)throw new ApiFailure(status,path.startsWith("/v2/plugin/login/account?")?12151:
+                    (path.startsWith("/v2/plugin/auth/token?")?11217:-1));
             return data;
         } finally {if(conn!=null)conn.disconnect();}
     }

@@ -182,6 +182,8 @@ public class GatewayServer extends NanoHTTPD {
         synchronized(this) {
             stopping=true;
             closeOAuthListeners();
+            if(workBuddyCatalogWorker!=null)workBuddyCatalogWorker.shutdownNow();
+            if(workBuddyFlows!=null)workBuddyFlows.clear();
             stopBilling();
             if(routingReads!=null)routingReads.shutdownNow();
             minimaxLifecycle().retire();
@@ -10179,31 +10181,88 @@ public class GatewayServer extends NanoHTTPD {
         String base=queryValue(session,"baseUrl",WorkBuddyAuth.origin(flow.provider));
         if (!WorkBuddyAuth.origin(flow.provider).equals(base)) return errorResponse(400,"Untrusted WorkBuddy login origin");
         synchronized (flow) {
+            // Another caller may have expired or retired this flow while we waited for the lock.
+            if(workBuddyFlows().get(state)!=flow || System.currentTimeMillis()>=flow.deadline || stopping || backupRetired)
+                return errorResponse(410,"WorkBuddy 登录流程已过期，请重新发起");
+            JSONObject account;
+            if(flow.savedId!=null) {
+                synchronized(this) {
+                    account=storedTokenAccount(configJson,flow.provider,"id:"+flow.savedId);
+                    if(account==null) {
+                        workBuddyFlows().remove(state,flow);
+                        return errorResponse(409,"该登录流程已完成，账号已被移除或停用，请重新发起");
+                    }
+                    return workBuddyLoginSaved(flow.savedId,account);
+                }
+            }
+            try { account=WorkBuddyLogin.poll(flow,workBuddyLoginApi()); }
+            catch (WorkBuddyLogin.ApiFailure answer) {
+                boolean identity=flow.token!=null;
+                if(answer.pending(identity))return jsonResponse(new JSONObject().put("ok",true).put("status","pending")
+                        .put("phase",identity?"identity":"authorization"));
+                workBuddyFlows().remove(state,flow);
+                return errorResponse(502,"WorkBuddy 官方未确认本次授权，请重新发起");
+            } catch (Exception failed) {
+                workBuddyFlows().remove(state,flow);
+                return errorResponse(502,"WorkBuddy 官方身份确认未完成，请重新授权");
+            }
             try {
-                JSONObject account=WorkBuddyLogin.poll(flow,workBuddyLoginApi());
-                if (flow.savedId==null) {
-                    if(!account.has("models"))try {
-                        JSONObject meta=new JSONObject();List<String> found=fetchOfficialModels(flow.provider,storedAccess(account),account,meta);
-                        JSONArray models=new JSONArray();for(String model:found)models.put(model);
-                        stampCatalog(meta);normalizeCatalog(flow.provider,meta);account.put("models",models).put("modelMeta",meta);
-                        flow.account=new JSONObject(account.toString());
-                    } catch(Exception unavailable) { /* Valid credentials still save; the UI can sync the catalog later. */ }
+                synchronized(this) {
+                    if(System.currentTimeMillis()>=flow.deadline || stopping || backupRetired)
+                        return errorResponse(410,"WorkBuddy 登录流程已过期，请重新发起");
                     flow.savedId=addWorkBuddyAccount(flow.provider,account);
                 }
-                else synchronized(this) {
-                    if(storedTokenAccount(configJson,flow.provider,"id:"+flow.savedId)==null)
-                        return errorResponse(409,"该登录流程已完成，账号已被移除或停用，请重新发起");
-                }
-                return jsonResponse(new JSONObject().put("ok",true).put("status","success").put("id",flow.savedId)
-                        .put("username",account.optString("name","WorkBuddy")));
-            } catch (WorkBuddyLogin.ApiFailure answer) {
-                if (answer.pending()) return jsonResponse(new JSONObject().put("ok",true).put("status","pending"));
-                return errorResponse(502,"WorkBuddy 官方身份确认失败，请重新授权");
-            } catch (Exception failed) {
-                return jsonResponse(new JSONObject().put("ok",false).put("status","save-failed")
-                        .put("error","身份未确认或账号未保存，请检查官方账号选择后重试；不会覆盖已有账号"));
             }
+            catch(Exception failed) {
+                return jsonResponse(new JSONObject().put("ok",false).put("status","save-failed")
+                        .put("error","官方身份已确认，但未能保存账号；可重试本次保存"));
+            }
+            flow.token=null;flow.account=null;
+            // A slow, unavailable or incomplete model catalog is not an authorization failure.
+            // Publish the already committed account independently of catalog transport.
+            try { scheduleWorkBuddyLoginCatalog(flow.provider,flow.savedId,storedAccess(account)); }
+            catch(RuntimeException unavailable) { /* The committed account still returns success. */ }
+            return workBuddyLoginSaved(flow.savedId,account);
         }
+    }
+    private Response workBuddyLoginSaved(String id,JSONObject account) {
+        return jsonResponse(new JSONObject().put("ok",true).put("status","success").put("id",id)
+                .put("username",account.optString("name","WorkBuddy")));
+    }
+    private java.util.concurrent.ThreadPoolExecutor workBuddyCatalogWorker;
+    private synchronized void scheduleWorkBuddyLoginCatalog(String provider,String id,String access) {
+        if(stopping || backupRetired)return;
+        JSONObject current=storedTokenAccount(configJson,provider,"id:"+id);
+        if(current==null || !access.equals(storedAccess(current)))return;
+        JSONObject snapshot=new JSONObject(current.toString());
+        if(workBuddyCatalogWorker==null) workBuddyCatalogWorker=new java.util.concurrent.ThreadPoolExecutor(0,1,20L,
+                java.util.concurrent.TimeUnit.SECONDS,new java.util.concurrent.ArrayBlockingQueue<>(8),r->{
+                    Thread t=new Thread(r,"allin-workbuddy-login-catalog");t.setDaemon(true);return t;
+                });
+        try { workBuddyCatalogWorker.execute(() -> refreshWorkBuddyLoginCatalog(provider,id,snapshot)); }
+        catch(java.util.concurrent.RejectedExecutionException ignored) { /* Manual sync remains available. */ }
+    }
+    private void refreshWorkBuddyLoginCatalog(String provider,String id,JSONObject snapshot) {
+        // Capture the policy at the start of this independent request, never after it sends.
+        try(NetworkPolicy.Scope scope=NetworkPolicy.use(NetworkPolicy.capture())) {
+            synchronized(this) {
+                if(stopping || backupRetired || !jsonEquivalent(storedTokenAccount(configJson,provider,"id:"+id),snapshot))return;
+            }
+            JSONObject meta=new JSONObject();
+            List<String> found=fetchOfficialModels(provider,storedAccess(snapshot),snapshot,meta);
+            if(found.isEmpty())return;
+            JSONArray models=new JSONArray();for(String model:found)models.put(model);
+            stampCatalog(meta);normalizeCatalog(provider,meta);
+            synchronized(this) {
+                if(stopping || backupRetired || !jsonEquivalent(storedTokenAccount(configJson,provider,"id:"+id),snapshot))return;
+                JSONObject staged=new JSONObject(configJson.toString());
+                JSONObject dest=storedTokenAccount(staged,provider,"id:"+id);
+                if(dest==null)return;
+                dest.put("models",models).put("modelMeta",meta);
+                GatewayAccessCatalog.preserveAccountScope(configJson,staged);
+                persistConfigStrict(staged);
+            }
+        } catch(Exception ignored) { /* Account is already durable; a failed catalog never rolls it back. */ }
     }
     private synchronized String addWorkBuddyAccount(String name, String token) {
         try {

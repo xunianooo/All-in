@@ -41,7 +41,11 @@ ${code}
 const dom=require('./browser-fixture.cjs').dom(page,3000);
 const result=dom.match(/<pre id="result">([^<]*)<\/pre>/)?.[1];assert(result&&result.startsWith('PASS '),result);
 const native=fs.readFileSync('app/src/main/java/com/gaeul/allin/AccountTransferController.java','utf8');
-for(const marker of ['ACTION_CREATE_DOCUMENT','ACTION_OPEN_DOCUMENT','openOutputStream(uri,"wt")','Arrays.equals(bytes,readback)','expectedHash','onActivityResult','FLAG_SECURE'])assert(native.includes(marker),marker);
+for(const marker of ['ACTION_CREATE_DOCUMENT','ACTION_OPEN_DOCUMENT','expectedHash','onActivityResult','FLAG_SECURE'])assert(native.includes(marker),marker);
 assert(!native.includes('ClipboardManager')&&!native.includes('Log.'));
+const documentIO=fs.readFileSync('app/src/main/java/com/gaeul/allin/AccountExportDocument.java','utf8');
+for(const marker of ['openOutputStream(uri,"wt")','Arrays.equals(bytes,back)','deleteDocument','in.read()!=-1'])assert(documentIO.includes(marker),marker);
+assert(native.indexOf('clear(selection.prepare(backend))')<native.indexOf('chooseDocument(true)'),'preflight before creating a document');
+assert(native.includes('request.selection.prepare(backend)')&&native.includes('writeAndVerify(resolver,uri,bytes)'),'fresh backend export and verified persist');
 const activity=fs.readFileSync('app/src/main/java/com/gaeul/allin/MainActivity.java','utf8');assert(activity.includes('public boolean openAccountTransfer'));assert(activity.includes('!bridgeAllowed()'));
 console.log('dashboard account JSON files '+result+'; native SAF/privacy wiring verified');
